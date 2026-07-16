@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+
+# Env
+.env
+
+# OS
+.DS_Store
+
+# Personal study notes — local only
+practice/

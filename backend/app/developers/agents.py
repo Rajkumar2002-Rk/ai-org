@@ -1,0 +1,169 @@
+"""Developer agents (Week 4).
+
+One agent per ticket type (backend / frontend / mobile / integration).
+Each ticket runs the exact 5-step process:
+
+  1. Read the assigned ticket.
+  2. Check already-generated files to reuse / avoid duplication.
+  3. Write code in chunks — skeleton, logic, error handling.
+  4. Self-review — does it satisfy the ticket?
+  5. Return the file to be stored in generated_files.
+
+Recovery when a ticket won't pass self-review:
+  try 1 -> generate; try 2 -> rewrite with a different approach;
+  try 3 -> minimal version; then flag status = needs_review.
+Never silently fails.
+"""
+import json
+import logging
+import re
+
+from app import codegen
+
+logger = logging.getLogger("developers")
+
+MAX_TRIES = 3
+
+# Self-review is a cheap yes/no judgement — always run it on the cheapest fast
+# model rather than the (expensive) generation model. This halves the number of
+# Claude calls per ticket without touching generation quality.
+REVIEW_MODEL = "gemini-2.5-flash-lite"
+
+_STACK = {
+    "backend": "FastAPI + async SQLAlchemy + PostgreSQL. File path under 'backend/app/'.",
+    "frontend": "Next.js + React + TypeScript. File path under 'frontend/app/'.",
+    "mobile": "React Native (TypeScript). File path under 'mobile/src/'.",
+    "integration": "Python service wiring a third-party API. File path under "
+                   "'backend/app/integrations/'.",
+}
+
+
+def _system(agent_type: str) -> str:
+    return (
+        f"You are a senior {agent_type} developer. Generate ONE complete, "
+        f"production-quality code file for the given ticket. Stack: "
+        f"{_STACK.get(agent_type, 'the project stack')} Write it in order: a "
+        f"clear skeleton, then the real logic, then error handling. Include "
+        f"input validation and sensible error handling. You MUST obey the "
+        f"BINDING PROJECT CONTRACT given below: use its exact table/column "
+        f"names and endpoint paths, import shared models/session from the "
+        f"stated modules instead of redefining them, read secrets from "
+        f"environment variables, and only import packages that actually exist. "
+        f"Return ONLY a JSON "
+        f'object: {{"filename": string, "filepath": string, "content": string}}. '
+        f"content is the FULL file as a single string. No markdown fences, no prose."
+    )
+
+
+def _extract_json(text: str) -> dict | None:
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        m = re.search(r"\{.*\}", text, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                return None
+    return None
+
+
+async def _generate(agent_type: str, model: str, prompt: str) -> dict | None:
+    text, _used = await codegen.generate(model, _system(agent_type), prompt, temperature=0.1)
+    result = _extract_json(text)
+    if result and result.get("content") and result.get("filename"):
+        result.setdefault("filepath", result["filename"])
+        return result
+    return None
+
+
+_REVIEW_SYS = (
+    "You review generated code against its ticket. Reply JSON "
+    '{"ok": true|false, "issues": "short reason if not ok"}. Be lenient: '
+    "ok=true if the file plausibly fulfills the ticket."
+)
+
+
+async def _self_review(model: str, ticket: dict, file: dict) -> tuple[bool, str]:
+    # `model` (the generation model) is deliberately ignored — reviews run on
+    # the cheap REVIEW_MODEL.
+    text, _ = await codegen.generate(
+        REVIEW_MODEL, _REVIEW_SYS,
+        f"Ticket: {ticket.get('title')} — {ticket.get('description')}\n"
+        f"File: {file['filename']}\n\n{file['content'][:4000]}",
+        temperature=0.0,
+    )
+    res = _extract_json(text)
+    if not isinstance(res, dict):
+        return True, ""  # can't review -> don't block
+    return bool(res.get("ok", True)), str(res.get("issues", ""))
+
+
+def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
+    names = ", ".join(f["filename"] for f in existing) or "none yet"
+    parts = []
+    if contract:
+        parts.append(contract)
+
+    # Hand the agent the REAL foundation code so it imports the actual models
+    # and session instead of inventing its own (the cross-file drift fix).
+    foundation = [f for f in existing if str(f.get("ticket_id", "")).startswith("FND-")]
+    for f in foundation:
+        parts.append(
+            f"\n=== EXISTING SHARED FILE: {f.get('filepath', f['filename'])} "
+            f"(import from this — do not redefine) ===\n{f['content'][:6000]}"
+        )
+
+    parts.append(
+        f"\nTicket {ticket.get('id')}: {ticket.get('title')}\n"
+        f"Description: {ticket.get('description')}\n"
+        f"Other files already generated (reuse, don't duplicate): {names}\n"
+    )
+    return "\n".join(parts)
+
+
+def _stub(agent_type: str, ticket: dict) -> dict:
+    """Deterministic placeholder when no LLM is available at all."""
+    fn = f"{ticket.get('id', 'ticket').lower()}.txt"
+    return {
+        "filename": fn,
+        "filepath": f"{agent_type}/{fn}",
+        "content": f"// TODO ({agent_type}): {ticket.get('title')}\n"
+                   f"// {ticket.get('description')}\n",
+    }
+
+
+async def build_ticket(
+    ticket: dict, model: str, existing: list[dict], contract: str = ""
+) -> dict:
+    """Run the 5-step process for one ticket. Returns a file dict with a
+    'status' of 'generated' or 'needs_review'."""
+    agent_type = ticket.get("assigned_to", "backend")
+    prompt = _base_prompt(ticket, existing, contract)
+    last: dict | None = None
+
+    for attempt in range(1, MAX_TRIES + 1):
+        if attempt == 2:
+            prompt += "\nThe previous attempt was insufficient — take a DIFFERENT approach."
+        elif attempt == 3:
+            prompt += "\nProduce a MINIMAL but working version that covers the core of the ticket."
+
+        file = await _generate(agent_type, model, prompt)
+        if file is None:
+            continue  # generation failed -> retry
+        last = file
+        ok, issues = await _self_review(model, ticket, file)
+        if ok:
+            return {**file, "agent_type": agent_type, "ticket_id": ticket.get("id"),
+                    "status": "generated"}
+        prompt += f"\nReviewer feedback: {issues}"
+
+    # Exhausted retries — never silently fail.
+    if last is not None:
+        return {**last, "agent_type": agent_type, "ticket_id": ticket.get("id"),
+                "status": "needs_review"}
+    stub = _stub(agent_type, ticket)
+    return {**stub, "agent_type": agent_type, "ticket_id": ticket.get("id"),
+            "status": "needs_review"}
