@@ -51,3 +51,8 @@ class BuildStatusResponse(BaseModel):
     total: int
     complete: int
     files: list[dict[str, Any]]
+
+
+class SecurityStatusResponse(BaseModel):
+    status: str  # not_started | running | done | error
+    certificate: dict[str, Any] | None = None

@@ -58,23 +58,23 @@ maintainability, scalability, transparency, and trust.
 
 ## THE 15 AGENTS
 
-| # | Agent | Talks to user? | Model | Job |
-|---|-------|-----------------|-------|-----|
-| 1 | BA Agent | Yes — only one | GPT-4o mini | Requirements + competitive intelligence + design preferences |
-| 2 | Product Intelligence | Before build only | GPT-4o | UX review + business goal alignment + PM recommendations |
-| 3 | Architect | Never | GPT-4o | Technical blueprint + API detection + LLM routing map |
-| 4 | Backend Developer | Never | GPT-4o | Server logic, database, API endpoints |
-| 5 | Frontend Developer | Never | Claude Sonnet | Premium UI, animations, responsive design |
-| 6 | Mobile Developer | Never | Claude Sonnet | React Native screens if mobile chosen |
-| 7 | Integration Developer | Never | GPT-4o mini | Third-party API connections |
-| 8 | Design Review | Never | Claude Sonnet | UX evaluation, consistency, interaction completeness |
-| 9 | Code Reviewer | Security cert only | GPT-4o mini + Claude Opus 4.8 | Code quality + security (Opus always) |
-| 10 | QA Agent | Test report only | GPT-4o mini | 5 levels of testing + root cause tracing |
-| 11 | DevOps | Live link only | GPT-4o mini | Deploy, SSL, domain, Safe Mode, version timeline |
-| 12 | Documentation | Final summary | GPT-4o mini | User guide, demo script, handoff summary |
-| 13 | Monitoring | Weekly summary | GPT-4o mini | Health, performance, error tracking |
-| 14 | Auto-fix | Level 3 issues only | GPT-4o | Self-healing, snapshot safety, rollback |
-| 15 | Cost Tracker | Monthly dashboard | GPT-4o mini | Spend tracking, optimization, budget alerts |
+| #   | Agent                 | Talks to user?      | Model                         | Job                                                          |
+| --- | --------------------- | ------------------- | ----------------------------- | ------------------------------------------------------------ |
+| 1   | BA Agent              | Yes — only one      | GPT-4o mini                   | Requirements + competitive intelligence + design preferences |
+| 2   | Product Intelligence  | Before build only   | GPT-4o                        | UX review + business goal alignment + PM recommendations     |
+| 3   | Architect             | Never               | GPT-4o                        | Technical blueprint + API detection + LLM routing map        |
+| 4   | Backend Developer     | Never               | GPT-4o                        | Server logic, database, API endpoints                        |
+| 5   | Frontend Developer    | Never               | Claude Sonnet                 | Premium UI, animations, responsive design                    |
+| 6   | Mobile Developer      | Never               | Claude Sonnet                 | React Native screens if mobile chosen                        |
+| 7   | Integration Developer | Never               | GPT-4o mini                   | Third-party API connections                                  |
+| 8   | Design Review         | Never               | Claude Sonnet                 | UX evaluation, consistency, interaction completeness         |
+| 9   | Code Reviewer         | Security cert only  | GPT-4o mini + Claude Opus 4.8 | Code quality + security (Opus always)                        |
+| 10  | QA Agent              | Test report only    | GPT-4o mini                   | 5 levels of testing + root cause tracing                     |
+| 11  | DevOps                | Live link only      | GPT-4o mini                   | Deploy, SSL, domain, Safe Mode, version timeline             |
+| 12  | Documentation         | Final summary       | GPT-4o mini                   | User guide, demo script, handoff summary                     |
+| 13  | Monitoring            | Weekly summary      | GPT-4o mini                   | Health, performance, error tracking                          |
+| 14  | Auto-fix              | Level 3 issues only | GPT-4o                        | Self-healing, snapshot safety, rollback                      |
+| 15  | Cost Tracker          | Monthly dashboard   | GPT-4o mini                   | Spend tracking, optimization, budget alerts                  |
 
 ---
 
@@ -92,12 +92,13 @@ maintainability, scalability, transparency, and trust.
 - Product Intelligence: GPT-4o
 
 ## UPDATED ROUTING — apply from Week 4 onwards:
-- Integration Developer: Gemini 2.5 Flash-Lite 
+
+- Integration Developer: Gemini 2.5 Flash-Lite
   ($0.10/$0.40 per MTok — cheapest option)
 - QA Agent: Gemini 2.5 Flash-Lite
-- Documentation: Gemini 2.5 Flash-Lite  
+- Documentation: Gemini 2.5 Flash-Lite
 - Cost Tracker: Gemini 2.5 Flash-Lite
-- Competitive Intelligence: future refactor to 
+- Competitive Intelligence: future refactor to
   Gemini 3.5 Flash with native grounding
 
 ## TEMPERATURE SETTINGS — LOCKED
@@ -141,7 +142,9 @@ maintainability, scalability, transparency, and trust.
 ## PROJECT STATUS
 
 ### Completed weeks
+
 **Week 1 — Foundation scaffold — DONE**
+
 - Week 1 — Foundation scaffold. FastAPI backend (port 8000) with
   /health and stubbed POST /conversation, PostgreSQL via async
   SQLAlchemy + Alembic (projects, conversations tables), Redis,
@@ -149,10 +152,13 @@ maintainability, scalability, transparency, and trust.
   services together. Verified end-to-end via `docker compose up`.
 
 ### What I learned — Week 1
+
 Claude Code fills this in after every week
 
 ---
+
 WEEK 1 — Foundation:
+
 - FastAPI is an async Python web framework. We use it because
   it handles multiple AI agent requests simultaneously without
   blocking — critical for a pipeline that runs parallel agents.
@@ -183,10 +189,11 @@ WEEK 1 — Foundation:
   (backend, frontend, postgres, redis) with one command, with
   healthchecks so the backend only starts once postgres and
   redis are ready.
+
 ---
 
-
 **Week 2 — Enhanced BA Agent — DONE**
+
 - Deterministic BA conversation driven by a LangGraph per-turn graph
   (ingest → advance → compose) with a Python controller owning the locked
   question order. GPT-4o mini handles only phrasing, extraction, complaint
@@ -198,7 +205,9 @@ WEEK 1 — Foundation:
   built-in mocks when keys are absent.
 
 ### Files created / changed in Week 2
+
 Backend (`backend/app/`):
+
 - `config.py` — added optional OPENAI / GOOGLE_PLACES / YELP keys + BA model/temp
 - `models.py` — added Requirement and DesignPreference tables
 - `schemas.py` — start / message / research-status request+response models
@@ -220,22 +229,24 @@ Backend (`backend/app/`):
   keyword fallback)
 - `alembic/versions/0002_ba_tables.py` — requirements + design_preferences
 - `requirements.txt` — added langgraph, openai, httpx
-Frontend (`frontend/app/`):
+  Frontend (`frontend/app/`):
 - `page.tsx` — chat UI: message bubbles, quick-choice buttons, mobile/plan/
   design/CI cards, "Researching your market" indicator, competitor source
   links, edit + start-over, blocked state
 - `globals.css` — pulse animation for the research indicator
-Docs / config:
+  Docs / config:
 - `docs/SAFETY_POLICY.md` — full prohibited-use policy and rationale
 - `.env` / `.env.example` / `docker-compose.yml` — pass the three API keys
 
 ### New database tables (Week 2)
+
 - `requirements` (id, project_id, requirement, source, is_locked, created_at)
   source = user_stated | competitor_insight | platform_suggested
 - `design_preferences` (id, project_id, style_vibe, reference_sites,
   brand_color, created_at)
 
 ### What now works end to end
+
 - Natural chat: greets back on small talk, asks ONE question at a time in the
   locked order, never uses technical words, remembers earlier answers.
 - Answer validation: vague/gibberish answers get re-asked (max 3), then
@@ -254,7 +265,6 @@ Docs / config:
 
 ---
 
-
 **Week 3 — Architect + Product Intelligence + Smarter BA — DONE**
 Pipeline is now: **BA (collect + understand) → Product Intelligence (review-gate)
 → Architect (blueprint)**. Verified end to end with an 8/8 automated stress test
@@ -263,6 +273,7 @@ budget mismatches, edit flow). Note: this week delivered BOTH the Architect
 (agent #3) and the Product Intelligence agent (agent #2), plus a BA overhaul.
 
 ### New agents / layers (Week 3)
+
 - **Architect Agent** (`app/architect/`, GPT-4o @ 0.2, never talks to user) —
   hybrid builder: deterministic rules own cloud sizing, LLM routing, third-party
   triggers (Stripe/email), mobile + security tickets; GPT-4o generates tech
@@ -280,7 +291,9 @@ budget mismatches, edit flow). Note: this week delivered BOTH the Architect
   LOCAL, customer-facing business.
 
 ### Files created / changed in Week 3
+
 Backend (`backend/app/`):
+
 - `architect/builder.py` + `architect/graph.py` — the Architect (blueprint +
   security + cloud tiers + llm_routing + setup steps)
 - `product_intel/reviewer.py` + `product_intel/graph.py` — the PI review
@@ -298,18 +311,20 @@ Backend (`backend/app/`):
 - `schemas.py` — pipeline start/status/review models
 - `alembic/versions/0003_architect.py` (summary_json + blueprints),
   `0004_product_reviews.py`
-Frontend (`frontend/app/`):
+  Frontend (`frontend/app/`):
 - `page.tsx` — PI review-gate card (budget verdict, recommendations, dropped
   features, priorities, missing essentials) with "Start smaller"/"Build it";
   Architect "Designing your app… → Design complete" handoff
 - `globals.css` — spin animation for the designing spinner
 
 ### New database (Week 3)
+
 - `projects.summary_json` — the full confirmed BA summary (Architect's input)
 - `blueprints` (id, project_id, blueprint_json, created_at)
 - `product_reviews` (id, project_id, review_json, created_at)
 
 ### What now works end to end (Week 3)
+
 - On confirmation the frontend auto-runs the **Product Intelligence review-gate**
   (POST /pipeline/review): shows budget verdict, recommendations, set-aside
   features, must-have priorities, and missing essentials on one card.
@@ -334,7 +349,6 @@ Frontend (`frontend/app/`):
 
 ---
 
-
 **Week 4 — Developer Agents (+ multi-provider codegen & shared contract) — DONE**
 Four Developer agents (Backend, Frontend, Mobile, Integration) build the
 blueprint's sprint tickets in parallel and store real code in generated_files.
@@ -342,6 +356,7 @@ Verified across 3 domains (coffee/telehealth/SaaS); best run: 20/20 files,
 0 needs_review, 0 fallbacks. The 8 Week-3 gating scenarios still pass 8/8.
 
 ### New agents / layers (Week 4)
+
 - **4 Developer agents** (`app/developers/agents.py`) — each ticket runs the exact
   5-step process: read ticket → check already-generated work → write code in
   chunks (skeleton, logic, error handling) → self-review → store. Recovery:
@@ -361,6 +376,7 @@ Verified across 3 domains (coffee/telehealth/SaaS); best run: 20/20 files,
   designed & why" for the user (no code, no jargon).
 
 ### Files created / changed in Week 4
+
 - `app/codegen.py` (new) — multi-provider routing + fallback + CODEGEN_MODE
 - `app/developers/agents.py`, `app/developers/orchestrator.py` (new)
 - `app/design_explain.py` (new) — headline + plain-English design explanation
@@ -378,26 +394,30 @@ Verified across 3 domains (coffee/telehealth/SaaS); best run: 20/20 files,
   CODEGEN_MODE
 
 ### New database (Week 4)
+
 - `generated_files` (id, project_id, ticket_id, filename, filepath, content,
   agent_type, status, created_at) — status: generated | needs_review
 - `pipeline_status` (id, project_id, stage, status, started_at, completed_at,
   error_message)
 
 ### What now works end to end
+
 Full pipeline: **BA → Product Intelligence review-gate → "Build it" → Architect
 (Designing your app…) → design-complete message + collapsible plain-English
 explanation → Developer agents (Building your app… X of Y files) → ready.**
 Files are stored in generated_files; the user never sees code.
 
 ### CODEGEN_MODE (cost control)
+
 - `real` (default) — honours the locked routing (Claude for UI). ~$1.40/build.
   Use for demos.
 - `cheap` — redirects every code-gen call to gemini-2.5-flash-lite. ~$0.02/build.
   Use while testing. Currently set to `cheap` in .env.
-- The blueprint still records the *intended* model; only the call is swapped.
+- The blueprint still records the _intended_ model; only the call is swapped.
 - Self-review always runs on gemini-2.5-flash-lite (halves Claude calls).
 
 ### Measured findings (real builds)
+
 - Claude Sonnet = best UI code (typed, validated, correct Next.js routing).
 - Gemini Flash-Lite = clean, FastAPI-consistent integration code, very cheap.
 - GPT-4o backend was fine ONCE the contract existed — the contract, not the
@@ -409,31 +429,107 @@ Files are stored in generated_files; the user never sees code.
   ≈ $3-4. Hence CODEGEN_MODE.
 
 ### Known gaps (for later weeks)
+
 - Generated code is a strong FIRST DRAFT, not a runnable app: nothing writes the
   files to disk, installs deps, assembles or runs them (that's DevOps #11).
 - Absolute imports (`backend.app.models`) may need packaging fixes — Code
   Reviewer's job.
 - No code export to disk yet (core rule: "full code export always available").
 
+---
+
+
+**Week 5 — Code Reviewer (#9) — DONE**
+Two-pass review over every generated file, auto-chained after the Developer
+build. Verified end to end (7/7 files secured, certificate issued) plus a
+manually-planted SQL-injection test that was caught and fixed. Checklist 8/8.
+
+### New agent / layer (Week 5)
+- **Code Reviewer** (`app/reviewer/reviewer.py`) — per file:
+  - PASS 1 general (mid-tier model from blueprint llm_routing.code_reviewer,
+    respects CODEGEN_MODE): correctness, error handling, performance,
+    scalability, readability.
+  - PASS 2 security (**ALWAYS claude-opus-4-8, hardcoded, bypasses cheap mode**):
+    auth bypass, SQL/code injection, cross-tenant data exposure, payment
+    manipulation, exposed secrets, missing encryption, missing authorization.
+  - Severity routing: minor/medium → auto-fix & continue; critical → STOP,
+    fix with Opus, re-run the security review, only pass when clean.
+  - The reviewer writes the fix directly (Opus fixes security issues); every
+    issue is logged in code_reviews.
+- **Reviewer orchestrator** (`app/reviewer/orchestrator.py`) — reviews all files
+  (concurrency 3), records code_reviews, updates fixed file content, issues the
+  security certificate, and sets project status `secured` / `security_blocked`.
+
+### Files created / changed in Week 5
+- `app/reviewer/reviewer.py`, `app/reviewer/orchestrator.py`, `app/reviewer/__init__.py` (new)
+- `app/codegen.py` — added `bypass_cheap` param (security must never use a cheap model)
+- `app/models.py` — CodeReview table
+- `app/main.py` — /pipeline/secure, /pipeline/{id}/security-status; _run_review
+  chains after build; stores security_cert in Redis
+- `app/schemas.py` — SecurityStatusResponse
+- `alembic/versions/0006_code_reviews.py` — code_reviews table
+- `frontend/app/page.tsx` — build→secure handoff; "Making sure everything is
+  safe and secure…" → "Security check passed ✓" + final message (NO model names)
+
+### New database (Week 5)
+- `code_reviews` (id, project_id, file_id, issues_found, issues_fixed,
+  security_passed, reviewed_by_model, created_at)
+
+### What now works end to end
+Full pipeline: **BA → PI review-gate → Build it → Architect (Designing…) →
+design explanation → Developers (Building… X of Y) → Code Reviewer (Making sure
+everything is safe and secure…) → Security check passed ✓.** Security review
+always runs on Opus 4.8; a security certificate JSON is issued
+(`{passed, model_used: claude-opus-4-8, issues_found, issues_fixed,
+files_reviewed, timestamp}`); the user never sees code, agent names, or model
+names. issues_fixed is clamped so it can never exceed issues_found.
+
+### Cost note (Week 5)
+Security review runs Opus on EVERY file and ignores CODEGEN_MODE by design, so a
+full build's security pass costs real Opus money (~$0.30-0.60 for ~7 files,
+~$1-2 for a large build). Test on small ideas; the machinery is proven.
+
 ### Current phase
-**Week 5 — Code Reviewer (#9) (see Weekly Claude Code Prompts v2).**
-Code quality + security; security review ALWAYS Claude Opus 4.8. It should catch
-hallucinated imports, insecure CORS, and cross-file inconsistencies.
+**Week 6 — (see Weekly Claude Code Prompts v2).** Likely QA Agent (#10) and/or
+Design Review (#8). QA/Docs/Cost use Gemini 2.5 Flash-Lite per the updated
+routing. Also still pending: Qdrant vector store, code export to disk, and the
+DevOps deploy step that turns generated files into a running/hosted app.
 
 ### What NOT to touch next session
-- Do NOT modify the BA, Product Intelligence, Architect, or Developer agents
-  unless the new week requires it — all tested and locked.
-- Do NOT change existing schemas or migrations (0001–0005), the Redis
-  conversation/pipeline/build state formats, or the /conversation/* and
+- Do NOT modify the BA, Product Intelligence, Architect, Developer, or Code
+  Reviewer agents unless the new week requires it — all tested and locked.
+- Do NOT change existing schemas or migrations (0001–0006), the Redis
+  conversation/pipeline/build/secure state formats, or the /conversation/* and
   /pipeline/* endpoint contracts.
-- Do NOT weaken the BINDING PROJECT CONTRACT or the foundation-first ordering —
-  it is what keeps generated files consistent.
-- Do NOT change CODEGEN_MODE defaults (`real` must stay the default) or the
-  locked routing; security review stays Claude Opus 4.8.
-- Do NOT build Design Review, QA, DevOps, Documentation, Monitoring, Auto-fix,
+- Do NOT weaken the BINDING PROJECT CONTRACT or the foundation-first ordering.
+- Security review is ALWAYS claude-opus-4-8 and must always keep bypass_cheap —
+  never let CODEGEN_MODE or budget downgrade it.
+- Do NOT change CODEGEN_MODE defaults (`real` stays the default) or the locked
+  routing.
+- Do NOT build QA, Design Review, DevOps, Documentation, Monitoring, Auto-fix,
   or Cost Tracker agents until their week.
 
+### What I learned — Week 5
+- Separation of concerns in review: one pass judges quality (cheap model), a
+  second pass judges ONLY security (the expensive, best model). Keeping them
+  separate means security is never diluted by or traded off against cost.
+- A hardcoded, non-negotiable rule needs an escape hatch in the plumbing, not in
+  the policy: the cheap-mode override had to gain a `bypass_cheap` flag so the
+  security pass could always reach Opus even when everything else is downgraded.
+- Detect-and-fix beats detect-and-flag: having the security model (Opus) both
+  find AND fix the vulnerability, then re-review its own fix, is cheaper and
+  safer than bouncing the file back to a cheaper Developer that might reintroduce
+  the bug.
+- Trust-but-verify loop: on a critical issue, don't just fix — re-run the review
+  to confirm the fix, bounded by a retry cap, then block the pipeline if it
+  still fails. Never silently pass security.
+- Cost is a hard constraint even for security: Opus-on-every-file is expensive,
+  so it must be reserved for what truly needs it and tested on small builds.
+
 ### What I learned — Week 4
+
+### What I learned — Week 4
+
 - Parallel agents need a dependency graph: asyncio runs independent tickets
   simultaneously while dependents wait — that's just a topological sort with
   `asyncio.gather` per wave.
@@ -454,6 +550,7 @@ hallucinated imports, insecure CORS, and cross-file inconsistencies.
   pipeline never silently ships broken work.
 
 ### What I learned — Week 3
+
 - An AI agent shouldn't be a rigid form-filler. The big lesson was splitting
   UNDERSTANDING (LLM: classify the idea, extract clean facts) from CONTROL
   (deterministic rules: which question next, what to skip). Rules on top of LLM
@@ -493,30 +590,52 @@ three prompts in order:
 ## FUTURE OPTIMIZATIONS — after demo is complete
 
 ### 1. Competitive Intelligence refactor
+
 Current: Google Places API + Yelp API + GPT-4o mini
-Future: Gemini 3.5 Flash with native Google Search 
+Future: Gemini 3.5 Flash with native Google Search
 grounding — one API call replaces all three
 Reason: simpler architecture, fewer dependencies
 Status: DO NOT TOUCH until demo is recorded
 
 ### 2. Gemini routing for Weeks 4 onwards
+
 - Integration Developer: Gemini 2.5 Flash-Lite
 - QA Agent: Gemini 2.5 Flash-Lite
 - Documentation Agent: Gemini 2.5 Flash-Lite
 - Cost Tracker Agent: Gemini 2.5 Flash-Lite
-Reason: $0.10/$0.40 per MTok — cheapest option
-for simple generation tasks
+  Reason: $0.10/$0.40 per MTok — cheapest option
+  for simple generation tasks
 
+### 3. Native App Store submission automation (post-demo)
+
+Researched: Apple App Store Guideline 4.2.6 explicitly forbids
+app-generation platforms from submitting apps on clients' behalf
+under a shared/platform-owned developer account. This is a hard
+rule, not a gray area — violating it risks app rejection and
+platform account bans. Confirmed via Apple's official guidelines
+and how Bubble/GoodBarber/Adalo comply.
+
+CORRECT approach (already matches our BA-stage design):
+
+- Each user must have their OWN Apple Developer account ($99/yr),
+  disclosed at BA stage — already implemented correctly.
+- Future automation opportunity: once the user has their own
+  account, automate build packaging + App Store Connect
+  submission using THEIR OWN API keys (same pattern Bubble uses).
+- Do NOT build a shared/platform-owned Apple Developer account
+  submission pipeline. Explicitly against Apple policy.
+  Status: Not needed for demo. Real DevOps feature for later,
+  scoped correctly — automating the user's account, not replacing it.
 
 ## MODEL SWITCH — scheduled for after Week 8
 
 Do NOT switch any model before Week 8 is complete.
-All current routing (GPT-4o / GPT-4o mini / Gemini 2.5 
-Flash-Lite / claude-sonnet-4-6 / claude-opus-4-8) stays 
+All current routing (GPT-4o / GPT-4o mini / Gemini 2.5
+Flash-Lite / claude-sonnet-4-6 / claude-opus-4-8) stays
 exactly as-is through Weeks 4-8.
 
-After Week 8 passes testing, switch to VERIFIED model 
-strings in one dedicated session, retest each agent 
+After Week 8 passes testing, switch to VERIFIED model
+strings in one dedicated session, retest each agent
 individually before moving to the next:
 
 1. BA Conversation → GPT-5.6 Luna
@@ -536,7 +655,7 @@ individually before moving to the next:
 15. Auto-fix → claude-opus-4-8 (upgrade from GPT-4o)
 16. Cost Tracker → Gemini 2.5 Flash-Lite — UNCHANGED
 
-Always use full versioned model strings, never generic 
+Always use full versioned model strings, never generic
 aliases (e.g. claude-sonnet-5 not claude-sonnet).
 
 ---
@@ -591,6 +710,7 @@ Two categories. Do not treat them the same.
    on that specific piece.
 
 ### CORE PRINCIPLE — never compromise on this
+
 Cost optimization touches the HOW (caching, batching, routing
 mechanics) — never the WHAT a model is capable of doing on
 tasks that matter. Security review stays Claude Opus 4.8 at
@@ -599,6 +719,7 @@ Savings come from not paying for the same reasoning twice —
 not from asking for less reasoning where it counts.
 
 ### Implementation priority when we get to it
+
 1. Prompt caching on the contract (do this first — biggest win)
 2. Batch API for background agents
 3. Effort level testing (test-then-lock, not assume-then-ship)
@@ -607,6 +728,91 @@ not from asking for less reasoning where it counts.
 Status: NOT YET IMPLEMENTED. Revisit after Week 8 model switch
 testing, same session or the one right after.
 
+## POST-REVIEW DESIGN DECISIONS — external review synthesis
+
+Based on independent review from two AI models, converged
+recommendations below. Confirmed decisions to implement.
+
+### 1. Authentication — delegate, don't roll custom
+
+Drop custom password hashing in generated apps. Architect
+generates an auth ticket instructing Backend Dev to integrate
+a third-party identity provider (Auth0 / Clerk / AWS Cognito)
+instead of building auth from scratch.
+Tiering logic stays as designed:
+
+- Basic tier: standard provider auth (email/password via provider)
+- 2FA required tier: triggered when payments, PII, or employee
+  data are present in the app's feature set
+- Passkey support: offered as a Scale-tier default
+  Reason: non-technical users' apps should never have custom-built
+  credential handling — a provider gives a secure, standardized
+  baseline (OAuth2/OIDC, built-in MFA) without risking Developer
+  Agent implementation flaws.
+
+### 2. Architect Agent — promote to top-tier model
+
+Move Architect from GPT-4o to claude-opus-4-8 (already planned
+in MODEL SWITCH section — this confirms and prioritizes it).
+Reason: a flawed blueprint gets perfectly executed by downstream
+agents. Security-tier reasoning is needed at the design stage,
+not just at the code-review stage — a wrong schema or API
+paradigm can't be patched by even the best security review later.
+
+### 3. Stripe integration — in-app Connect flow, not platform-mediated
+
+When Architect detects payment intent (explicit or implied,
+e.g. "tip"), it generates a real Stripe Connect OAuth ticket
+for the GENERATED APP itself — not a platform-side connection.
+
+Flow:
+
+- Business owner's own deployed app has a "Connect Stripe"
+  action (e.g. in an admin/settings screen)
+- Owner clicks it, gets redirected to Stripe's own hosted OAuth
+  flow, connects their own Stripe account directly
+- Token is stored in the app's own database, encrypted, never
+  touches the platform or any Developer Agent's output directly
+- Payment UI (e.g. "Pay Now" buttons) ships VISIBLE but DISABLED
+  before Stripe is connected, showing: "Connect Stripe to start
+  accepting payments" with a link to the connect flow
+  (Option A — chosen over fully hiding payment UI pre-setup,
+  for transparency)
+
+Reason: platform never touches user payment credentials at all —
+not even a token. Reduces platform liability significantly. Also
+matches the "fully exportable, no vendor lock-in" core rule —
+since the connection lives inside the generated app's own code,
+exporting/self-hosting the app later doesn't break payments.
+
+Tradeoff to track: this makes Stripe Connect a real generated
+FEATURE (OAuth handler + secure token storage + settings screen),
+not just a setup instruction. Code Reviewer's security pass
+(Week 5) must specifically verify this ticket — encrypted token
+storage, correct OAuth implementation, no credential leakage in
+generated code.
+
+Documentation Agent (Week 8) must cover "how to connect your
+Stripe account" in the handoff guide, since the app ships in a
+payments-visible-but-not-yet-connected state.
+
+### 4. Not changing (deliberate, despite feedback)
+
+- Cheap-model self-review stays as-is: Week 4 data (20/20 files,
+  0 needs_review) validates it works for contract-compliance
+  checks specifically. Reviewer concern ("dumb boss problem")
+  applies more to open-ended judgment review — relevant for the
+  real Code Reviewer agent (Week 5), not self-review.
+- Flat-fee unlimited changes stays as-is: deliberate differentiator
+  against competitor credit-fatigue complaints identified in
+  original market research. Not reversing without real usage data.
+
+### 5. Open, not yet decided
+
+- Regulatory compliance detection (HIPAA/PCI/GDPR) — only one
+  reviewer raised this. Architect currently detects payments but
+  not health-data or EU-user scenarios. Real gap, new scope,
+  revisit before building anything in a regulated-data domain.
 
 ## REFERENCE — NOT FOR CLAUDE CODE TO RE-READ EVERY SESSION
 
@@ -615,3 +821,244 @@ full detail, every market problem solved, full interview
 preparation, complete tech stack reasoning) is kept separately
 on the builder's computer. It is not uploaded into this project.
 This CONTEXT.md is the condensed version Claude Code needs.
+
+
+---
+---
+
+# COMPREHENSIVE SESSION HANDOFF — pick-up guide for a fresh engineer
+_(Written at end of the session that built Weeks 3, 4, 5. Read this to resume
+with zero prior context. The per-week sections above have the summaries; this
+section adds the full "how it actually works, what's half-done, and the traps".)_
+
+## 0. HONESTY NOTE on "auth / Architect-tier / Stripe Connect decisions"
+These were requested in the handoff prompt, but this session did NOT hold a
+distinct discussion or make explicit decisions on those three. To avoid
+misleading a new engineer, here is what ACTUALLY exists in the code (behavior,
+not a debated decision):
+- **Auth:** no real auth system exists on the PLATFORM itself (no login for the
+  AI-org tool). The GENERATED apps' code includes auth (password hashing, JWT,
+  Depends-based checks) because the Architect's security section mandates it and
+  the Code Reviewer enforces it — but that is generated output, not platform auth.
+- **Architect "tiers":** the Architect's cloud_config has three sizes —
+  small ($15, 1 vCPU/1GB), medium ($50, 2 vCPU/4GB), large ($150, 4 vCPU/8GB +
+  load balancer + autoscaling) — chosen deterministically from budget + plan +
+  user count (see `app/architect/builder.py` `_decide_tier`/`_cloud_config`).
+  These map to the BA "Quick/Production/Scale" plans.
+- **Stripe:** the Architect adds plain **Stripe** (NOT Stripe Connect) to
+  `third_party_apis` when payments are detected, marked `who_handles: user` with
+  plain-English setup steps. Stripe Connect was never discussed or built.
+
+## 1. HOW TO RUN / RESUME
+```
+cd "…/ai-org"
+docker compose up -d           # after backend code edits: docker compose build --no-cache backend && docker compose up -d
+```
+- Platform UI (the AI-org tool): http://localhost:3000
+- API: http://localhost:8000  · interactive docs: http://localhost:8000/docs
+- 4 containers: backend (8000), frontend (3000), postgres (5432), redis (6379).
+- Migrations auto-run on backend start (`alembic upgrade head`). Currently 0001–0006.
+- `.env` holds real keys (OPENAI, GOOGLE_PLACES, YELP, ANTHROPIC, GEMINI) and
+  `CODEGEN_MODE`. `.env` is gitignored; only `.env.example` (blank) is committed.
+- GitHub: PRIVATE repo `Rajkumar2002-Rk/ai-org` (branch master). `.gitignore`
+  excludes `.env` and `practice/` (the user's personal study notes). Commits use
+  the user's identity only — **do NOT add a Co-Authored-By/Claude line** (user rule).
+
+## 2. THE FULL PIPELINE (end to end, all verified this session)
+User flow, each stage, and the endpoint/table behind it:
+1. **BA conversation** (`app/ba/`) — deterministic LangGraph turn engine +
+   Python controller owning question order; an LLM "understanding" layer
+   classifies + extracts. Endpoints: POST /conversation/start,
+   POST /conversation/message, GET /conversation/{id}/research-status. State
+   lives in Redis (`ba:state:{id}`, 7-day TTL). On confirm it writes
+   requirements + design_preferences, and the full summary JSON to
+   `projects.summary_json`.
+2. **Product Intelligence review-gate** (`app/product_intel/`) — POST
+   /pipeline/review runs PI (GPT-4o @0.4 + deterministic budget check), returns
+   recommendations, refines summary_json (prunes features, adds priorities +
+   missing_essentials), writes `product_reviews`. Frontend shows a review card
+   with a "Start smaller" downgrade button when budget is tight.
+3. **Architect** (`app/architect/`) — POST /pipeline/start (optional
+   `plan_override`) runs GPT-4o @0.2 hybrid builder → blueprint (tech_stack,
+   database_schema, api_endpoints, third_party_apis+setup_steps, sprint_tickets,
+   `security` section, llm_routing, cloud_config). Stored in `blueprints`.
+   Redis `pipeline:status:{id}`. Also generates a plain-English design
+   explanation (`app/design_explain.py`) stored at Redis `design_explain:{id}`,
+   exposed via GET /pipeline/{id}/design-explanation.
+4. **Developers** (`app/developers/`) — POST /pipeline/build runs 4 agents
+   (backend/frontend/mobile/integration) in asyncio dependency waves. Foundation
+   tickets (FND-1 models.py, FND-2 database.py) run FIRST; their real code + a
+   BINDING CONTRACT are injected into every later agent. 5-step process per
+   ticket (read→reuse→chunked code→self-review→store); recovery 3 tries then
+   `needs_review`. Files → `generated_files`. Redis `build:status:{id}`. Progress
+   via GET /pipeline/{id}/build-status (filenames + X of Y; NO code to user).
+5. **Code Reviewer** (`app/reviewer/`) — POST /pipeline/secure auto-triggered by
+   the frontend when build is done. Two passes PER FILE: Pass 1 general
+   (mid-tier, respects CODEGEN_MODE), Pass 2 security (**ALWAYS claude-opus-4-8,
+   bypasses cheap mode**). Fixes minor/medium automatically; critical → stop,
+   fix with Opus, re-review, block if unresolved. Writes `code_reviews`, updates
+   fixed file content, issues a security certificate (Redis `security_cert:{id}`),
+   sets project `secured` / `security_blocked`. Status via GET
+   /pipeline/{id}/security-status. UI shows only "Making sure everything is safe
+   and secure…" → "Security check passed ✓" + a fixed user message. NO model names.
+
+## 3. DATA MODEL (Postgres tables; models in `app/models.py`)
+- `projects` (id, prompt, status, **summary_json**, created_at) — status flows:
+  created→gathering_requirements→requirements_confirmed→reviewed→designed→
+  built→secured (or rejected / security_blocked).
+- `conversations`, `requirements` (source, is_locked), `design_preferences`.
+- `blueprints` (blueprint_json), `product_reviews` (review_json).
+- `generated_files` (ticket_id, filename, filepath, content, agent_type, status).
+- `pipeline_status` (stage, status, started_at, completed_at, error_message).
+- `code_reviews` (file_id, issues_found, issues_fixed, security_passed,
+  reviewed_by_model).
+Redis keys: `ba:state:{id}`, `ba:ci:{id}`, `pipeline:status:{id}`,
+`design_explain:{id}`, `build:status:{id}`, `secure:status:{id}`,
+`security_cert:{id}`.
+
+## 4. MODELS / ROUTING / CODEGEN_MODE (important + non-obvious)
+- Multi-provider layer: `app/codegen.py` — routes by model name: `claude-*`→
+  Anthropic, `gemini-*`→Google, else OpenAI. Graceful fallback to GPT-4o if a
+  provider errors; deterministic stub if none. `app/llm.py` is the SEPARATE
+  BA/PI wrapper (OpenAI only: chat, complete_json, moderate).
+- Blueprint llm_routing (current, matches CONTEXT locked routing): backend=gpt-4o,
+  frontend=claude-sonnet, mobile=claude-sonnet, integration=gemini-2.5-flash-lite,
+  code_reviewer=gpt-4o-mini, security_review=claude-opus-4-8.
+- **Real model IDs actually called** (these ROT — Google/Anthropic retire ids):
+  claude-sonnet→`claude-sonnet-5`; claude-opus-4-8→`claude-opus-4-8`;
+  gemini-2.5-flash-lite→`gemini-flash-lite-latest` (use the -latest alias, dated
+  ids get retired). Anthropic calls must NOT send `temperature` (newer models
+  reject it). See `_ANTHROPIC_IDS`, `_GEMINI_IDS` in codegen.py.
+- **CODEGEN_MODE** (`.env`): `real` (default) honors routing; `cheap` redirects
+  every codegen call to gemini-flash-lite-latest (~$0.02/build). Currently set to
+  `cheap`. Set to `real` for demos. `bypass_cheap=True` in codegen.generate
+  disables the override — used ONLY by the security pass (Opus must never be
+  downgraded). Self-review always runs on Gemini (REVIEW_MODEL in agents.py).
+
+## 5. KEY DECISIONS MADE THIS SESSION (with reasoning)
+- **Smarter BA = hybrid, not a rewrite.** Deterministic controller keeps flow
+  control (one question, order, safety-first); LLM adds understanding
+  (classify + extract). Rejected fully-LLM-driven (hallucination risk the user
+  had hit before).
+- **is_local gating.** Location question + competitive research only run when the
+  app is a LOCAL, customer-facing business (`is_local && customer_facing`).
+  Killed the "which city?" for gambling/SaaS apps and "business near Austin"
+  nonsense. Internal staff tools skip both.
+- **Added ASK_PLATFORM stage** — asks "website/app/both?" only when the idea
+  doesn't make it clear; "X or Y" is treated as undecided → ask.
+- **Product Intelligence = review-gate screen, not a chat** (respects "BA is the
+  only conversational agent"). Does all four: budget-vs-scale reality check,
+  feature pruning, must/nice priorities, missing essentials.
+- **Budget teeth** — PI's "Start smaller" button actually downgrades the plan
+  (plan_override) before the Architect sizes cloud_config.
+- **Security by design** — every blueprint carries a security section; the
+  actual review is Opus 4.8.
+- **BINDING PROJECT CONTRACT (the big Week-4 fix)** — freeze schema/endpoints/
+  module layout, build foundation (models.py/database.py) first, inject the real
+  foundation code + contract into every Developer prompt. This, not model choice,
+  fixed cross-file consistency.
+- **Backend model = GPT-4o (kept locked).** We A/B tested GPT-4o vs Claude for
+  the backend security file; Claude was more careful, but once the CONTRACT
+  existed GPT-4o stayed clean too — proving the contract did the work. User
+  briefly asked to move all codegen to Claude, then reverted to the locked
+  routing after seeing cost.
+- **Self-review on Gemini** (cheap yes/no) to halve Claude calls per ticket.
+- **Code Reviewer fixes files directly** (Opus writes the security fix and
+  re-reviews its own fix) rather than bouncing back to a cheaper Developer that
+  could reintroduce the bug. Issues are still logged per file for accountability.
+- **CODEGEN_MODE cost switch** added so testing is ~free; `real` reserved for
+  demos. Security always ignores it.
+
+## 6. BUGS FOUND + ROOT CAUSE + FIX (this session)
+- **Competitive intel produced irrelevant features / asked location on
+  non-local apps.** Root cause: CI ran on any business-type+city, and location
+  was always asked. Fix: `is_local && customer_facing` gate in
+  `app/ba/controller.py` `_needs_market_research`.
+- **classifier read "website or app" as "both"** (built a mobile app nobody
+  asked for). Fix: in `understanding.classify`, "or"/ambiguous → platform
+  "unknown" → ask.
+- **BA stored raw junk** ("yes my store name is raja" as the name; "bro its just
+  me" as user count). Fix: LLM extraction in `app/ba/understanding.py`
+  (extract_name, normalize_users) + is_single_user skip.
+- **Budget question then ignored** (offered $150 plan to a $20 budget). Fix:
+  budget-aware plan recommendation + "Start smaller" downgrade.
+- **Cross-file drift in generated code** — files disagreed on field names
+  (total_amount vs price), redefined Base, hallucinated `starlette.rate_limiting`,
+  used Flask in a FastAPI project, insecure CORS (`*`+credentials). Root cause:
+  each agent generated in isolation. Fix: the BINDING CONTRACT + foundation-first
+  (verified gone across coffee/telehealth/SaaS builds).
+- **LangGraph error 'review is already a state key'** — node name collided with
+  the PIState key. Fix: renamed node to `analyze` in product_intel/graph.py.
+- **Anthropic 400 "temperature is deprecated for this model."** Fix: removed
+  `temperature` from the Anthropic call in codegen.py.
+- **Gemini 404s** — `gemini-2.5-flash-lite`/`gemini-2.0-flash` retired for new
+  users. Fix: use `gemini-flash-lite-latest` alias.
+- **Gemini quota `limit: 0`** — free tier not enabled on the key's project. Fixed
+  by the user adding billing; the key format `AQ.` also non-standard but works.
+- **Docker layer cache didn't pick up Python edits** after `up -d --build`. Fix:
+  `docker compose build --no-cache backend`. REMEMBER THIS TRAP.
+- **issues_fixed > issues_found** in code_reviews — re-review fixes inflated the
+  fixed count. Fix: count re-review issues into `found` + `min(fixed, found)`
+  clamp in reviewer.py.
+
+## 7. WHAT IS VERIFIED WORKING END TO END
+- Full BA→PI→Architect→Developers→CodeReviewer chain, in the UI and via API.
+- 8/8 Week-3 gating scenarios (BA/PI/Architect) — though 3 are LLM-non-
+  deterministic on borderline classify() cases (see gaps).
+- Developer builds across 3 domains (coffee/telehealth/SaaS), contract holds,
+  0 fallbacks with all 3 real providers.
+- Code Reviewer: real 7-file build fully secured + certificate; planted SQL
+  injection caught and fixed by Opus; security always used claude-opus-4-8 even
+  in cheap mode; UI leaks no model names (grep-verified).
+
+## 8. WHAT IS NOT DONE / LEFT MID-TASK (critical for a new engineer)
+- **The generated app is NOT runnable/deployed.** Generated code is stored as
+  TEXT in `generated_files`. Nothing writes files to disk, installs deps,
+  assembles, runs, or hosts them. There is NO live URL for a generated app.
+  That is the **DevOps agent (#11)**, a future week. localhost:3000 is the
+  PLATFORM, not any generated app.
+- **No code export to disk** yet (core rule says "full code export always
+  available") — not implemented.
+- **Absolute imports** in generated code (`backend.app.models`) may not resolve
+  when packaged — flagged for the Code Reviewer / a future assembly step.
+- **Qdrant vector store** (in the locked tech stack) — not added.
+- **Agents built:** BA(#1), Product Intelligence(#2), Architect(#3),
+  Developers(#4–7), Code Reviewer(#9). **NOT built:** Design Review(#8),
+  QA(#10), DevOps(#11), Documentation(#12), Monitoring(#13), Auto-fix(#14),
+  Cost Tracker(#15).
+- **8-scenario gating is non-deterministic** on borderline classifications
+  (restaurant-staff internal vs customer-facing; "iPhone app" platform;
+  "tip"→payment). Same code passed 8/8 before; a robustness gap in `classify()`,
+  not a regression. Consider few-shot hardening.
+- **The codebase-tour teaching activity with the user paused at
+  `backend/app/database.py`** (a learning walkthrough, not code work) — resume
+  the tour there if the user asks.
+- **Cost caution:** full `real` builds cost real Claude money; the security pass
+  costs real Opus money on EVERY file regardless of CODEGEN_MODE. Test on small
+  ideas. The user has limited Claude/Gemini credit and watches it closely.
+
+## 9. TRAPS / CONVENTIONS A NEW ENGINEER MUST KNOW
+- After editing backend Python: `docker compose build --no-cache backend`
+  (plain --build has silently served stale code).
+- Never commit `.env`; never add a Claude co-author to commits (user rule).
+- Security review is ALWAYS claude-opus-4-8 with bypass_cheap — never let budget
+  or CODEGEN_MODE downgrade it (hard core rule).
+- User-facing text must never contain code, agent names, or model names.
+- Model IDs rot — prefer "-latest" aliases and keep graceful fallback.
+- The user tests manually first, then asks for automation; be honest about cost
+  before running expensive multi-model / Opus builds.
+
+---
+
+## GITHUB & COMMIT RULES (permanent — always follow)
+- **Remote:** PRIVATE GitHub repo `Rajkumar2002-Rk/ai-org` (branch `master`).
+  Keep it PRIVATE — CONTEXT.md contains the full product strategy.
+- **NEVER add a co-author.** Do NOT add any `Co-Authored-By:` line, and never
+  attribute commits to Claude/AI. Commits use the user's identity ONLY
+  (Rajkumar2002-Rk <rajkumarn2002@gmail.com>).
+- **Never commit secrets.** `.env` and `practice/` are gitignored — keep them
+  that way. Before any push, verify `.env` is NOT staged and scan the diff for
+  real keys (sk-proj / sk-ant / AIza / AQ. / sk_live / AKIA).
+- **Push cadence:** commit + push at the end of each week (and whenever the user
+  asks), so nothing is lost.
+- Normal flow: `git add -A && git commit -m "…" && git push`.

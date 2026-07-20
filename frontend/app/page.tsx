@@ -26,12 +26,14 @@ export default function Home() {
   const [picks, setPicks] = useState<number[]>([]);
   const [showSources, setShowSources] = useState(false);
   const [pipeline, setPipeline] = useState<
-    "idle" | "reviewing" | "review" | "designing" | "building" | "ready" | "error"
+    | "idle" | "reviewing" | "review" | "designing" | "building"
+    | "securing" | "secured" | "error"
   >("idle");
   const [review, setReview] = useState<any>(null);
   const [designExplain, setDesignExplain] = useState<any>(null);
   const [showDesign, setShowDesign] = useState(false);
   const [build, setBuild] = useState<any>(null);
+  const [security, setSecurity] = useState<any>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -180,8 +182,8 @@ export default function Home() {
         const data = await res.json();
         setBuild(data);
         if (data.status === "done") {
-          setPipeline("ready");
           clearInterval(t);
+          startSecure();
         } else if (data.status === "error") {
           setPipeline("error");
           clearInterval(t);
@@ -190,6 +192,43 @@ export default function Home() {
         /* keep polling */
       }
     }, 2000);
+    return () => clearInterval(t);
+  }, [pipeline, projectId]);
+
+  async function startSecure() {
+    if (projectId == null) return;
+    setPipeline("securing");
+    try {
+      await fetch(`${API_URL}/pipeline/secure`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+    } catch {
+      setPipeline("error");
+    }
+  }
+
+  // Poll the Code Reviewer until the security check completes.
+  useEffect(() => {
+    if (pipeline !== "securing" || projectId == null) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/pipeline/${projectId}/security-status`);
+        const data = await res.json();
+        if (data.status === "done") {
+          setSecurity(data.certificate);
+          setPipeline("secured");
+          clearInterval(t);
+        } else if (data.status === "error") {
+          setSecurity(data.certificate);
+          setPipeline("error");
+          clearInterval(t);
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2500);
     return () => clearInterval(t);
   }, [pipeline, projectId]);
 
@@ -203,6 +242,7 @@ export default function Home() {
     setDesignExplain(null);
     setShowDesign(false);
     setBuild(null);
+    setSecurity(null);
     await start();
   }
 
@@ -545,12 +585,20 @@ export default function Home() {
             </div>
           )}
 
-          {pipeline === "ready" && (
+          {/* Security review — no technical details, no model names */}
+          {pipeline === "securing" && (
             <div style={s.pipeline}>
-              <span style={s.doneMark}>✓</span>
-              <span>
-                Your app is ready — {build?.complete ?? ""} files built.
-              </span>
+              <span style={s.spinner} />
+              <span>Making sure everything is safe and secure…</span>
+            </div>
+          )}
+          {pipeline === "secured" && (
+            <div style={s.reviewCard}>
+              <div style={s.reviewTitle}>Security check passed ✓</div>
+              <div style={s.designBody}>
+                Your app passed all security checks. Your data is protected.
+                Security review completed by our most advanced AI model.
+              </div>
             </div>
           )}
           {pipeline === "error" && (

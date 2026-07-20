@@ -24,11 +24,13 @@ from app.models import (
     Project,
 )
 from app.product_intel import graph as pi_graph
+from app.reviewer import orchestrator as reviewer_orchestrator
 from sqlalchemy import func as sqlfunc, select
 from app.redis_client import redis_client
 from app.schemas import (
     BuildStatusResponse,
     DesignExplanationResponse,
+    SecurityStatusResponse,
     MessageRequest,
     MessageResponse,
     PipelineStartRequest,
@@ -95,6 +97,35 @@ async def _run_build(project_id: int) -> None:
 
 def _build_key(project_id: int) -> str:
     return f"build:status:{project_id}"
+
+
+def _secure_key(project_id: int) -> str:
+    return f"secure:status:{project_id}"
+
+
+async def _run_review(project_id: int) -> None:
+    """Background job: run the Code Reviewer (general + Opus security passes)."""
+    try:
+        async with async_session() as db:
+            row = (await db.execute(
+                select(Blueprint.blueprint_json)
+                .where(Blueprint.project_id == project_id)
+                .order_by(Blueprint.id.desc()).limit(1)
+            )).first()
+        if row is None:
+            await redis_client.set(_secure_key(project_id), "error", ex=86400)
+            return
+        blueprint = json.loads(row[0])
+        certificate = await reviewer_orchestrator.run(project_id, blueprint)
+        await redis_client.set(
+            f"security_cert:{project_id}", json.dumps(certificate), ex=86400
+        )
+        await redis_client.set(
+            _secure_key(project_id), "done" if certificate["passed"] else "error", ex=86400
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("Security review failed for project %s", project_id)
+        await redis_client.set(_secure_key(project_id), "error", ex=86400)
 
 
 @asynccontextmanager
@@ -332,3 +363,28 @@ async def build_status(project_id: int, db: AsyncSession = Depends(get_db)):
     return BuildStatusResponse(
         status=status, total=total, complete=len(files), files=files
     )
+
+
+@app.post("/pipeline/secure", response_model=SecurityStatusResponse)
+async def pipeline_secure(
+    req: PipelineStartRequest, db: AsyncSession = Depends(get_db)
+):
+    """Kick off the Code Reviewer (general + Opus security passes) in background."""
+    result = await db.execute(
+        select(GeneratedFile.id).where(GeneratedFile.project_id == req.project_id).limit(1)
+    )
+    if result.first() is None:
+        raise HTTPException(status_code=400, detail="No generated files to review yet")
+    if await redis_client.get(_secure_key(req.project_id)) == "running":
+        return SecurityStatusResponse(status="running")
+    await redis_client.set(_secure_key(req.project_id), "running", ex=86400)
+    asyncio.create_task(_run_review(req.project_id))
+    return SecurityStatusResponse(status="running")
+
+
+@app.get("/pipeline/{project_id}/security-status", response_model=SecurityStatusResponse)
+async def security_status(project_id: int):
+    status = await redis_client.get(_secure_key(project_id)) or "not_started"
+    cert_raw = await redis_client.get(f"security_cert:{project_id}")
+    cert = json.loads(cert_raw) if cert_raw else None
+    return SecurityStatusResponse(status=status, certificate=cert)

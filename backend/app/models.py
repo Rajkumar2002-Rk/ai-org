@@ -39,6 +39,9 @@ class Project(Base):
     pipeline_stages: Mapped[list["PipelineStatus"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    code_reviews: Mapped[list["CodeReview"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Conversation(Base):
@@ -165,3 +168,24 @@ class PipelineStatus(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     project: Mapped["Project"] = relationship(back_populates="pipeline_stages")
+
+
+class CodeReview(Base):
+    __tablename__ = "code_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    file_id: Mapped[int] = mapped_column(
+        ForeignKey("generated_files.id", ondelete="CASCADE"), nullable=False
+    )
+    issues_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    issues_fixed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    security_passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    reviewed_by_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="code_reviews")

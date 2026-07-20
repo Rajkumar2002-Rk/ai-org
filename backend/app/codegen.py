@@ -76,7 +76,13 @@ async def _via_google(model: str, system: str, user: str, temperature: float) ->
     return (resp.text or "").strip()
 
 
-async def generate(model: str, system: str, user: str, temperature: float = 0.1) -> tuple[str | None, str]:
+async def generate(
+    model: str,
+    system: str,
+    user: str,
+    temperature: float = 0.1,
+    bypass_cheap: bool = False,
+) -> tuple[str | None, str]:
     """Generate text with the routed model. Returns (text, model_used).
 
     Falls back to OpenAI GPT-4o if the routed provider isn't configured,
@@ -84,10 +90,12 @@ async def generate(model: str, system: str, user: str, temperature: float = 0.1)
 
     When CODEGEN_MODE=cheap, every request is redirected to the budget model
     so testing costs pennies. The blueprint still records the model the
-    routing *intended*; only the actual call is swapped.
+    routing *intended*; only the actual call is swapped. ``bypass_cheap=True``
+    disables that override — used by the security review, which must ALWAYS
+    run on Claude Opus 4.8 regardless of cost or mode (core rule).
     """
     requested = model
-    if settings.codegen_mode.lower() == "cheap":
+    if settings.codegen_mode.lower() == "cheap" and not bypass_cheap:
         model = settings.codegen_cheap_model
 
     provider = resolve_provider(model)
