@@ -37,7 +37,8 @@ async def explanation(summary: dict, blueprint: dict) -> str:
         "website_or_app": _platform_word(summary.get("mobile_choice")),
         "key_features": (summary.get("priorities", {}) or {}).get("must_have", []),
         "protects_payments": any(
-            a.get("name") == "Stripe" for a in blueprint.get("third_party_apis", [])
+            "stripe" in (a.get("name") or "").lower()
+            for a in blueprint.get("third_party_apis", [])
         ),
     }
     text = await llm.chat(_SYS, f"Details: {context}", temperature=0.5)

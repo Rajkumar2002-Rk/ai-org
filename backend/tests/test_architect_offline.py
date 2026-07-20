@@ -1,0 +1,295 @@
+"""Offline Architect gating + Stripe-Connect + delegated-auth test.
+
+Runs with ZERO LLM spend: it monkeypatches app.llm.complete_json to return None,
+forcing the Architect's deterministic _mock_creative path. All of this session's
+changes live in the Architect's deterministic logic (+ a reviewer helper), so
+this exercises exactly what changed and re-checks the pre-existing gating
+invariants (Opus-always security, foundation-first, mobile/third-party detection,
+cloud tiering) at the Architect layer.
+
+Run:  docker compose run --rm --no-deps -v "$PWD/backend:/app" backend \
+          python tests/test_architect_offline.py
+"""
+import asyncio
+import sys
+
+import app.llm as llm_mod
+
+
+# --- force the free, deterministic path (no network, no cost) ---------------
+async def _no_llm(*args, **kwargs):
+    return None
+
+
+llm_mod.complete_json = _no_llm  # every _generate_creative call -> mock creative
+
+from app.architect import builder  # noqa: E402  (import after the patch)
+from app.reviewer import reviewer  # noqa: E402
+
+
+# ---------------------------------------------------------------- tiny harness
+_failures: list[str] = []
+
+
+def check(label: str, cond: bool) -> None:
+    mark = "PASS" if cond else "FAIL"
+    print(f"  [{mark}] {label}")
+    if not cond:
+        _failures.append(label)
+
+
+def tickets_by_id(bp: dict) -> dict:
+    return {t.get("id"): t for t in bp.get("sprint_tickets", [])}
+
+
+def table_names(bp: dict) -> set:
+    return {t.get("table") for t in bp.get("database_schema", [])}
+
+
+def endpoint_paths(bp: dict) -> set:
+    return {e.get("path") for e in bp.get("api_endpoints", [])}
+
+
+def measures_text(bp: dict) -> str:
+    return " ".join(bp.get("security", {}).get("measures", [])).lower()
+
+
+# ---------------------------------------------------------------- summaries
+def summary(**over) -> dict:
+    base = {
+        "build": "an app",
+        "audience": "customers",
+        "budget": "$50",
+        "user_count": "a few hundred",
+        "plan": {"id": "production", "name": "Production ready"},
+        "customer_facing": True,
+        "mobile_choice": "web",
+        "priorities": {"must_have": [], "nice_to_have": []},
+        "competitor_features": [],
+        "missing_essentials": [],
+    }
+    base.update(over)
+    return base
+
+
+# ============================================================ TEST 1: payments
+async def test_payment_domain():
+    print("\n=== TEST 1: payment domain (coffee shop, online ordering + tips) ===")
+    bp = await builder.build_blueprint(summary(
+        build="a coffee shop with online ordering and the option to leave a tip",
+        priorities={"must_have": ["let customers pay online", "tipping at checkout"],
+                    "nice_to_have": ["email order confirmations"]},
+    ))
+    tp = bp["third_party_apis"]
+    tk = tickets_by_id(bp)
+
+    # Stripe Connect (not plain Stripe), user-handled, in-app OAuth.
+    stripe = next((a for a in tp if "stripe" in a["name"].lower()), None)
+    check("Stripe Connect present in third_party_apis", stripe is not None)
+    check("named 'Stripe Connect' (not plain 'Stripe')",
+          bool(stripe) and stripe["name"] == "Stripe Connect")
+    check("who_handles == user", bool(stripe) and stripe.get("who_handles") == "user")
+    check("connection == in_app_oauth (not platform-mediated)",
+          bool(stripe) and stripe.get("connection") == "in_app_oauth")
+    check("no old setup step asks the user to paste a secret key into the platform",
+          bool(stripe) and not any("paste" in s.lower() and "key" in s.lower()
+                                   for s in stripe.get("setup_steps", [])))
+
+    # Backend + frontend payment tickets exist and are flagged.
+    check("PAY-1 backend ticket exists", "PAY-1" in tk and tk["PAY-1"]["assigned_to"] == "backend")
+    check("PAY-2 frontend ticket exists", "PAY-2" in tk and tk["PAY-2"]["assigned_to"] == "frontend")
+    check("PAY-1 flagged security_critical", tk.get("PAY-1", {}).get("security_critical") is True)
+    check("PAY-2 flagged security_critical", tk.get("PAY-2", {}).get("security_critical") is True)
+    pay2 = tk.get("PAY-2", {}).get("description", "")
+    check("PAY-2 says payment UI VISIBLE but DISABLED", "DISABLED" in pay2)
+    check("PAY-2 has the exact 'Connect Stripe to start accepting payments' copy",
+          "Connect Stripe to start accepting payments" in pay2)
+    p1 = tk.get("PAY-1", {}).get("description", "")
+    check("PAY-1 mandates ENCRYPTED token storage", "ENCRYPTED" in p1)
+    check("PAY-1 forbids the platform touching the credential",
+          "platform" in p1.lower())
+
+    # Encrypted-token table + OAuth endpoints frozen into the contract.
+    check("stripe_accounts table added to schema", "stripe_accounts" in table_names(bp))
+    cols = {c["name"] for t in bp["database_schema"] if t["table"] == "stripe_accounts"
+            for c in t["columns"]}
+    check("stripe_accounts has access_token_encrypted column", "access_token_encrypted" in cols)
+    check("no plaintext 'access_token' column", "access_token" not in cols)
+    eps = endpoint_paths(bp)
+    check("OAuth connect endpoint present", "/admin/stripe/connect" in eps)
+    check("OAuth callback endpoint present", "/admin/stripe/callback" in eps)
+    check("connect status endpoint present (drives disabled UI)", "/admin/stripe/status" in eps)
+
+    # Security section flags the payment feature for the Opus review.
+    ps = bp["security"].get("payment_security")
+    check("security.payment_security present", ps is not None)
+    check("payment feature flagged_for_security_review", bool(ps) and ps.get("flagged_for_security_review") is True)
+    check("payment must_verify lists encrypted-token check",
+          bool(ps) and any("encrypt" in m.lower() for m in ps.get("must_verify", [])))
+
+    # Stripe is NOT double-handled by a generic integration ticket.
+    int_tickets = [t for t in bp["sprint_tickets"] if t.get("assigned_to") == "integration"]
+    check("no integration ticket mentions Stripe (PAY-* owns it)",
+          all("stripe" not in t.get("title", "").lower() for t in int_tickets))
+
+    # Auth: payments present -> MFA required.
+    auth = bp["security"]["auth"]
+    check("auth.mfa_required True (payments present)", auth["mfa_required"] is True)
+    check("auth.triggers.payments True", auth["triggers"]["payments"] is True)
+
+    # Platform never builds a Stripe connection: nothing marks Stripe who_handles=platform.
+    check("no third-party Stripe entry is platform-handled",
+          all(not ("stripe" in a["name"].lower() and a.get("who_handles") == "platform")
+              for a in tp))
+
+
+# ======================================================= TEST 2: no payments
+async def test_non_payment_domain():
+    print("\n=== TEST 2: non-payment domain (personal recipe box, just me) ===")
+    bp = await builder.build_blueprint(summary(
+        build="a personal recipe box just for me to save and organise my recipes",
+        audience="just me",
+        budget="$15",
+        user_count="1",
+        plan={"id": "quick", "name": "Quick launch"},
+        customer_facing=False,
+        priorities={"must_have": ["save recipes", "search by ingredient"],
+                    "nice_to_have": []},
+    ))
+    tp = bp["third_party_apis"]
+    tk = tickets_by_id(bp)
+
+    check("no Stripe in third_party_apis", all("stripe" not in a["name"].lower() for a in tp))
+    check("no PAY-1 ticket", "PAY-1" not in tk)
+    check("no PAY-2 ticket", "PAY-2" not in tk)
+    check("no stripe_accounts table", "stripe_accounts" not in table_names(bp))
+    check("no stripe OAuth endpoints",
+          not any("/admin/stripe" in p for p in endpoint_paths(bp)))
+    check("no payment_security block", "payment_security" not in bp["security"])
+
+    auth = bp["security"]["auth"]
+    check("auth tier == basic", auth["tier"] == "basic")
+    check("auth.mfa_required False", auth["mfa_required"] is False)
+    check("passkeys 'offered' (not scale default)", auth["passkeys"] == "offered")
+    check("AUTH-1 delegated-auth ticket still present", "AUTH-1" in tk)
+
+    # Nothing broke: all sections still present + secure-by-default.
+    for key in ("tech_stack", "database_schema", "api_endpoints", "third_party_apis",
+                "sprint_tickets", "security", "llm_routing", "cloud_config"):
+        check(f"blueprint has '{key}'", key in bp)
+    check("security review model is Opus", bp["security"]["review_model"] == "claude-opus-4-8")
+    check("no custom-auth (bcrypt) in security measures", "bcrypt" not in measures_text(bp))
+
+
+# ============================================ TEST 3: 8-scenario gating suite
+async def test_gating_suite():
+    print("\n=== TEST 3: 8-scenario gating invariants (BA/PI/Architect chain, Architect layer) ===")
+    scenarios = [
+        ("B2B SaaS w/ subscription billing",
+         summary(build="a B2B SaaS dashboard with monthly subscription billing",
+                 audience="business teams", plan={"id": "scale", "name": "Scale ready"},
+                 user_count="50,000"), {"payments": True, "mobile": False}),
+        ("Internal staff scheduling tool",
+         summary(build="an internal tool for managers to schedule employee shifts",
+                 audience="just my staff", customer_facing=False), {"payments": False, "mobile": False}),
+        ("Telehealth (patient health data)",
+         summary(build="a telehealth app where patients book medical consultations",
+                 audience="patients"), {"payments": False, "mobile": False, "mfa": True}),
+        ("Native mobile app",
+         summary(build="a native iPhone app for tracking workouts",
+                 mobile_choice="native"), {"payments": False, "mobile": True}),
+        ("Tipping app (implied payment)",
+         summary(build="an app that lets fans leave a tip for street performers"),
+         {"payments": True, "mobile": False}),
+        ("Budget mismatch (scale plan, tiny budget)",
+         summary(build="a marketplace", plan={"id": "scale", "name": "Scale ready"},
+                 budget="$10", audience="just me", user_count="5"),
+         {"payments": False, "mobile": False}),
+        ("Personal single-user tool",
+         summary(build="a personal habit tracker for myself", audience="just me",
+                 customer_facing=False, plan={"id": "quick", "name": "Quick launch"}),
+         {"payments": False, "mobile": False}),
+        ("Public newsletter site",
+         summary(build="a public newsletter website with a signup form"),
+         {"payments": False, "mobile": False}),
+    ]
+
+    for name, s, expect in scenarios:
+        print(f"\n  -- {name} --")
+        bp = await builder.build_blueprint(s)
+        tk = tickets_by_id(bp)
+
+        # Invariant: all sections present.
+        check("all blueprint sections present",
+              all(k in bp for k in ("tech_stack", "database_schema", "api_endpoints",
+                                    "third_party_apis", "sprint_tickets", "security",
+                                    "llm_routing", "cloud_config")))
+        # Invariant: security ALWAYS Opus (core rule).
+        check("security review == claude-opus-4-8",
+              bp["security"]["review_model"] == "claude-opus-4-8"
+              and bp["llm_routing"]["security_review"] == "claude-opus-4-8")
+        # Invariant: foundation-first.
+        ids = [t.get("id") for t in bp["sprint_tickets"]]
+        check("foundation tickets first (FND-1, FND-2)", ids[:2] == ["FND-1", "FND-2"])
+        # Invariant: delegated auth on every build, no custom hashing.
+        check("exactly one AUTH-1 ticket", ids.count("AUTH-1") == 1)
+        check("no bcrypt/custom-auth in measures", "bcrypt" not in measures_text(bp))
+        check("auth measure mentions delegated provider",
+              "delegate" in measures_text(bp) and "auth0" in measures_text(bp))
+        # Invariant: cloud tier valid.
+        check("cloud tier valid", bp["cloud_config"]["tier"] in ("small", "medium", "large"))
+
+        # Payment expectation.
+        has_stripe = any("stripe" in a["name"].lower() for a in bp["third_party_apis"])
+        check(f"payments detected == {expect['payments']}", has_stripe == expect["payments"])
+        if expect["payments"]:
+            check("PAY-1 & PAY-2 present", "PAY-1" in tk and "PAY-2" in tk)
+            check("stripe_accounts table present", "stripe_accounts" in table_names(bp))
+            check("payment flagged for security review",
+                  bp["security"].get("payment_security", {}).get("flagged_for_security_review") is True)
+        else:
+            check("no PAY tickets", "PAY-1" not in tk and "PAY-2" not in tk)
+            check("no stripe_accounts table", "stripe_accounts" not in table_names(bp))
+
+        # Mobile expectation.
+        has_mobile = any(t.get("assigned_to") == "mobile" for t in bp["sprint_tickets"])
+        check(f"mobile tickets == {expect['mobile']}", has_mobile == expect["mobile"])
+
+        # Explicit MFA expectation where given.
+        if expect.get("mfa"):
+            check("MFA required (sensitive data)", bp["security"]["auth"]["mfa_required"] is True)
+
+
+# ======================================== TEST 4: reviewer payment flag helper
+def test_reviewer_flag():
+    print("\n=== TEST 4: Code Reviewer payment-sensitivity flag ===")
+    check("PAY-1 ticket file flagged",
+          reviewer._is_payment_sensitive({"ticket_id": "PAY-1", "filepath": "backend/app/x.py"}))
+    check("stripe filepath flagged",
+          reviewer._is_payment_sensitive({"ticket_id": "BE-9", "filepath": "backend/app/stripe_connect.py"}))
+    check("oauth filepath flagged",
+          reviewer._is_payment_sensitive({"ticket_id": "BE-9", "filepath": "backend/app/oauth_handler.py"}))
+    check("ordinary file NOT flagged",
+          not reviewer._is_payment_sensitive({"ticket_id": "BE-2", "filepath": "backend/app/orders.py"}))
+    check("focus text mentions encrypted token + no leakage",
+          "encrypt" in reviewer._PAYMENT_SECURITY_FOCUS.lower()
+          and "leakage" in reviewer._PAYMENT_SECURITY_FOCUS.lower())
+
+
+async def main():
+    await test_payment_domain()
+    await test_non_payment_domain()
+    await test_gating_suite()
+    test_reviewer_flag()
+
+    print("\n" + "=" * 60)
+    if _failures:
+        print(f"RESULT: {len(_failures)} check(s) FAILED:")
+        for f in _failures:
+            print(f"   - {f}")
+        sys.exit(1)
+    print("RESULT: ALL CHECKS PASSED ✓")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

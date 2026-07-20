@@ -61,6 +61,31 @@ _SECURITY_SYS = (
     '"critical".'
 )
 
+# The Architect flags Stripe Connect files (PAY-* tickets — POST-REVIEW
+# DECISION 3). When one reaches the security pass, tell the auditor exactly what
+# to verify on the payment feature.
+_PAYMENT_SECURITY_FOCUS = (
+    "\n\nThis file is part of the Stripe Connect payment feature. Verify "
+    "SPECIFICALLY, and mark any failure critical: (1) the OAuth access/refresh "
+    "token is stored ENCRYPTED at rest — flag any plaintext token storage; "
+    "(2) the Stripe Connect OAuth flow is correct — a signed `state` param "
+    "guards against CSRF and the code exchange happens server-side; (3) NO "
+    "credential leakage — no tokens or secrets in logs, API responses, or "
+    "client-side code, and no Stripe credential is sent to any platform."
+)
+
+_PAYMENT_TICKET_PREFIXES = ("PAY-",)
+_PAYMENT_PATH_HINTS = ("stripe", "oauth", "connect", "payment", "webhook")
+
+
+def _is_payment_sensitive(file: dict) -> bool:
+    """A file the Architect flagged (or that clearly implements the payment
+    feature) so the security pass gets the Stripe Connect focus checklist."""
+    if str(file.get("ticket_id", "")).startswith(_PAYMENT_TICKET_PREFIXES):
+        return True
+    path = (file.get("filepath") or file.get("filename") or "").lower()
+    return any(hint in path for hint in _PAYMENT_PATH_HINTS)
+
 
 async def _review(model: str, system: str, file: dict, content: str, bypass: bool) -> list[dict]:
     text, _ = await codegen.generate(
@@ -109,7 +134,12 @@ async def review_file(file: dict, general_model: str) -> dict:
             content, fixed = new, fixed + len(g_fixable)
 
     # --- PASS 2: SECURITY review (ALWAYS Opus, bypass cheap) ---
-    s_issues = await _review(SECURITY_MODEL, _SECURITY_SYS, file, content, bypass=True)
+    # Stripe Connect (PAY-*) files get the extra payment-security checklist so the
+    # Opus pass specifically verifies encrypted tokens / OAuth / no leakage.
+    security_sys = _SECURITY_SYS + (
+        _PAYMENT_SECURITY_FOCUS if _is_payment_sensitive(file) else ""
+    )
+    s_issues = await _review(SECURITY_MODEL, security_sys, file, content, bypass=True)
     found += len(s_issues)
     security_passed = True
     if s_issues:
@@ -121,7 +151,7 @@ async def review_file(file: dict, general_model: str) -> dict:
             # STOP-and-verify: re-run the security review on the fix.
             security_passed = False
             for _ in range(_MAX_SECURITY_RETRIES):
-                recheck = await _review(SECURITY_MODEL, _SECURITY_SYS, file, content, bypass=True)
+                recheck = await _review(SECURITY_MODEL, security_sys, file, content, bypass=True)
                 crit = [i for i in recheck if i.get("severity") == "critical"]
                 if not crit:
                     security_passed = True

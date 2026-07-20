@@ -750,6 +750,20 @@ Tiering logic stays as designed:
   baseline (OAuth2/OIDC, built-in MFA) without risking Developer
   Agent implementation flaws.
 
+**STATUS: ✅ IMPLEMENTED — 2026-07-20.** Default provider = **Auth0**
+(documented: standards-based OIDC works uniformly across ALL THREE targets the
+platform generates — FastAPI backend, Next.js web, React Native mobile — with
+built-in MFA + passkeys; Clerk / AWS Cognito kept as switchable alternatives via
+`AUTH_PROVIDER` in `architect/builder.py`). The Architect now emits an **AUTH-1**
+ticket on every build instructing Backend Dev to delegate auth (NO bcrypt/JWT
+hand-rolling — validate provider JWKS tokens instead); the security section's
+auth measure and SEC-1 wording were rewritten to match, and the Architect LLM
+prompt now tells the model not to generate custom-auth tickets. Tiering wired to
+the feature set (`_auth_tier()`): `basic` (provider auth) → `2fa_required` when
+payments / PII / employee data are present → passkeys as the **Scale-tier
+default**. Verified across 8 domains offline (see the implementation-session
+section below).
+
 ### 2. Architect Agent — promote to top-tier model
 
 Move Architect from GPT-4o to claude-opus-4-8 (already planned
@@ -758,6 +772,16 @@ Reason: a flawed blueprint gets perfectly executed by downstream
 agents. Security-tier reasoning is needed at the design stage,
 not just at the code-review stage — a wrong schema or API
 paradigm can't be patched by even the best security review later.
+
+**STATUS: ⏳ STILL PENDING — deliberately NOT pulled forward.** In the
+2026-07-20 implementation session, items §1 (auth) and §3 (Stripe Connect) were
+pulled forward as an exception because they are FEATURE/ticket-template changes.
+This item is a MODEL-ROUTING change, so it was intentionally left on the
+post-Week-8 batch model switch (see "MODEL SWITCH — scheduled for after Week 8",
+line item #3: Architect → claude-opus-4-8). Rationale for the split: do not mix
+model-routing changes with feature changes in the same session — model swaps
+need their own retest pass, agent-by-agent, per the Week-8 process. The Architect
+remains **GPT-4o @ 0.2** for now (`config.py` `architect_model`), unchanged.
 
 ### 3. Stripe integration — in-app Connect flow, not platform-mediated
 
@@ -796,6 +820,32 @@ Documentation Agent (Week 8) must cover "how to connect your
 Stripe account" in the handoff guide, since the app ships in a
 payments-visible-but-not-yet-connected state.
 
+**STATUS: ✅ IMPLEMENTED — 2026-07-20.** When the Architect detects payment
+intent (explicit or implied — "leave a tip" is caught via a word-boundary
+regex), it now emits, for the GENERATED APP (never the platform):
+- a **Stripe Connect** `third_party_apis` entry (`who_handles: user`,
+  `connection: in_app_oauth`) — replacing the old plain-Stripe "paste your secret
+  key" entry;
+- an encrypted-token table **`stripe_accounts`** (`access_token_encrypted`, no
+  plaintext token column) and **OAuth endpoints** (`/admin/stripe/connect`,
+  `/admin/stripe/callback`, `/admin/stripe/status`) — injected into the blueprint
+  schema/endpoints so they are frozen into the BINDING CONTRACT;
+- a backend ticket **PAY-1** (OAuth handler + encrypted token storage in the
+  app's OWN DB, token enc key from env, never logs/returns tokens) and a frontend
+  ticket **PAY-2** (Settings "Connect Stripe" action + payment UI **VISIBLE but
+  DISABLED** until connected, with the exact copy "Connect Stripe to start
+  accepting payments" — Option A);
+- a `security.payment_security` block flagging the feature, and
+  `security_critical: true` + `security_focus` on the PAY tickets.
+
+**No platform-side Stripe connection exists** — the platform never touches a
+Stripe credential or token. The **Code Reviewer** was given a minimal, targeted
+hook: `_is_payment_sensitive()` detects PAY-* / stripe-path files and appends a
+payment-specific checklist to the ALWAYS-Opus security pass (verify encrypted
+token storage, correct OAuth with signed state param, no credential leakage).
+Verified offline (payment + non-payment domains + 8-scenario gating). Files:
+`architect/builder.py`, `reviewer/reviewer.py`, `design_explain.py`.
+
 ### 4. Not changing (deliberate, despite feedback)
 
 - Cheap-model self-review stays as-is: Week 4 data (20/20 files,
@@ -813,6 +863,114 @@ payments-visible-but-not-yet-connected state.
   reviewer raised this. Architect currently detects payments but
   not health-data or EU-user scenarios. Real gap, new scope,
   revisit before building anything in a regulated-data domain.
+  (Note: after 2026-07-20, the Architect's `_auth_tier()` DOES now flag
+  health/PII feature words to force 2FA — a partial step, but full
+  HIPAA/PCI/GDPR compliance detection is still unbuilt.)
+
+## POST-REVIEW IMPLEMENTATION SESSION (2026-07-20) — auth + Stripe Connect pulled forward
+
+**This was NOT a numbered week.** A dedicated session to close a gap: three
+POST-REVIEW DESIGN DECISIONS were *confirmed* in CONTEXT.md but never *built*
+(they were decided after Week 5 was locked). Two of the three were implemented
+here; the third was deliberately deferred.
+
+### What was implemented
+1. **Stripe → Stripe Connect (in-app OAuth)** — POST-REVIEW DECISION §3. See the
+   ✅ marker there for the full behavior. Platform touches NO Stripe credential.
+2. **Custom auth → delegated auth (Auth0 default)** — POST-REVIEW DECISION §1.
+   See the ✅ marker there. Tiered: basic → 2FA (payments/PII/employee) →
+   passkeys (Scale default).
+3. **Architect model tier — DELIBERATELY NOT pulled forward** (POST-REVIEW
+   DECISION §2). It is a model-routing change and stays on the post-Week-8 batch
+   switch. Items 1 & 2 are feature/ticket-template changes and were safe to pull
+   forward; mixing a model swap into the same session would break the "swap one
+   model, retest, then the next" Week-8 discipline. Architect stays GPT-4o @ 0.2.
+
+### Files created / changed
+- `backend/app/architect/builder.py` — the bulk of the work:
+  - `AUTH_PROVIDER` (Auth0) + `_auth_tier()` (basic / 2fa_required / scale from
+    payments/PII/employee signals + plan) + `_auth_ticket()` (AUTH-1).
+  - `_third_party_apis()` now emits **Stripe Connect** (in-app OAuth), not plain
+    Stripe; `_mentions_payment()` + `_TIP_RE` catch implied payments ("leave a
+    tip") without false positives ("multiple").
+  - `_stripe_connect_schema()` (encrypted-token table) + `_stripe_connect_endpoints()`
+    (OAuth routes), merged into the blueprint so they enter the BINDING CONTRACT.
+  - `_payment_tickets()` (PAY-1 backend, PAY-2 frontend visible-but-disabled UI),
+    both flagged `security_critical` + `security_focus`.
+  - `_security_section()` rewritten: delegated-auth measure (no bcrypt), MFA /
+    passkey measures, `payment_security` flag block; now takes `auth`.
+  - `_security_ticket()` (SEC-1) reworded to authorization-only (auth is AUTH-1).
+  - `_ARCH_SYSTEM` LLM prompt told NOT to generate custom-auth/payment tickets.
+- `backend/app/reviewer/reviewer.py` — minimal, targeted: `_is_payment_sensitive()`
+  + `_PAYMENT_SECURITY_FOCUS`; the ALWAYS-Opus security pass appends the payment
+  checklist for PAY-*/stripe files. (No other Reviewer logic touched.)
+- `backend/app/design_explain.py` — Stripe name check made substring-tolerant so
+  "Stripe Connect" still lights up "protects_payments".
+- `backend/tests/test_architect_offline.py` — NEW. Offline (zero-LLM-spend)
+  gating test; monkeypatches `llm.complete_json`→None to force the deterministic
+  path. Run: `docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" backend python tests/test_architect_offline.py`.
+
+### What was tested (all PASS, zero LLM spend)
+- **Payment domain** (coffee shop w/ online ordering + tips): Stripe Connect
+  entry, PAY-1/PAY-2 tickets, `stripe_accounts` table w/ `access_token_encrypted`
+  (no plaintext col), 3 OAuth endpoints, `payment_security` flag, PAY-2
+  visible-but-disabled + exact copy, MFA required. No platform-side Stripe.
+- **Non-payment domain** (personal recipe box, single user): no Stripe anything,
+  auth tier `basic`, AUTH-1 still present, all blueprint sections intact, Opus
+  security, no bcrypt. Nothing regressed for non-payment apps.
+- **8-scenario gating suite** (reconstructed at the Architect layer — the prior
+  suite was ad-hoc/LLM-driven and never committed): B2B SaaS, internal staff
+  tool, telehealth, native mobile, tipping, budget-mismatch, personal tool,
+  public newsletter. Invariants held for all 8: security ALWAYS Opus,
+  foundation-first (FND-1/FND-2), exactly one AUTH-1, no custom-auth, valid cloud
+  tier, payment/mobile detection matches expectation, MFA where sensitive.
+- **Reviewer flag** unit checks: PAY-*/stripe/oauth paths flagged; ordinary files
+  not.
+- **Full-app boot**: `app.main` imports clean; backend rebuilt (`docker compose
+  build backend`) and `/health` → 200 with the fresh code confirmed in-container.
+- NOTE: tests run OFFLINE against the deterministic path (which is where 100% of
+  these changes live). No live BA→PI→Architect LLM run was made — that costs real
+  OpenAI money and exercises unchanged upstream logic. A real Architect call
+  concatenates the same deterministic overlay onto real creative output (plain
+  list/dict merges), so real-creative behavior matches the mock path.
+
+### What I learned — Post-review implementation session (2026-07-20)
+- **Liability is an architecture decision, not a checkbox.** Moving Stripe from
+  "platform collects your secret key" to Stripe Connect in-app OAuth means the
+  platform never holds a payment credential at all. The safest way to handle a
+  secret is to design the system so you never receive it — the token lives
+  encrypted in the generated app's own DB, and self-hosting later doesn't break
+  payments (it aligns with the no-lock-in rule for free).
+- **"Don't roll your own crypto" generalizes to "don't roll your own auth."** The
+  fix wasn't a better password-hashing prompt — it was deleting custom auth
+  entirely and delegating to a provider (OAuth2/OIDC + built-in MFA/passkeys).
+  Removing the capability to get it wrong beats trying to get it right.
+- **A flag is only useful if the consumer reads it.** Marking PAY tickets
+  `security_critical` in the blueprint is inert unless the Code Reviewer acts on
+  it. The closing move was the tiny `_is_payment_sensitive()` hook that turns the
+  flag into an actual extra checklist on the Opus pass. Producer + consumer, or
+  it's just decoration.
+- **Sequencing changes by TYPE prevents debugging hell.** Pulling forward two
+  feature changes while holding the model-routing change for its own session is
+  deliberate: if the Architect blueprint later looks wrong, you want to know
+  whether it was the new tickets or a new model — never both at once. Same
+  discipline as the Week-8 "swap one model, retest, next" plan.
+- **Keyword detection needs word boundaries, not substrings.** "leave a tip" must
+  trigger payments; "multiple" must not. `\btip(s|ped|ping)?\b` does both; a bare
+  `"tip" in blob` fails silently and expensively (a payment feature nobody asked
+  for, or a missed one). Cheap offline tests caught this in one run.
+- **Test where the change lives, for free.** All logic here is deterministic, so
+  monkeypatching the LLM to None gave a fast, $0, fully-deterministic 8-domain
+  suite — far more reliable than burning credits on non-deterministic LLM runs to
+  test rules that never call the LLM anyway.
+
+### What NOT to touch (carried forward + additions)
+- Everything in the Week-5 "What NOT to touch" list still holds.
+- Do NOT switch the Architect model (or any model) before Week 8 — §2 above is
+  intentionally deferred.
+- The delegated-auth mandate (no custom password hashing/JWT) and the
+  platform-never-touches-Stripe rule are now core: do not reintroduce custom auth
+  or any platform-side Stripe connection.
 
 ## REFERENCE — NOT FOR CLAUDE CODE TO RE-READ EVERY SESSION
 
@@ -832,10 +990,20 @@ with zero prior context. The per-week sections above have the summaries; this
 section adds the full "how it actually works, what's half-done, and the traps".)_
 
 ## 0. HONESTY NOTE on "auth / Architect-tier / Stripe Connect decisions"
-These were requested in the handoff prompt, but this session did NOT hold a
-distinct discussion or make explicit decisions on those three. To avoid
-misleading a new engineer, here is what ACTUALLY exists in the code (behavior,
-not a debated decision):
+
+> **UPDATE — 2026-07-20 (post-review implementation session):** two of these three
+> are now BUILT. Auth (delegated identity provider) and Stripe Connect (in-app
+> OAuth) were implemented in a dedicated session — see
+> **"POST-REVIEW IMPLEMENTATION SESSION (2026-07-20)"** below and the ✅ IMPLEMENTED
+> markers in POST-REVIEW DESIGN DECISIONS §1 and §3. The Architect model-tier
+> upgrade (§2) was DELIBERATELY left for the post-Week-8 batch switch. The
+> paragraph below describes the code as it stood at the end of the Weeks 3–5
+> session and is kept for history; the auth/Stripe bullets are now superseded.
+
+These were requested in the earlier handoff prompt, but that (Weeks 3–5) session
+did NOT hold a distinct discussion or make explicit decisions on those three. To
+avoid misleading a new engineer, here is what existed in the code AT THAT TIME
+(behavior, not a debated decision):
 - **Auth:** no real auth system exists on the PLATFORM itself (no login for the
   AI-org tool). The GENERATED apps' code includes auth (password hashing, JWT,
   Depends-based checks) because the Architect's security section mandates it and

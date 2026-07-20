@@ -124,29 +124,52 @@ def _llm_routing() -> dict:
     }
 
 
-_STRIPE_STEPS = [
-    "Go to stripe.com and sign up for a free account.",
-    "Open the 'Developers' menu, then click 'API keys'.",
-    "Copy your 'Secret key'.",
-    "Paste it here when we ask for it.",
+# Stripe Connect (POST-REVIEW DESIGN DECISION 3): the payment connection lives
+# INSIDE the generated app. The business owner connects their OWN Stripe account
+# through Stripe's hosted OAuth flow from the app's own settings screen. The
+# platform never sees or stores any Stripe credential or token — not even once.
+_STRIPE_CONNECT_STEPS = [
+    "After your app is live, open its Settings (or Admin) screen.",
+    "Click 'Connect Stripe' — you'll be taken to Stripe's own secure page.",
+    "Sign in to (or create) your Stripe account and approve the connection.",
+    "You're brought straight back to your app; your 'Pay' buttons switch on "
+    "automatically once Stripe is connected.",
 ]
 
 _PAYMENT_WORDS = ("payment", "pay ", "checkout", "buy", "purchase", "order",
                   "subscription", "stripe", "billing", "sell")
+# The tip/gratuity family is matched on WORD BOUNDARIES so implied payments like
+# "leave a tip" are caught, while substrings like "multiple" are not.
+_TIP_RE = re.compile(r"\btip(s|ped|ping)?\b|\btip jar\b|\bgratuit(y|ies)\b")
 _MESSAGING_WORDS = ("email", "notify", "notification", "sms", "text message",
                     "reminder", "confirmation", "alert", "updates")
+
+
+def _mentions_payment(blob: str) -> bool:
+    """Detect explicit or implied payment intent in the app's free text."""
+    return any(w in blob for w in _PAYMENT_WORDS) or bool(_TIP_RE.search(blob))
+
+
+def _has_payments(apis: list[dict]) -> bool:
+    """True when Stripe Connect is part of the build (name match is tolerant of
+    the 'Stripe Connect' label)."""
+    return any("stripe" in (a.get("name", "").lower()) for a in apis)
 
 
 def _third_party_apis(summary: dict) -> list[dict]:
     blob = _text_blob(summary)
     apis: list[dict] = []
 
-    if any(w in blob for w in _PAYMENT_WORDS):
+    if _mentions_payment(blob):
         apis.append({
-            "name": "Stripe",
-            "purpose": "Accept online payments securely",
+            "name": "Stripe Connect",
+            "purpose": "Let the business owner connect their own Stripe account "
+                       "and accept payments — via Stripe-hosted OAuth, inside "
+                       "the app itself (no platform involvement).",
             "who_handles": "user",
-            "setup_steps": _STRIPE_STEPS,
+            # In-app OAuth, NOT a platform-mediated connection.
+            "connection": "in_app_oauth",
+            "setup_steps": _STRIPE_CONNECT_STEPS,
         })
 
     if any(w in blob for w in _MESSAGING_WORDS):
@@ -158,6 +181,80 @@ def _third_party_apis(summary: dict) -> list[dict]:
         })
 
     return apis
+
+
+# ---------------------------------------------------------------- delegated auth
+# POST-REVIEW DESIGN DECISION 1: generated apps must NEVER hand-roll password
+# hashing or JWT issuance. The Architect instructs the Backend Dev to integrate a
+# managed identity provider instead.
+#
+# Default = Auth0. Why Auth0 over Clerk / AWS Cognito:
+#   - Standards-based OIDC/OAuth2 that works UNIFORMLY across ALL THREE targets
+#     this platform generates — the FastAPI backend, the Next.js web app, and the
+#     React Native mobile app. Clerk is excellent but React/Next-first (weaker
+#     first-class backend + native story); Cognito ties the app to AWS and has a
+#     rougher developer experience / historically limited passkey support.
+#   - Built-in MFA (for the 2FA tier) and passkeys/WebAuthn (for the Scale tier)
+#     with zero custom credential code.
+#   - Being plain OIDC keeps the generated app portable, matching the
+#     "fully exportable, no vendor lock-in" core rule.
+# Clerk and AWS Cognito stay acceptable alternatives — change AUTH_PROVIDER to
+# switch the documented default.
+AUTH_PROVIDER = "Auth0"
+AUTH_PROVIDER_ALTERNATIVES = ("Clerk", "AWS Cognito")
+
+# Sensitive-data signals that upgrade an app to the 2FA-required tier. Kept
+# specific on purpose: a near-universal field like a plain email must NOT trip
+# 2FA, but health, financial, government-id, or employee data must.
+# Note "address" is intentionally qualified (home/mailing/…) so it does NOT match
+# "email address" / "IP address" and spuriously trip 2FA on ordinary apps.
+_PII_WORDS = ("health", "medical", "patient", "diagnosis", "prescription",
+              "therapy", "ssn", "social security", "passport", "driver's",
+              "driver license", "date of birth", "date-of-birth",
+              "home address", "mailing address", "shipping address",
+              "street address", "physical address",
+              "bank account", "financial", "insurance", "tax", "credit score")
+_EMPLOYEE_WORDS = ("employee", "staff", "payroll", "human resources",
+                   "team member", "timesheet", "shift schedul", "worker record")
+
+
+def _auth_tier(summary: dict, apis: list[dict]) -> dict:
+    """Decide the delegated-auth tier from the app's feature set.
+
+    - basic          : standard provider auth (email/password via the provider)
+    - 2fa_required   : payments, PII, or employee data present -> require MFA
+    - scale          : Scale plan -> passkeys as the default sign-in
+    Tiers compose: a Scale app that also handles payments both defaults passkeys
+    AND requires MFA. The booleans below are authoritative; `tier` is a label.
+    """
+    blob = _text_blob(summary)
+    has_payments = _has_payments(apis)
+    has_pii = any(w in blob for w in _PII_WORDS)
+    has_employee = any(w in blob for w in _EMPLOYEE_WORDS)
+    plan_id = (summary.get("plan") or {}).get("id", "")
+
+    mfa_required = has_payments or has_pii or has_employee
+    passkeys_default = plan_id == "scale"
+
+    if passkeys_default:
+        tier = "scale"
+    elif mfa_required:
+        tier = "2fa_required"
+    else:
+        tier = "basic"
+
+    return {
+        "provider": AUTH_PROVIDER,
+        "alternatives": list(AUTH_PROVIDER_ALTERNATIVES),
+        "tier": tier,
+        "mfa_required": mfa_required,
+        "passkeys": "default" if passkeys_default else "offered",
+        "triggers": {
+            "payments": has_payments,
+            "pii": has_pii,
+            "employee_data": has_employee,
+        },
+    }
 
 
 def _mobile_tickets() -> list[dict]:
@@ -179,12 +276,17 @@ def _mobile_tickets() -> list[dict]:
     ]
 
 
-def _security_section(summary: dict, apis: list[dict]) -> dict:
+def _security_section(summary: dict, apis: list[dict], auth: dict) -> dict:
     """A concrete, mandated security baseline for every build — so the
     blueprint is secure by design, not basic CRUD. The Code Reviewer /
     Security agent (Claude Opus 4.8) enforces this on the real code later."""
     measures = [
-        "Authentication: hash passwords with bcrypt; issue short-lived JWT session tokens.",
+        # DELEGATED AUTH (POST-REVIEW DECISION 1) — no custom credential handling.
+        f"Authentication: delegate to a managed identity provider "
+        f"(default {auth['provider']}; {', '.join(auth['alternatives'])} also "
+        f"acceptable) over OAuth2/OIDC. Do NOT hand-roll password hashing or "
+        f"custom JWT issuance; validate provider-issued tokens (verify JWKS "
+        f"signature, issuer and audience) on every protected request.",
         "Authorization: enforce access checks on every protected endpoint (no public data leaks).",
         "Input validation: validate and sanitize all inputs to prevent SQL injection and XSS.",
         "Transport security: HTTPS/TLS on all traffic; secure cookies.",
@@ -194,18 +296,44 @@ def _security_section(summary: dict, apis: list[dict]) -> dict:
         "Dependency hygiene: scan dependencies for known vulnerabilities.",
         "Follow the OWASP Top-10 protections throughout.",
     ]
-    if any(a["name"] == "Stripe" for a in apis):
+    if auth["mfa_required"]:
+        reasons = [k.replace("_", " ") for k, v in auth["triggers"].items() if v]
+        measures.append(
+            "Multi-factor: REQUIRE 2FA/MFA (via the identity provider) because "
+            f"sensitive data is present ({', '.join(reasons)})."
+        )
+    if auth["passkeys"] == "default":
+        measures.append(
+            "Passkeys: enable WebAuthn passkeys as the Scale-tier default sign-in."
+        )
+
+    section = {
+        "review_model": "claude-opus-4-8",  # security review is ALWAYS Opus
+        "auth": auth,
+        "measures": measures,
+    }
+
+    if _has_payments(apis):
         measures.append(
             "Payments (PCI): never store raw card data; use Stripe-hosted payment flows."
         )
+        # Flagged so the Code Reviewer's Opus security pass specifically verifies
+        # the Stripe Connect feature (POST-REVIEW DECISION 3 tradeoff to track).
+        section["payment_security"] = {
+            "flagged_for_security_review": True,
+            "feature": "Stripe Connect (in-app OAuth)",
+            "must_verify": [
+                "OAuth access/refresh token stored ENCRYPTED at rest, never plaintext",
+                "correct Stripe Connect OAuth (signed state param, server-side code exchange)",
+                "no credential leakage: no tokens or secrets in logs, API responses, or client code",
+                "the platform never receives or stores any Stripe credential",
+            ],
+        }
     if summary.get("customer_facing", True):
         measures.append(
             "Privacy: support user data export and deletion; collect only what's needed."
         )
-    return {
-        "review_model": "claude-opus-4-8",  # security review is ALWAYS Opus
-        "measures": measures,
-    }
+    return section
 
 
 def _foundation_tickets() -> list[dict]:
@@ -240,11 +368,138 @@ def _security_ticket() -> dict:
         "id": "SEC-1",
         "title": "Security hardening",
         "assigned_to": "backend",
-        "description": "Enforce auth on every endpoint, input validation/sanitization, "
-        "rate limiting, HTTPS/TLS, encryption of sensitive data, and secrets in "
+        "description": "Enforce AUTHORIZATION on every protected endpoint "
+        "(authentication itself is delegated to the identity provider in AUTH-1 — "
+        "do NOT build custom auth here), input validation/sanitization, rate "
+        "limiting, HTTPS/TLS, encryption of sensitive data at rest, and secrets in "
         "environment variables.",
         "dependencies": ["BE-1"],
     }
+
+
+def _auth_ticket(auth: dict) -> dict:
+    """Delegated-auth ticket for the Backend Dev (POST-REVIEW DECISION 1).
+
+    Instructs integration of a managed identity provider instead of custom
+    password/JWT code, and carries the tier (basic / 2FA-required / passkeys)."""
+    provider = auth["provider"]
+    desc = (
+        f"Integrate the managed identity provider {provider} for ALL "
+        f"authentication using OAuth2/OIDC. Do NOT hand-roll password hashing, "
+        f"salting, or custom JWT issuance — delegate sign-up, login, sessions and "
+        f"password reset to {provider}. Validate provider-issued tokens (verify "
+        f"the signature via the provider's JWKS, plus issuer and audience) on "
+        f"every protected endpoint. Read all provider keys from environment "
+        f"variables. "
+    )
+    if auth["mfa_required"]:
+        reasons = [k.replace("_", " ") for k, v in auth["triggers"].items() if v]
+        desc += (
+            f"This app handles sensitive data ({', '.join(reasons)}), so REQUIRE "
+            f"two-factor authentication — enable the provider's MFA/2FA. "
+        )
+    if auth["passkeys"] == "default":
+        desc += ("This is a Scale-tier app: enable passkeys (WebAuthn) as the "
+                 "default sign-in method. ")
+    else:
+        desc += "Offer passkeys (WebAuthn) as an optional sign-in method. "
+    return {
+        "id": "AUTH-1",
+        "title": f"Delegated authentication via {provider} ({auth['tier']})",
+        "assigned_to": "backend",
+        "description": desc.strip(),
+        "dependencies": ["FND-1", "FND-2"],
+        # Flagged for the Opus security pass.
+        "security_critical": True,
+        "security_focus": [
+            "no custom password hashing or hand-rolled JWT — provider only",
+            "provider tokens validated (JWKS signature, issuer, audience)",
+            "2FA enforced when required; provider secrets only from environment",
+        ],
+    }
+
+
+def _stripe_connect_schema() -> list[dict]:
+    """Encrypted token storage in the GENERATED APP's OWN database. The OAuth
+    token is stored ENCRYPTED and never in plaintext; the platform never touches
+    it (POST-REVIEW DECISION 3)."""
+    return [{
+        "table": "stripe_accounts",
+        "columns": [
+            {"name": "id", "type": "integer"},
+            {"name": "stripe_account_id", "type": "string"},
+            # ENCRYPTED at rest — never store the raw token.
+            {"name": "access_token_encrypted", "type": "string"},
+            {"name": "refresh_token_encrypted", "type": "string"},
+            {"name": "scope", "type": "string"},
+            {"name": "connected", "type": "boolean"},
+            {"name": "created_at", "type": "datetime"},
+        ],
+        "relationships": [],
+    }]
+
+
+def _stripe_connect_endpoints() -> list[dict]:
+    """OAuth flow lives in the generated app itself, under an admin/settings area."""
+    return [
+        {"method": "GET", "path": "/admin/stripe/connect",
+         "purpose": "Start Stripe Connect OAuth — redirect the owner to Stripe's hosted flow"},
+        {"method": "GET", "path": "/admin/stripe/callback",
+         "purpose": "Stripe OAuth callback — verify state, exchange the code, store the token ENCRYPTED"},
+        {"method": "GET", "path": "/admin/stripe/status",
+         "purpose": "Whether Stripe is connected — drives the disabled-until-connected payment UI"},
+    ]
+
+
+def _payment_tickets() -> list[dict]:
+    """Stripe Connect is a real generated FEATURE, not just a setup note
+    (POST-REVIEW DECISION 3). Backend builds the OAuth handler + encrypted token
+    storage in the app's own DB; Frontend builds the settings 'Connect Stripe'
+    action and the visible-but-disabled payment UI. NO platform-side Stripe."""
+    focus = [
+        "encrypted token storage — OAuth token stored encrypted at rest, never plaintext",
+        "correct Stripe Connect OAuth — signed state param (CSRF), server-side code exchange",
+        "no credential leakage — no tokens/secrets in logs, API responses, or client code",
+    ]
+    return [
+        {
+            "id": "PAY-1",
+            "title": "Stripe Connect OAuth handler + encrypted token storage",
+            "assigned_to": "backend",
+            "description": (
+                "Implement Stripe Connect for the app OWNER (NOT the platform). "
+                "GET /admin/stripe/connect redirects the owner to Stripe's hosted "
+                "OAuth page (use STRIPE_CLIENT_ID and a signed `state` param). "
+                "GET /admin/stripe/callback verifies `state`, exchanges the code "
+                "for the connected account's token, and stores it in the "
+                "stripe_accounts table ENCRYPTED (encryption key from the "
+                "STRIPE_TOKEN_ENC_KEY environment variable — never store the raw "
+                "token). GET /admin/stripe/status reports whether an account is "
+                "connected. NEVER log or return tokens. No Stripe credential may "
+                "ever leave the app for the platform."
+            ),
+            "dependencies": ["FND-1", "FND-2"],
+            "security_critical": True,
+            "security_focus": focus,
+        },
+        {
+            "id": "PAY-2",
+            "title": "Settings 'Connect Stripe' screen + payment UI (disabled until connected)",
+            "assigned_to": "frontend",
+            "description": (
+                "Add a Settings/Admin screen with a 'Connect Stripe' button that "
+                "calls GET /admin/stripe/connect. Read GET /admin/stripe/status: "
+                "UNTIL Stripe is connected, render payment controls (e.g. 'Pay "
+                "Now' buttons) VISIBLE but DISABLED, with helper text "
+                "\"Connect Stripe to start accepting payments\" linking to the "
+                "connect flow. Once connected, enable the payment controls. Never "
+                "handle raw card data — use Stripe-hosted payment UI."
+            ),
+            "dependencies": ["PAY-1"],
+            "security_critical": True,
+            "security_focus": focus,
+        },
+    ]
 
 
 def _integration_ticket(apis: list[dict]) -> dict:
@@ -269,7 +524,10 @@ _ARCH_SYSTEM = (
     "relationships:[string]}), api_endpoints (array of {method, path, purpose}), "
     "sprint_tickets (array of {id, title, assigned_to, description, "
     "dependencies:[string]}). assigned_to must be one of backend, frontend, "
-    "mobile, integration. Ticket ids like BE-1, FE-1, INT-1. No prose."
+    "mobile, integration. Ticket ids like BE-1, FE-1, INT-1. Do NOT create "
+    "tickets for custom password authentication or for payment processing — "
+    "authentication is delegated to a managed identity provider and payments use "
+    "Stripe Connect; both are added separately. No prose."
 )
 
 
@@ -350,10 +608,14 @@ async def build_blueprint(summary: dict) -> dict:
     tier = _decide_tier(summary)
     mobile = _is_mobile(summary)
     third_party = _third_party_apis(summary)
+    auth = _auth_tier(summary, third_party)
 
     creative = await _generate_creative(summary, mobile, third_party)
     if creative is None:
         creative = _mock_creative(summary, mobile)
+
+    database_schema = list(creative.get("database_schema", []))
+    api_endpoints = list(creative.get("api_endpoints", []))
 
     # Foundation first — the shared contract every other ticket builds against.
     tickets = _foundation_tickets() + list(creative.get("sprint_tickets", []))
@@ -361,18 +623,36 @@ async def build_blueprint(summary: dict) -> dict:
     # Deterministic guarantees on top of the creative output:
     if mobile and not any(t.get("assigned_to") == "mobile" for t in tickets):
         tickets += _mobile_tickets()
-    if third_party and not any(t.get("assigned_to") == "integration" for t in tickets):
-        tickets.append(_integration_ticket(third_party))
+
+    # Delegated auth is mandatory on every build (POST-REVIEW DECISION 1).
+    tickets.append(_auth_ticket(auth))
+
+    # Stripe Connect (POST-REVIEW DECISION 3): a real generated feature — its own
+    # encrypted-token table + OAuth endpoints (frozen into the contract) plus a
+    # backend and a frontend ticket. The platform builds NO Stripe connection.
+    if _has_payments(third_party):
+        database_schema += _stripe_connect_schema()
+        api_endpoints += _stripe_connect_endpoints()
+        tickets += _payment_tickets()
+
+    # Generic integration ticket only for NON-payment third-party services
+    # (Stripe Connect has its own PAY-* tickets above).
+    non_payment_apis = [
+        a for a in third_party if "stripe" not in a.get("name", "").lower()
+    ]
+    if non_payment_apis and not any(t.get("assigned_to") == "integration" for t in tickets):
+        tickets.append(_integration_ticket(non_payment_apis))
+
     # Security is mandatory on every build.
     tickets.append(_security_ticket())
 
     return {
         "tech_stack": creative.get("tech_stack", {}),
-        "database_schema": creative.get("database_schema", []),
-        "api_endpoints": creative.get("api_endpoints", []),
+        "database_schema": database_schema,
+        "api_endpoints": api_endpoints,
         "third_party_apis": third_party,
         "sprint_tickets": tickets,
-        "security": _security_section(summary, third_party),
+        "security": _security_section(summary, third_party, auth),
         "llm_routing": _llm_routing(),
         "cloud_config": _cloud_config(tier),
     }
