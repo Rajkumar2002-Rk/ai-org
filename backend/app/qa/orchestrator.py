@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -32,7 +33,12 @@ from app.reviewer import orchestrator as reviewer_orchestrator
 
 logger = logging.getLogger("qa.orchestrator")
 
+# Every failure that is NOT going to be retried must say so. A finding that sits
+# at retry_count=0 with no marker is indistinguishable from one that was simply
+# never looked at — that silent no-op is what Step 2 verification caught.
 ESCALATED_PREFIX = "[escalated after retries] "
+ESCALATED_TIER_PREFIX = "[escalated — needs Architect/BA, not auto-fixable] "
+ESCALATED_UNTRACED_PREFIX = "[escalated — could not be traced to a specific file] "
 
 
 # ------------------------------------------------------------------ helpers
@@ -93,6 +99,37 @@ def _file_for_target(target: str, files: list[dict], reason: str = "") -> dict |
             if best is None or len(content) < len(best.get("content") or ""):
                 best = f
     return best
+
+
+def _entrypoint_file(files: list[dict]) -> dict | None:
+    """The file that creates the app and registers routers (APP-1 / main.py)."""
+    for f in files:
+        if (f.get("ticket_id") or "").upper() == "APP-1":
+            return f
+    for f in files:
+        if (f.get("filepath") or "").endswith(("app/main.py", "/main.py")):
+            return f
+    for f in files:
+        if "FastAPI(" in (f.get("content") or ""):
+            return f
+    return None
+
+
+def _resolve_owner(outcome: TestOutcome, files: list[dict]) -> dict | None:
+    """Which generated file should be re-generated to fix this failure?
+
+    Routes that the Architect designed but that are absent from the running app
+    almost always mean the ENTRYPOINT failed to register their router — there is
+    no traceback to attribute, so without this the finding was classified
+    auto-fixable and then never retried (retry_count stayed 0 forever).
+    """
+    if "designed features are missing" in outcome.name:
+        row = _entrypoint_file(files)
+        if row is not None:
+            return row
+    return _file_for_target(
+        outcome.target, files, (outcome.reason or "") + "\n" + (outcome.evidence or "")
+    )
 
 
 def _ticket_for(blueprint: dict, ticket_id: str) -> dict | None:
@@ -218,6 +255,10 @@ async def _run_round(files: list[dict],
 async def run(project_id: int) -> dict:
     """Full QA pass for a project. Returns a plain summary (no technical detail
     leaves this layer for the user)."""
+    # One id for every row this pass writes, so re-runs of the same project stay
+    # separable (blueprint_id does not distinguish them).
+    run_id = uuid.uuid4().hex
+
     async with async_session() as db:
         stage = PipelineStatus(project_id=project_id, stage="qa", status="running")
         db.add(stage)
@@ -243,6 +284,9 @@ async def run(project_id: int) -> dict:
     retries: dict[str, int] = {}
     # Every file QA rewrites after the Opus certificate -> must be re-reviewed.
     modified_files: set[int] = set()
+    # Auto-fixable failures we could not attribute to any file -> escalated, not
+    # silently dropped.
+    untraceable: set[str] = set()
 
     try:
         for round_no in range(settings.qa_max_retries + 1):
@@ -298,8 +342,12 @@ async def run(project_id: int) -> dict:
             by_file: dict[int, list[TestOutcome]] = {}
             file_by_id = {}
             for f in retryable:
-                row = _file_for_target(f.target, files, f.reason + "\n" + (f.evidence or ""))
+                row = _resolve_owner(f, files)
                 if row is None:
+                    # Auto-fixable in theory, but we cannot say WHICH file to
+                    # regenerate. Record it so it escalates honestly instead of
+                    # sitting at retry_count=0 looking like nobody tried.
+                    untraceable.add(_key(f))
                     continue
                 by_file.setdefault(row["id"], []).append(f)
                 file_by_id[row["id"]] = row
@@ -347,14 +395,22 @@ async def run(project_id: int) -> dict:
         async with async_session() as db:
             for name, o in final.items():
                 reason = o.reason or None
-                is_escalated = (
-                    not o.passed and retries.get(name, 0) >= settings.qa_max_retries
-                )
-                if is_escalated:
-                    escalated += 1
-                    reason = f"{ESCALATED_PREFIX}{reason or 'still failing'}"
+                if not o.passed:
+                    # Say WHY this failure is not (or is no longer) being retried.
+                    if retries.get(name, 0) >= settings.qa_max_retries:
+                        prefix = ESCALATED_PREFIX
+                    elif name in untraceable:
+                        prefix = ESCALATED_UNTRACED_PREFIX
+                    elif o.root_cause_agent and not root_cause.is_auto_fixable(o):
+                        prefix = ESCALATED_TIER_PREFIX
+                    else:
+                        prefix = None
+                    if prefix:
+                        escalated += 1
+                        reason = f"{prefix}{reason or 'still failing'}"
                 db.add(QAResult(
                     project_id=project_id,
+                    run_id=run_id,
                     blueprint_id=blueprint_id,
                     test_name=name[:255],
                     test_level=o.level,
@@ -388,6 +444,7 @@ async def run(project_id: int) -> dict:
             await db.commit()
 
         return {
+            "run_id": run_id,
             "total": total,
             "passed": passed,
             "failed": total - passed,

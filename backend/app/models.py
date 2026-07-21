@@ -188,6 +188,11 @@ class QAResult(Base):
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
+    # Groups every row written by ONE QA pass. A project is re-tested repeatedly
+    # and blueprint_id does NOT disambiguate those re-runs (they share a
+    # blueprint), so without this the only way to separate runs is by matching
+    # created_at timestamps by hand.
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     # The blueprint version these results describe (nullable: assembly may fail
     # before a blueprint is resolvable).
     blueprint_id: Mapped[int | None] = mapped_column(

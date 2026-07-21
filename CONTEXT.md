@@ -49,13 +49,58 @@ below. Steps 2-6 were never started:
 
 | Step | What it asks for | Needs fresh pipeline spend? |
 | --- | --- | --- |
-| 2 | Trigger the retry-and-escalate loop for real; show `retry_count` incrementing across attempts and confirm what happens at attempt 3 | **No** — project 142's 17 `qa_results` rows + targeted synthetic bugs |
+| 2 | ~~Trigger the retry-and-escalate loop for real~~ **CLOSED 2026-07-21** — see "STEP 2 RESULT" below | No (none used) |
 | 3 | Inspect real root-cause classification quality across all four categories; say honestly whether any blur together | **No** — same data, synthetic bugs for missing categories |
 | 4 | Prove teardown directly: temp dirs + Postgres databases before/after | **No** — one local QA cycle |
 | 5 | Run with `qa_frontend_full_build=true`; what does a real `next build` catch, how long, how much downloaded | **Yes** |
 | 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes**, and needs token instrumentation built first |
 
-Start with Steps 2-4 on existing data — **no new pipeline spend needed.**
+Start with Steps 3-4 on existing data — **no new pipeline spend needed.**
+
+### STEP 2 RESULT — retry-and-escalate loop: CLOSED (2026-07-21)
+
+Analysis of the real data found the loop's **safety** properties proven (cap
+never exceeded 3, escalation marked, loop terminates) but its **usefulness**
+properties unproven: every retry in the database came from PRE-fix code, and the
+three post-fix runs recorded **zero retries**. Two defects were fixed, then a
+synthetic driver closed the gaps:
+
+- **Gap 5 fixed** — `assembly: designed features are missing from the running
+  app` was classified `developer_rework` (auto-fixable) but could never be
+  attributed to a file, so it sat at `retry_count=0` forever: labelled fixable,
+  silently never fixed. `qa/orchestrator._resolve_owner()` now routes it to the
+  ENTRYPOINT file (missing routes almost always mean the entrypoint failed to
+  register the router). Every unretried failure now also states WHY, via three
+  markers: `[escalated after retries]`, `[escalated — needs Architect/BA, not
+  auto-fixable]`, `[escalated — could not be traced to a specific file]`.
+- **`run_id` added** (migration `0008`, indexed, **historical rows backfilled**
+  by `(project_id, created_at)`). `blueprint_id` does NOT separate re-runs of one
+  project — project 142's 17 rows were three stacked runs that had to be split by
+  hand. They now group by key.
+- **`backend/tests/test_qa_retry_loop.py`** (new) drives the REAL
+  `qa.orchestrator.run()` — real assembly, venv, temp Postgres, uvicorn, L1/L2,
+  persistence — against synthetic projects. **Zero LLM spend**: `codegen.generate`,
+  `dev_agents.build_ticket` and `reviewer.review_subset` are patched, and the
+  Developer returns a *scripted* repair so retries are deterministic.
+
+Evidence (real `qa_results` rows, projects 145-148):
+
+| proj | retry | passed | root_cause | what it proves |
+| --- | --- | --- | --- | --- |
+| 145 | 1 | **true** | — | retry was PRODUCTIVE (app booted, 8 L1/L2 tests then passed) and the resolved failure CLEARS: `resolved after 1 repair attempt(s)` |
+| 146 | 0 | false | **architect_rework** | tier boundary respected — Developer never invoked |
+| 147 | 3 | false | developer_rework | cap holds under fixed code: exactly 3 Developer calls, then escalate and stop |
+| 148 | 1 | **true** | — | gap 5 fixed — missing-routes finding is retried, not a silent no-op |
+
+Project 146 is the first `architect_rework` row ever written to this database.
+
+**Known gap, deliberately NOT fixed (new scope, not a defect): retry
+productivity is not auditable from `qa_results`.** Only the final state per test
+is stored — `retry_count=3` says three attempts happened, not what differed
+between them. Productivity was proven here by instrumenting the driver (counting
+`build_ticket` calls), not by reading the table. Making it auditable in
+production needs a per-attempt record; decide that deliberately rather than
+bolting it on.
 
 ## What this session was
 
@@ -225,6 +270,7 @@ certificate verdict: False
 | 142 | `security_blocked` | **17 rows, 13 passed** | **Richest sample.** L1+L2 actually executed. Now the defect-#6 evidence. |
 | 143 | `qa_failed` | 1 row, 0 passed | Exposed defect #4 (`Table 'users' is already defined`). |
 | 144 | `security_blocked` | 0 rows | Opus gate blocked legitimately (9 of 14 files had unresolved criticals) → QA correctly did NOT run. Confirms the production-flow gate. |
+| **145-148** | mixed | 20 rows | ⚠️ **SYNTHETIC VERIFICATION FIXTURES — NOT REAL USAGE, NOT REAL SPEND.** Created by `tests/test_qa_retry_loop.py` with all LLM calls patched out (`codegen.generate`, `dev_agents.build_ticket`, `reviewer.review_subset`). They cost **$0.00**. **Step 6's cost analysis must EXCLUDE them** — counting them as real pipeline runs would badly overstate spend. Keep them: they are the only post-fix evidence that the retry loop is productive. |
 
 ## Also fixed along the way (smaller, same session)
 
@@ -280,6 +326,9 @@ Roughly **$3.50–4.50** of real spend: 5 full pipeline runs (140–144) plus 2
 recertifications, overwhelmingly Claude Opus 4.8 (the security pass ignores
 `CODEGEN_MODE` by design and runs on every file).
 
+**Projects 145-148 cost $0.00** — synthetic fixtures with every LLM seam patched.
+Exclude them from any cost calculation; only 140-144 represent real spend.
+
 **That number is an ESTIMATE, not a measurement.** `app/codegen.py::generate()`
 returns `(text, model_used)` and **captures no token usage anywhere in the
 codebase**. Verification Step 6 asks for real token counts and dollar cost, so it
@@ -302,10 +351,12 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
        backend python tests/test_architect_offline.py
    ```
    Both must print `RESULT: ALL CHECKS PASSED ✓` (expect 52 and 174 checks).
-2. **Continue verification at Step 2**, using the existing project 142/144 data.
-   Steps 2, 3 and 4 need **no new pipeline spend** — drive them from project
-   142's 17 `qa_results` rows plus targeted synthetic bugs. See the Steps 2-6
-   table at the top of this section for what each one asks for.
+2. **Continue verification at Step 3** (root-cause classification quality) —
+   Step 2 is CLOSED (see STEP 2 RESULT above). Steps 3 and 4 need **no new
+   pipeline spend**: drive them from the existing 140-144 rows plus synthetic
+   fixtures. `tests/test_qa_retry_loop.py` is the pattern to copy — it drives the
+   real orchestrator with every LLM seam patched, so scenarios are deterministic
+   and free.
 3. **Steps 5 and 6 need fresh runs.** Use `backend/tests/verify_pipeline.py`.
    Budget ~$0.50-0.70 per full run (Opus reviews every file and ignores
    `CODEGEN_MODE` by design). **Build token instrumentation before Step 6** —
