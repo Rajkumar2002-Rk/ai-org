@@ -11,6 +11,7 @@ import logging
 
 from openai import AsyncOpenAI
 
+from app import usage
 from app.config import settings
 
 logger = logging.getLogger("codegen")
@@ -36,7 +37,15 @@ def resolve_provider(model: str) -> str:
     return "openai"
 
 
-async def _via_openai(model: str, system: str, user: str, temperature: float) -> str | None:
+# Each provider helper returns (text, token_usage, concrete_model_id), or None
+# when that provider is not configured. The token usage is whatever the provider
+# actually reported — `None` means it reported nothing usable, which is recorded
+# as UNKNOWN rather than zero (see app/usage.py). `concrete_model_id` is the id
+# actually billed, which is not always the routing name that was requested.
+_Result = tuple[str, tuple[int, int] | None, str]
+
+
+async def _via_openai(model: str, system: str, user: str, temperature: float) -> _Result | None:
     if _openai is None:
         return None
     resp = await _openai.chat.completions.create(
@@ -45,35 +54,39 @@ async def _via_openai(model: str, system: str, user: str, temperature: float) ->
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}],
     )
-    return (resp.choices[0].message.content or "").strip()
+    text = (resp.choices[0].message.content or "").strip()
+    return text, usage.extract_openai(resp), model
 
 
-async def _via_anthropic(model: str, system: str, user: str, temperature: float) -> str | None:
+async def _via_anthropic(model: str, system: str, user: str, temperature: float) -> _Result | None:
     if not settings.anthropic_api_key:
         return None
     import anthropic  # imported lazily so the app runs without the extra dep
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    concrete = _ANTHROPIC_IDS.get(model, "claude-sonnet-5")
     # Newer Claude models reject `temperature`, so we omit it.
     resp = await client.messages.create(
-        model=_ANTHROPIC_IDS.get(model, "claude-sonnet-5"),
+        model=concrete,
         max_tokens=8192,
         system=system,
         messages=[{"role": "user", "content": user}],
     )
-    return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+    text = "".join(b.text for b in resp.content
+                   if getattr(b, "type", "") == "text").strip()
+    return text, usage.extract_anthropic(resp), concrete
 
 
-async def _via_google(model: str, system: str, user: str, temperature: float) -> str | None:
+async def _via_google(model: str, system: str, user: str, temperature: float) -> _Result | None:
     if not settings.gemini_api_key:
         return None
     import google.generativeai as genai
     genai.configure(api_key=settings.gemini_api_key)
-    gm = genai.GenerativeModel(_GEMINI_IDS.get(model, "gemini-2.5-flash-lite"),
-                               system_instruction=system)
+    concrete = _GEMINI_IDS.get(model, "gemini-2.5-flash-lite")
+    gm = genai.GenerativeModel(concrete, system_instruction=system)
     resp = await gm.generate_content_async(
         user, generation_config={"temperature": temperature}
     )
-    return (resp.text or "").strip()
+    return (resp.text or "").strip(), usage.extract_google(resp), concrete
 
 
 async def generate(
@@ -102,25 +115,25 @@ async def generate(
     label = model if requested == model else f"{model} (cheap mode, intended {requested})"
     try:
         if provider == "anthropic":
-            text = await _via_anthropic(model, system, user, temperature)
-            if text is not None:
-                return text, label
+            result = await _via_anthropic(model, system, user, temperature)
         elif provider == "google":
-            text = await _via_google(model, system, user, temperature)
-            if text is not None:
-                return text, label
+            result = await _via_google(model, system, user, temperature)
         else:
-            text = await _via_openai(model, system, user, temperature)
-            if text is not None:
-                return text, label
+            result = await _via_openai(model, system, user, temperature)
+        if result is not None:
+            text, tokens, concrete = result
+            await usage.record(provider, requested, concrete, tokens)
+            return text, label
     except Exception:  # pragma: no cover - network/credential failures
         logger.exception("codegen via %s failed; falling back to OpenAI", provider)
 
     # Fallback: OpenAI GPT-4o (the key we always have in this project).
     if provider != "openai":
         try:
-            text = await _via_openai(_OPENAI_FALLBACK, system, user, temperature)
-            if text is not None:
+            result = await _via_openai(_OPENAI_FALLBACK, system, user, temperature)
+            if result is not None:
+                text, tokens, concrete = result
+                await usage.record("openai", requested, concrete, tokens, fell_back=True)
                 return text, f"{model} (fell back to {_OPENAI_FALLBACK})"
         except Exception:  # pragma: no cover
             logger.exception("OpenAI fallback failed")

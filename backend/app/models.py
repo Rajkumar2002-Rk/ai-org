@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (Boolean, DateTime, ForeignKey, Integer, Numeric, String,
+                        Text, func)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -232,3 +233,46 @@ class CodeReview(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="code_reviews")
+
+
+class LLMUsage(Base):
+    """One row per LLM call — the measured basis for any cost figure.
+
+    `run_id` is the SAME id a QA pass writes onto its qa_results rows
+    (migration 0008), so "what did this QA cycle cost" is a join, not a
+    timestamp-matching exercise.
+
+    NULL token counts are meaningful and are NOT zero: they mean the provider
+    returned no usable usage block and `capture_ok` is false. Totals computed
+    without excluding those rows understate real spend — see app/usage.py.
+    """
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Nullable: calls made outside a tagged pass (ad-hoc, BA conversation) still
+    # get recorded rather than dropped.
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # Which pipeline stage spent this — "qa", "reviewer", "developers", ...
+    stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    # What routing asked for vs the concrete model id actually billed. These
+    # differ under CODEGEN_MODE=cheap and on provider fallback.
+    model_requested: Mapped[str] = mapped_column(String(100), nullable=False)
+    model_used: Mapped[str] = mapped_column(String(100), nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # NULL when no confirmed rate exists for model_used. Recomputable from the
+    # token counts above once a rate is confirmed.
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(12, 8), nullable=True)
+    # False = the provider gave us no usable usage block. Such a row must never
+    # be read as a free call.
+    capture_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    fell_back: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -53,7 +53,7 @@ below. Steps 2-6 were never started:
 | 3 | ~~Root-cause classification quality~~ **CLOSED 2026-07-21** — see "STEP 3 RESULT" below | No (a few Gemini Flash-Lite calls, fractions of a cent) |
 | 4 | ~~Prove teardown directly: temp dirs + Postgres databases before/after~~ **CLOSED 2026-07-21** — see "STEP 4 RESULT" below | No (none used) |
 | 5 | Run with `qa_frontend_full_build=true`; what does a real `next build` catch, how long, how much downloaded | **Yes** |
-| 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes**, and needs token instrumentation built first |
+| 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes** — instrumentation is now BUILT and PROVEN (2026-07-21, see below); only the measurement itself still needs the paid run |
 
 Steps 2-4 are CLOSED and cost **$0.00** between them. **Steps 5 and 6 are all
 that remain, and both need fresh pipeline spend** — Step 6 also needs token
@@ -296,6 +296,72 @@ actually built something — a build that silently no-ops also produces zero
 errors. Step 6 must prove the token instrumentation actually captured usage — a
 counter that never increments also reports a number under budget.
 
+### STEP 6 INSTRUMENTATION — BUILT AND PROVEN (2026-07-21); measurement pending
+
+**Sequence deliberately changed to 6-before-5.** `codegen.generate()` captured
+nothing, so instrumentation had to exist BEFORE the paid run: building it
+afterwards would mean a silent capture failure costs a SECOND paid run to
+discover. The one remaining paid run now yields the frontend-build evidence and
+the first measured cost number together.
+
+**What was built**
+- `app/usage.py` — per-provider token extraction, pricing, persistence.
+- `llm_usage` table, migration **0009**. One row per LLM call. No backfill is
+  possible; historical spend stays an estimate.
+- `codegen.py` — each `_via_*` helper now returns
+  `(text, tokens, concrete_model_id)`. **`generate()`'s public signature is
+  unchanged** (`(text, model_used)`), so not one call site was touched.
+- `qa/orchestrator.run()` — sets a contextvar carrying the pass's **existing
+  `run_id`** (migration 0008). No second identifier invented, no argument
+  threaded through the agent layers. "What did this QA cycle cost" is now a join
+  between `llm_usage.run_id` and `qa_results.run_id`.
+
+**Two rules encoded in the schema, both from the standing principle above**
+1. **A failed capture is never zero.** No usable usage block ⇒ `capture_ok=false`
+   and **NULL** tokens. A silent `0` would understate spend and read as good
+   news. Any total MUST exclude — and report — the `capture_ok=false` rows.
+2. **Tokens are the durable fact; cost is derived.** `cost_usd` is NULL when no
+   confirmed rate exists and is recomputable later from the stored counts.
+
+⚠️ **Only Gemini Flash-Lite's rate ($0.10/$0.40 per MTok) is documented for this
+project.** GPT-4o, GPT-4o-mini, Claude Sonnet and Claude Opus 4.8 all price as
+NULL right now. **Opus dominates real spend** (it reviews every file and ignores
+`CODEGEN_MODE`), so those rates must be confirmed before any dollar total means
+anything. Token counts are captured regardless.
+
+**Proof: `backend/tests/test_token_instrumentation.py` — 48 checks, 0 failures.**
+Each provider is handed a mocked response with a KNOWN, deliberately asymmetric
+token pair, and the exact numbers are asserted back out of the database:
+
+| provider | reported | stored (p/c/total) | model id recorded | cost |
+| --- | --- | --- | --- | --- |
+| openai | 1234 / 567 | 1234 / 567 / 1801 | `gpt-4o` | NULL — rate unconfirmed |
+| anthropic | 2345 / 678 | 2345 / 678 / 3023 | `claude-sonnet-5` | NULL — rate unconfirmed |
+| google | 3456 / 789 | 3456 / 789 / 4245 | `gemini-flash-lite-latest` | **$0.00066120** |
+
+Mocked on purpose: a real call returns an UNKNOWN count, so the only assertable
+property would be "nonzero" — which a hardcoded constant also satisfies. A known
+ground truth is what proves the extraction reads the RIGHT field, and the
+asymmetric pairs mean a swapped prompt/completion pair fails loudly. The real
+`openai` / `anthropic` / `google.generativeai` modules are installed, so the
+genuine import paths inside `_via_*` are exercised; only the network client is
+replaced.
+
+**Negative control — the check that makes the rest mean anything:** all three
+providers, given a response with the usage block stripped, record
+`capture_ok=false` with NULL tokens (never 0), and the aggregate reports
+`captured=3, capture_failed=3` instead of a clean-looking total.
+
+**⚠️ Found while building this — a real limit, logged not fixed.** The first
+version of the proof used a fabricated `project_id`; every insert was rejected by
+the foreign key, and `usage.record()` swallowed the error **by design** — so the
+run reported success having written **zero rows**. That swallow must stay:
+instrumentation may never break a pipeline run. But it means **a systematic write
+failure loses all usage silently, with only a log line to show for it** — the same
+shape as everything else in the STANDING PRINCIPLE table, one level up.
+**Before trusting any cost total, check that the expected NUMBER OF ROWS landed
+for that `run_id`.** A low total and a missing total look identical otherwise.
+
 ## What this session was
 
 A **verification session** for Week 6 (QA Agent). Not feature work. The goal was
@@ -523,11 +589,12 @@ recertifications, overwhelmingly Claude Opus 4.8 (the security pass ignores
 **Projects 145-148 cost $0.00** — synthetic fixtures with every LLM seam patched.
 Exclude them from any cost calculation; only 140-144 represent real spend.
 
-**That number is an ESTIMATE, not a measurement.** `app/codegen.py::generate()`
-returns `(text, model_used)` and **captures no token usage anywhere in the
-codebase**. Verification Step 6 asks for real token counts and dollar cost, so it
-**requires adding token instrumentation first** — do not trust any cost figure
-until that exists.
+**That number is an ESTIMATE, not a measurement**, and it permanently stays one:
+until 2026-07-21 `app/codegen.py::generate()` returned `(text, model_used)` and
+captured no token usage anywhere, so the counts for runs 140-148 were never
+recorded and **cannot be backfilled**. Instrumentation now exists (see "STEP 6
+INSTRUMENTATION" above); only calls made from migration `0009` forward are
+measured. Do not retro-fit a number onto the historical runs.
 
 ---
 
@@ -540,19 +607,30 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    ```
    docker compose build backend && docker compose up -d backend
    for t in test_qa_offline test_architect_offline test_qa_retry_loop \
-            test_qa_teardown; do
+            test_qa_teardown test_token_instrumentation; do
      docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
          backend python tests/$t.py
    done
    ```
-   All four must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-21**, not estimated: **56 / 174 / 19 / 35 = 284 checks.** (An older
-   note here said 52 for `test_qa_offline`; that predated the Step 3 root-cause
-   cases.) All four are free — every LLM seam is patched.
-2. **Continue verification at Step 5** — run with `qa_frontend_full_build=true`
-   and find out what a real `next build` catches, how long it takes, and how much
-   it downloads. Steps 2, 3 and 4 are CLOSED; see their RESULT sections above.
-   **Step 5 is the first step that needs real money.**
+   All five must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
+   2026-07-21**, not estimated: **56 / 174 / 19 / 35 / 48 = 332 checks.** (An
+   older note here said 52 for `test_qa_offline`; that predated the Step 3
+   root-cause cases.) All five are free — every LLM seam is patched or mocked.
+   NOTE: `test_qa_classification.py` is deliberately NOT in this list — it makes
+   real Gemini Flash-Lite calls (fractions of a cent, but not free).
+2. **Steps 5 and 6 are the only work left, and they run TOGETHER as ONE paid
+   run.** Step 6's instrumentation was deliberately built FIRST (see "STEP 6
+   INSTRUMENTATION" above), so that single run produces the `next build` evidence
+   AND the first measured cost number at the same time. Steps 2, 3 and 4 are
+   CLOSED. Before greenlighting the run:
+   - **Confirm the missing pricing rates** (GPT-4o, GPT-4o-mini, Claude Sonnet,
+     Claude Opus 4.8) in `app/usage._PRICING`. Opus dominates spend and currently
+     prices as NULL. Token counts are captured either way, so this can also be
+     backfilled by recomputation — but the dollar figure is meaningless until then.
+   - **Apply the standing principle to both halves**: prove `next build` actually
+     built something (a silent no-op also produces zero errors), and check the
+     ROW COUNT in `llm_usage` for the run_id (a lost write and a cheap run look
+     identical in a total).
    `tests/test_qa_retry_loop.py` is the pattern to copy for orchestrator-level
    scenarios (all LLM seams patched, deterministic, free);
    `tests/test_qa_classification.py` is the pattern for probing decision paths;

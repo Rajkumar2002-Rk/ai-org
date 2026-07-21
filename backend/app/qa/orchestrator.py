@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from app import usage
 from app.config import settings
 from app.database import async_session
 from app.developers import agents as dev_agents
@@ -259,6 +260,12 @@ async def run(project_id: int) -> dict:
     # One id for every row this pass writes, so re-runs of the same project stay
     # separable (blueprint_id does not distinguish them).
     run_id = uuid.uuid4().hex
+    # Tag every LLM call made anywhere downstream of here with THIS pass's id, so
+    # "what did this QA cycle cost" is a join on run_id against llm_usage rather
+    # than timestamp-matching. Deliberately reuses the qa_results run_id instead
+    # of minting a second identifier for the same thing.
+    usage_token = usage.set_run_context(run_id=run_id, project_id=project_id,
+                                        stage="qa")
 
     async with async_session() as db:
         stage = PipelineStatus(project_id=project_id, stage="qa", status="running")
@@ -472,3 +479,6 @@ async def run(project_id: int) -> dict:
                 st.completed_at = datetime.now(timezone.utc)
                 await db.commit()
         raise
+    finally:
+        # Untag, so calls made after this pass are not attributed to it.
+        usage.reset_run_context(usage_token)
