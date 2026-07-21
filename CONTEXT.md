@@ -69,7 +69,7 @@ maintainability, scalability, transparency, and trust.
 | 7   | Integration Developer | Never               | GPT-4o mini                   | Third-party API connections                                  |
 | 8   | Design Review         | Never               | Claude Sonnet                 | UX evaluation, consistency, interaction completeness         |
 | 9   | Code Reviewer         | Security cert only  | GPT-4o mini + Claude Opus 4.8 | Code quality + security (Opus always)                        |
-| 10  | QA Agent              | Test report only    | GPT-4o mini                   | 5 levels of testing + root cause tracing                     |
+| 10  | QA Agent              | No — counts only    | Gemini 2.5 Flash-Lite         | 3 levels of testing + root cause tracing (built Week 6)      |
 | 11  | DevOps                | Live link only      | GPT-4o mini                   | Deploy, SSL, domain, Safe Mode, version timeline             |
 | 12  | Documentation         | Final summary       | GPT-4o mini                   | User guide, demo script, handoff summary                     |
 | 13  | Monitoring            | Weekly summary      | GPT-4o mini                   | Health, performance, error tracking                          |
@@ -88,7 +88,9 @@ maintainability, scalability, transparency, and trust.
 - Design Review: Claude Sonnet
 - Security review: Claude Opus 4.8 — ALWAYS, hardcoded, never
   changes regardless of cost or project size
-- QA, DevOps, Docs, simple tasks: GPT-4o mini
+- DevOps, Docs, simple tasks: GPT-4o mini
+  (QA was here originally — SUPERSEDED by UPDATED ROUTING below: QA runs on
+  Gemini 2.5 Flash-Lite as of Week 6, in code and in the blueprint's llm_routing)
 - Product Intelligence: GPT-4o
 
 ## UPDATED ROUTING — apply from Week 4 onwards:
@@ -587,6 +589,14 @@ model call is Level 3 root-cause classification, on Gemini Flash-Lite, and only
 when the deterministic rules are ambiguous. The expensive part is wall-clock
 (venv + boot per round), not tokens.
 
+### Scope note — 3 levels built, not the 5 in the Master Blueprint
+The original agent table said "5 levels of testing"; the Week 6 spec defined
+THREE (user interaction, security attack simulation, root cause tracing) and
+that is exactly what was built. The agent table has been corrected to say 3.
+Not a gap to silently fix later — if the remaining two levels are still wanted
+(candidates: load/performance testing and cross-browser/responsive testing),
+they are NEW scope and need their own spec. Do not assume they exist.
+
 ### Current phase
 **Week 7 — DevOps agent (#11).** Real deployment: AWS, SSL, domain, Safe Mode
 snapshots, version timeline — the thing that turns generated files into a hosted
@@ -660,8 +670,6 @@ pending: Design Review (#8), Qdrant vector store, code export to disk.
   still fails. Never silently pass security.
 - Cost is a hard constraint even for security: Opus-on-every-file is expensive,
   so it must be reserved for what truly needs it and tested on small builds.
-
-### What I learned — Week 4
 
 ### What I learned — Week 4
 
