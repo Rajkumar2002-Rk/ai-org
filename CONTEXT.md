@@ -51,11 +51,13 @@ below. Steps 2-6 were never started:
 | --- | --- | --- |
 | 2 | ~~Trigger the retry-and-escalate loop for real~~ **CLOSED 2026-07-21** — see "STEP 2 RESULT" below | No (none used) |
 | 3 | ~~Root-cause classification quality~~ **CLOSED 2026-07-21** — see "STEP 3 RESULT" below | No (a few Gemini Flash-Lite calls, fractions of a cent) |
-| 4 | Prove teardown directly: temp dirs + Postgres databases before/after | **No** — one local QA cycle |
+| 4 | ~~Prove teardown directly: temp dirs + Postgres databases before/after~~ **CLOSED 2026-07-21** — see "STEP 4 RESULT" below | No (none used) |
 | 5 | Run with `qa_frontend_full_build=true`; what does a real `next build` catch, how long, how much downloaded | **Yes** |
 | 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes**, and needs token instrumentation built first |
 
-Start with Steps 3-4 on existing data — **no new pipeline spend needed.**
+Steps 2-4 are CLOSED and cost **$0.00** between them. **Steps 5 and 6 are all
+that remain, and both need fresh pipeline spend** — Step 6 also needs token
+instrumentation built first.
 
 ### STEP 2 RESULT — retry-and-escalate loop: CLOSED (2026-07-21)
 
@@ -202,6 +204,97 @@ between them. Productivity was proven here by instrumenting the driver (counting
 `build_ticket` calls), not by reading the table. Making it auditable in
 production needs a per-attempt record; decide that deliberately rather than
 bolting it on.
+
+### STEP 4 RESULT — teardown: CLOSED (2026-07-21)
+
+Probe: `backend/tests/test_qa_teardown.py`. Every resource is sampled at three
+points — **BEFORE → DURING (must genuinely EXIST) → AFTER (gone)** — and the real
+listings are printed, because "zero before, zero after" is also exactly what a
+run that did nothing produces.
+
+**The test was audited before it was trusted, and four of its own checks turned
+out to be the same defect this whole verification pass keeps finding** — checks
+that could only ever return the reassuring answer:
+
+1. **S4's headline check proved nothing.** It asserted `report["total"] > 0`, but
+   `total` is `len(final)` (`qa/orchestrator.py:437`), the count of distinct test
+   NAMES — `> 0` for any pass producing a single outcome, including one that
+   assembled exactly once and never retried. S4 is the ONLY scenario covering
+   accumulation *across* cycles. The cycles are now **counted**: `assembly.assemble`
+   and `dev_agents.build_ticket` are wrapped with counters, and `retry_count` is
+   read back from the persisted `qa_results` rows as independent confirmation.
+2. **Three checks accepted "never created" as "cleaned up"** — the pattern
+   `X is None or X not in after[...]`. `teardown()` deliberately does not null
+   `env.root` / `env.db_name` / `env.process` (`qa/assembly.py:589`), so each
+   resource is now proven **created AND then gone**, as two separate checks.
+3. **S2 had no DURING sample at all**, despite that being the file's stated
+   thesis. `assemble()` provisions the database (`assembly.py:532`) BEFORE
+   launching uvicorn (`:553`), so a never-booting app genuinely does leave both
+   resources behind — they are now sampled while they exist.
+4. **S3's crash check was diluted by an `or`** — `any("unexpected error" in o.name
+   or not o.passed ...)` passed on ANY failing outcome for any reason, including a
+   swallowed crash accompanied by an unrelated failure. Now strictly the crash.
+
+Also hardened: the temp-dir listing uses `tempfile.gettempdir()` instead of a
+hardcoded `/tmp` (`mkdtemp` honours `TMPDIR`, and a listing that silently matches
+nothing is the exact bug that helper had already been rewritten **twice** for),
+and S4 restores its patches in a `finally` so a later scenario can't be poisoned.
+
+**Result under the tightened checks: 35 checks, 0 failures — run twice, byte-identical.**
+Zero LLM spend, confirmed at the seam rather than assumed: the only spend path is
+`root_cause.classify()` (`root_cause.py:210`), which does `from app import codegen`
+and calls `codegen.generate`, so patching that module attribute covers it.
+
+Evidence — real listings, not assertions about listings:
+
+```
+S1 DURING   /tmp/qa-build-qf8fxv4s
+            qa_test_1b1f2e842b3b
+            pid 17  .../.qa-venv/bin/python -m uvicorn backend.app.main:app
+S1 AFTER    (none) / (none) / (none)
+
+S2 DURING   /tmp/qa-build-r4fch9lk   qa_test_7d8e525f9d28   (app never booted)
+S2 AFTER    (none) / (none)
+
+S4          assemble() calls=2   build_ticket() calls=1
+            max retry_count in qa_results=1
+            retry_count=1  assembly: app did not start
+```
+
+All three resource types are proven created-then-gone across four scenarios:
+temp directory, throwaway Postgres database, uvicorn child process — including
+when the app never boots (S2) and when an exception is thrown mid-test (S3,
+proving the orchestrator's `finally` fires).
+
+### ⚠️ STANDING PRINCIPLE — "absence of evidence" is not "evidence of success"
+
+**This is the fourth time in four verification steps that the same failure
+pattern has BEEN the finding.** These are not four unrelated bugs; they are one
+recurring design error, and it is worth watching for by name rather than
+rediscovering it each time:
+
+| Step | Where it hid | What it did |
+| --- | --- | --- |
+| 1 | The Opus security certificate | A certificate with no fingerprint could not be *proven* to match disk — and "we can't tell" resolved to "it's fine." Fixed by failing CLOSED. |
+| 3 | `root_cause` short-circuits | `"server error" + level 1 → developer_fix` fired before any reasoning, so the most common failure class got a confident label nobody had actually thought about. |
+| 3 | `environment_fault`'s absence | QA's own broken harness had no category to land in, so it scored as a Developer bug — and the "repair" hardcoded credentials. |
+| 4 | The teardown checks themselves | `X is None or X not in after[...]` — a resource that was never created reported a clean teardown. |
+
+The shape is always identical: **a check whose passing condition is satisfiable
+by nothing happening.** A missing fingerprint, an unreasoned label, an
+unrepresented category, an uncreated resource — every one of them read as
+success.
+
+**The rule: every check must be able to FAIL for the reason it exists.** State
+what would have to be true for it to fail; if the answer is "nothing observable,"
+the check is decorative. In practice: assert the positive FIRST — the resource
+EXISTED, the model REASONED, the certificate COVERS these files — and only then
+assert the property under test.
+
+**Apply this to Steps 5 and 6 specifically.** Step 5 must prove `next build`
+actually built something — a build that silently no-ops also produces zero
+errors. Step 6 must prove the token instrumentation actually captured usage — a
+counter that never increments also reports a number under budget.
 
 ## What this session was
 
@@ -446,18 +539,25 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    passed or anything was touched:
    ```
    docker compose build backend && docker compose up -d backend
-   docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
-       backend python tests/test_qa_offline.py
-   docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
-       backend python tests/test_architect_offline.py
+   for t in test_qa_offline test_architect_offline test_qa_retry_loop \
+            test_qa_teardown; do
+     docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
+         backend python tests/$t.py
+   done
    ```
-   Both must print `RESULT: ALL CHECKS PASSED ✓` (expect 52 and 174 checks).
-2. **Continue verification at Step 4** (prove teardown directly: temp dirs and
-   Postgres databases before/after a QA cycle). Steps 2 and 3 are CLOSED — see
-   their RESULT sections above. Step 4 needs **no new pipeline spend**.
+   All four must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
+   2026-07-21**, not estimated: **56 / 174 / 19 / 35 = 284 checks.** (An older
+   note here said 52 for `test_qa_offline`; that predated the Step 3 root-cause
+   cases.) All four are free — every LLM seam is patched.
+2. **Continue verification at Step 5** — run with `qa_frontend_full_build=true`
+   and find out what a real `next build` catches, how long it takes, and how much
+   it downloads. Steps 2, 3 and 4 are CLOSED; see their RESULT sections above.
+   **Step 5 is the first step that needs real money.**
    `tests/test_qa_retry_loop.py` is the pattern to copy for orchestrator-level
    scenarios (all LLM seams patched, deterministic, free);
-   `tests/test_qa_classification.py` is the pattern for probing decision paths.
+   `tests/test_qa_classification.py` is the pattern for probing decision paths;
+   `tests/test_qa_teardown.py` is the pattern for proving a resource was created
+   before proving it was cleaned up.
 3. **Steps 5 and 6 need fresh runs.** Use `backend/tests/verify_pipeline.py`.
    Budget ~$0.50-0.70 per full run (Opus reviews every file and ignores
    `CODEGEN_MODE` by design). **Build token instrumentation before Step 6** —
@@ -534,6 +634,16 @@ maintainability, scalability, transparency, and trust.
   changes.
 - Full code export is always available to the user — no
   vendor lock-in, ever.
+- **Every check must be able to FAIL for the reason it exists.** A test,
+  gate, or classifier whose passing condition is satisfiable by *nothing
+  happening* is decorative. Assert the positive FIRST — the resource
+  EXISTED, the model REASONED, the certificate COVERS these files — and
+  only then assert the property under test. "Absence of evidence" must
+  never resolve to "evidence of success." (Added 2026-07-21 after this
+  same pattern turned out to BE the finding in all four of verification
+  Steps 1-4 — the fail-open certificate, two short-circuit
+  classifications, and the teardown checks themselves. See STANDING
+  PRINCIPLE above.)
 - **Any agent whose output BRANCHES BEHAVIOUR must be tested for
   repeat-run consistency** — classification, routing, and gating
   decisions get run N times on identical input, and disagreement
