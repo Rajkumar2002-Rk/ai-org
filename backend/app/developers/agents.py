@@ -102,7 +102,10 @@ async def _self_review(model: str, ticket: dict, file: dict) -> tuple[bool, str]
 
 
 def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
-    names = ", ".join(f["filename"] for f in existing) or "none yet"
+    # Full paths, not bare filenames: the entrypoint ticket (APP-1) has to import
+    # routers by module path, and paths also make duplicate-file collisions
+    # visible to the agent.
+    names = ", ".join(f.get("filepath") or f["filename"] for f in existing) or "none yet"
     parts = []
     if contract:
         parts.append(contract)

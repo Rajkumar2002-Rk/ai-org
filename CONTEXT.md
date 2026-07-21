@@ -5,6 +5,308 @@ fully before doing anything else in this project.
 
 ---
 
+# ⚠️ ACTIVE SESSION STATE — READ FIRST (2026-07-21)
+
+## NOTHING IS COMMITTED YET
+
+`HEAD` is still **`7035a8d`** ("CONTEXT.md: correct QA agent reference data after
+Week 6"). **All six fixes below exist ONLY in the working tree.** If the working
+tree is lost, all of this verification work is lost with it.
+
+```
+ M backend/app/architect/builder.py          +44
+ M backend/app/developers/agents.py          +5/-1
+ M backend/app/qa/assembly.py                +242/-...
+ M backend/app/qa/orchestrator.py            +177/-...
+ M backend/app/qa/outcome.py                 +3
+ M backend/app/qa/root_cause.py              +13/-...
+ M backend/app/reviewer/orchestrator.py      +104
+ M backend/tests/test_architect_offline.py   +11
+ M backend/tests/test_qa_offline.py          +147
+ ?? backend/tests/_verify_pipeline.py    (temp driver — do NOT commit)
+ ?? backend/tests/_verify_cert.py        (temp, unused — DELETE)
+ ?? backend/tests/_verify_run.log        (run log — do NOT commit)
+                     9 files changed, 683 insertions(+), 63 deletions(-)
+```
+
+## What this session was
+
+A **verification session** for Week 6 (QA Agent). Not feature work. The goal was
+independent confirmation of six things via real pipeline runs, not a re-summary
+of what Week 6 claimed. Steps 2–6 of that verification are **still outstanding**.
+
+It found **six real defects**. Five were in Week 6's own code; two of those were
+introduced by earlier fixes *within this same session*. The headline finding is
+#6: the Opus 4.8 security certificate — the platform's core trust guarantee —
+could describe code that no longer existed on disk.
+
+---
+
+## THE SIX DEFECTS, in the order they were found
+
+### 1. Import scanner fabricated "hallucinated dependency" findings
+**File:** `backend/app/qa/assembly.py` · `_third_party_imports()`
+**Wrong:** the regex `import\s+([A-Za-z0-9_.,\s]+)` put `\s` inside the character
+class, so newlines matched and a leading `import os` greedily swallowed the whole
+following import block. On a real generated `auth.py` it returned six garbage
+strings such as `'os\nimport time\nimport logging\nimport httpx\nfrom fastapi import Depends'`
+and `'HTTPException'` instead of `{fastapi, httpx, jose}`. QA then tried to
+`pip install 'HTTPException'`, the install failed, and QA reported *"the generated
+code imports a package that does not exist"* — **a false accusation against the
+Developer agent** that consumed all 3 retries on a bug that never existed.
+**Fix:** parse with `ast.parse()` and walk `ast.Import` / `ast.ImportFrom`;
+skip relative imports (`node.level`). Correctly handles multi-line and
+parenthesised imports. A file that won't parse returns `set()` because
+`_syntax_check` already reports the syntax error separately.
+**Why it was missed in Week 6:** the synthetic fixture's only bare `import` was
+the last line, so there was nothing left to swallow.
+
+### 2. The Architect never commissioned an application entrypoint
+**File:** `backend/app/architect/builder.py` · new `_entrypoint_ticket()`
+**Wrong:** on a real blueprint (project 141) **not one of 15 generated files
+created a FastAPI application.** Verified directly: `content LIKE '%FastAPI%'`
+was false for all 15. The Architect commissioned five routers (`BE-1`..`BE-5`)
+and no app to mount them on. Searching every ticket title+description:
+`'main.py': False, 'entrypoint': False, 'fastapi app': False, 'include_router': False`.
+Weeks 3/4/5 all passed it — the Architect only checks blueprint sections exist,
+each Developer ticket builds fine in isolation, and the Code Reviewer reviews
+files individually (a router file is valid code on its own). QA is the first
+stage that *runs* the thing, so it caught it immediately. **This bug had been
+shipping since Week 4.**
+**Fix:** deterministic `APP-1` ticket appended LAST in `build_blueprint()`, with
+`dependencies = every other ticket id` so the wave scheduler puts it in the final
+wave. **Deliberately NOT named `FND-3`**: `developers/orchestrator.py::_waves()`
+runs every `FND-*` ticket in the FIRST wave, but an entrypoint must import
+routers that don't exist yet.
+**Authorised by the user** as a defect fix in otherwise-locked Week 3 code.
+
+### 3. "no runnable app found" was classified `developer_rework`
+**File:** `backend/app/qa/root_cause.py` · `_deterministic()`
+**Wrong:** no Developer can fix a missing blueprint ticket by rewriting a router.
+QA sent it back 3 times and burned three rounds of real Gemini spend on a
+structurally unfixable task.
+**Fix:** `"no runnable app found"` → **`ARCHITECT_REWORK`** (not auto-fixable →
+escalates immediately, no wasted retries). `"app did not start"` stays
+`DEVELOPER_REWORK` — the app exists but crashes, which *is* the Developer's code.
+
+### 4. Dual-path PYTHONPATH caused double module execution *(self-inflicted)*
+**File:** `backend/app/qa/assembly.py` · `_python_path()`, new `_write_alias_hook()`
+**Wrong:** the fix for absolute imports put **both** `root` and `root/backend` on
+`sys.path`. Generated code genuinely mixes styles — `APP-1`'s `main.py` used
+`from app.…` while every router used `from backend.app.…` — so the same
+`models.py` loaded under two module names, executed twice against the same
+`Base`, and the app died with
+`sqlalchemy.exc.InvalidRequestError: Table 'users' is already defined for this MetaData instance`.
+Confirmed the generated code was *correct*: exactly one file defined `users`,
+exactly one declared `Base`.
+**Fix:** `_python_path()` returns the root ONLY. A generated `sitecustomize.py`
+(auto-imported at interpreter start, root is on `sys.path`) installs a meta-path
+finder aliasing `app.*` → `backend.app.*` so both styles resolve to **one module
+object**. Verified: module body executes once, `app.models is backend.app.models`
+is `True`.
+
+### 5. Silent partial boot reported "13/14 passed" on a crippled app
+**Files:** `backend/app/qa/assembly.py` (`_check_designed_endpoints()`,
+`_norm_path()`, `assemble(files, expected_endpoints)`) ·
+`backend/app/qa/orchestrator.py` (passes blueprint endpoints in)
+**Wrong:** `APP-1` originally told the agent to wrap router imports in
+`try/except ImportError` so one bad module couldn't stop boot. The agent wrote
+`except (ImportError, AttributeError): pass` over *guessed* module paths;
+`orders.py` failed to import and was silently skipped. QA tested the surviving
+2 endpoints and reported near-success. **Never tested: `POST /api/orders`,
+`GET /api/orders/{order_id}`, and all three `/admin/stripe/*` endpoints** — the
+flagged security-critical Stripe Connect feature got zero Level 2 coverage.
+**Fix:** `assemble()` now takes the blueprint's designed paths and diffs them
+against the booted app's `/openapi.json` (params normalised via `_norm_path`).
+Any missing route ⇒ `env.ok = False` — a crippled app reads as **assembly
+failed**, never "mostly passing". `APP-1`'s description now forbids hiding
+import errors.
+**Proven on the same project (142)** that previously said 13/14: it now reports
+`assembly: designed features are missing from the running app — The app started
+but 5 of 6 designed endpoints are not there: /api/orders, /api/orders/{order_id},
+/admin/stripe/connect, /admin/stripe/callback, /admin/stripe/status`.
+
+### 6. ⭐ The Opus security certificate could describe code that no longer existed
+**This is the most serious finding of the session.**
+**Files:** `backend/app/reviewer/orchestrator.py` (new `_hash()`, `file_hashes()`,
+`drifted_files()`, `review_subset()`; `run()` now stamps `file_hashes`) ·
+`backend/app/qa/orchestrator.py` (new `_recertify()`, always invoked)
+**Wrong:** QA's repair loop rewrites files **after** the Code Reviewer issues the
+certificate, and nothing re-reviewed them. Observed on project 142: Opus
+certified `passed: true` at `16:52:09`, then QA regenerated code at `16:52:10+`.
+Worse, the regeneration actively **defeated a security control** — the generated
+`auth.py` correctly refused to boot without Auth0 config, so under retry pressure
+the Developer "fixed" it by hardcoding fake credentials into `main.py`:
+```python
+if not os.getenv("AUTH0_DOMAIN"):
+    os.environ["AUTH0_DOMAIN"] = "mock-domain.auth0.com"
+```
+and reintroduced `allow_origins=["*"]` with `allow_credentials=True` — the exact
+insecure-CORS bug the binding contract was built to eliminate. None of it was
+security-reviewed, because the review had already happened.
+**Fix (structural, not instance-specific):**
+- The certificate now carries `file_hashes` — a sha256-per-file fingerprint of
+  **exactly** the code it attests to, written by `reviewer/orchestrator.run()`.
+- `drifted_files(project_id, cert)` compares recorded hashes against disk, so
+  drift is detectable **no matter which stage caused it** — it does not depend on
+  that stage declaring its own edits.
+- **FAILS CLOSED:** a certificate with no fingerprint cannot be *proven* to match
+  disk, so every file is treated as drifted and re-reviewed. "We can't tell" must
+  never resolve to "it's fine" for a security certificate.
+- `qa/orchestrator._recertify()` runs **unconditionally** at the end of every QA
+  pass (not only when QA thinks it changed something), re-reviews drifted files
+  through `review_subset()` (full two-pass, always-Opus), folds the result into
+  the certificate, adds a `recertified_after_qa` block, and **re-fingerprints**.
+- If the re-check fails the project becomes **`security_blocked`**, never
+  `tested`.
+
+---
+
+## PROJECT 142 — the before/after evidence for defect #6
+
+Project 142 was the live witness: its certificate claimed `passed: true` over a
+`main.py` that contained fake credentials and wildcard CORS.
+
+| | BEFORE | AFTER |
+| --- | --- | --- |
+| certificate `passed` | **`true`** (a lie) | **`false`** (the truth) |
+| certificate `file_hashes` | **0 files** | **15 files** |
+| `main.py` `mock-domain.auth0.com` | **present** | **gone** |
+| `main.py` `allow_origins=["*"]` | **present** | **gone** |
+| project status | `qa_failed` | **`security_blocked`** |
+| Opus issues found / fixed | 62 / 50 | 136 / 108 (74 / 58 added by re-review) |
+
+Fail-closed recertification flagged all 15 files as drifted (file ids 196–210),
+re-reviewed them, and rewrote 11. Final verification:
+
+```
+certificate covers : 15 files
+files on disk now  : 15 files
+mismatched hashes  : []
+drifted_files()    : []
+CERTIFICATE DESCRIBES EXACTLY WHAT IS ON DISK: True
+certificate verdict: False
+```
+
+## Verification projects in the database (do not delete — Step 2+ uses these)
+
+| project | status | qa_results | note |
+| --- | --- | --- | --- |
+| 140 | `qa_failed` | 2 rows, 0 passed | OpenAI quota was exhausted; BA/PI/Architect fell back to mocks. Not a valid sample. |
+| 141 | `qa_failed` | 1 row, 0 passed | First genuinely-real run. Exposed defect #2 (no entrypoint). |
+| 142 | `security_blocked` | **17 rows, 13 passed** | **Richest sample.** L1+L2 actually executed. Now the defect-#6 evidence. |
+| 143 | `qa_failed` | 1 row, 0 passed | Exposed defect #4 (`Table 'users' is already defined`). |
+| 144 | `security_blocked` | 0 rows | Opus gate blocked legitimately (9 of 14 files had unresolved criticals) → QA correctly did NOT run. Confirms the production-flow gate. |
+
+## Also fixed along the way (smaller, same session)
+
+- `qa/orchestrator._file_for_target()` — used to pick whichever *shortest file
+  containing the substring*; for the assembly target `"app"` that was effectively
+  random and regenerated innocent files. Now: exact path match → quoted-route
+  match (`"/api/orders"` as a real route declaration) → traceback attribution via
+  `_TRACEBACK_FILE_RE` for assembly failures → `None` rather than a guess.
+- `qa/outcome.TestOutcome.evidence` (new field) — carries the **full untruncated**
+  startup log for attribution. The culprit's stack frame sat above the 800-char
+  truncation in `failure_reason`, which is why one real failure got
+  `retry_count = 0` and no repair attempt. `reason` stays the human-readable
+  summary that is persisted.
+- **Stale failures now clear.** Each round's outcomes replace the previous state;
+  a test that failed earlier and no longer appears is recorded as passed with
+  `resolved after N repair attempt(s)`. Previously a fixed problem stayed marked
+  failed forever and wrongly set the project to `qa_failed`.
+- `assembly._TEST_ENV` — supplies `AUTH0_DOMAIN`, `AUTH0_API_AUDIENCE`,
+  `AUTH0_ISSUER`, `AUTH0_CLIENT_ID/SECRET`, `STRIPE_CLIENT_ID`,
+  `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_TOKEN_ENC_KEY`,
+  `SECRET_KEY` to the app under test. Obviously-fake loopback-only values. Without
+  these, correct fail-fast behaviour was misdiagnosed as a Developer bug — which
+  is what triggered the credential-hardcoding in defect #6.
+- **Anti-workaround prompts.** `APP-1`'s description forbids hiding import
+  errors, forbids setting/defaulting/mocking ANY environment variable, and
+  requires an explicit CORS origin list (never `allow_origins=["*"]` with
+  credentials). `qa/orchestrator._regenerate()`'s repair prompt says never make a
+  test pass by weakening security — no hardcoded secrets, no removing fail-fast
+  checks, no widening CORS, no dropping authorization; *"if the environment is
+  missing configuration, LEAVE IT AS IS."*
+- `developers/agents.py::_base_prompt()` — the already-generated file list now
+  shows **filepaths**, not bare filenames, so `APP-1` can import routers by real
+  module path (and duplicate-path collisions become visible to the agent).
+
+## Regression coverage added (locks all of the above)
+
+`backend/tests/test_qa_offline.py` — new section F: partial-boot must fail
+assembly; `_file_for_target` no longer guesses (incl. traceback attribution);
+mixed import styles execute a module exactly once; certificate drift detection +
+fail-closed; test env supplies provider config; entrypoint ticket forbids silent
+skips and fake secrets. Plus a root-cause case asserting
+`"no runnable app found"` → `architect_rework`.
+`backend/tests/test_architect_offline.py` — asserts across all 8 gating
+scenarios: exactly one `APP-1`, it is **last**, it depends on every other ticket,
+and its description demands `FastAPI` + `include_router`.
+
+**Both suites passed at the end of the session**, as did the Weeks 3–5
+8-scenario gating suite.
+
+## Cost so far — and why Step 6 matters
+
+Roughly **$3.50–4.50** of real spend: 5 full pipeline runs (140–144) plus 2
+recertifications, overwhelmingly Claude Opus 4.8 (the security pass ignores
+`CODEGEN_MODE` by design and runs on every file).
+
+**That number is an ESTIMATE, not a measurement.** `app/codegen.py::generate()`
+returns `(text, model_used)` and **captures no token usage anywhere in the
+codebase**. Verification Step 6 asks for real token counts and dollar cost, so it
+**requires adding token instrumentation first** — do not trust any cost figure
+until that exists.
+
+---
+
+## NEXT STEPS for whoever resumes this
+
+Do these in order. Do **not** skip straight to committing.
+
+1. **Review the working tree first.** `git diff` against `7035a8d`. Nine modified
+   files, 683 insertions. Read `qa/assembly.py`, `qa/orchestrator.py` and
+   `reviewer/orchestrator.py` most carefully — that is where the security-critical
+   changes are.
+2. **Regression test again before trusting anything.** Do not assume the earlier
+   green run still holds:
+   ```
+   docker compose build backend && docker compose up -d backend
+   docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
+       backend python tests/test_qa_offline.py
+   docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
+       backend python tests/test_architect_offline.py
+   ```
+   Both must print `RESULT: ALL CHECKS PASSED ✓`.
+3. **Delete the temp files, then commit.** `rm backend/tests/_verify_cert.py
+   backend/tests/_verify_run.log`. Keep `_verify_pipeline.py` only if the user
+   wants the driver retained — otherwise delete it too. Commit the nine real
+   files. **No `Co-Authored-By` line, ever** (permanent user rule). Do not push
+   until the user says so.
+4. **Then continue verification Step 2** using the **existing project 142/144
+   data — no new pipeline spend needed.** Steps 2 (retry/escalate loop), 3
+   (root-cause classification quality), and 4 (teardown proof) can all be driven
+   from project 142's 17 `qa_results` rows plus targeted synthetic bugs.
+   Step 5 (`qa_frontend_full_build=true`) and Step 6 (real cost) do need fresh
+   runs; Step 6 needs token instrumentation built first.
+
+### Known-open, NOT yet fixed (deliberately logged, not actioned)
+- **Duplicate filepaths from the Architect/Developers.** Two tickets can be
+  assigned the same output path and one silently overwrites the other. Seen
+  repeatedly: `BE-2`+`BE-3` → `backend/app/orders.py` (project 142/143),
+  `PAY-1`+`SEC-1` → `backend/app/stripe_routes.py` (140), `PAY-1`+`BE-3` →
+  `backend/app/routers/stripe.py` (144). A paid-for ticket's work is discarded.
+  This is an Architect/Developer defect, not a QA one — QA reporting it is QA
+  working correctly.
+- **No single fresh run has yet gone green end-to-end.** Every mechanism is
+  verified, but run 144's gate blocked legitimately and 142 now correctly reports
+  `passed: false`. That may say more about generated-code quality than about the
+  QA agent. Worth establishing an all-green baseline at some point.
+- **The Opus security pass is strict and non-deterministic** — 141/142 passed the
+  gate; 144 blocked with 9 of 14 files failing. Expect variance between runs.
+
+---
+
 ## WHAT THIS PROJECT IS
 
 A platform where non-technical users describe a software idea

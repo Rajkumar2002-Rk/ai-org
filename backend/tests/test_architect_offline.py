@@ -233,6 +233,17 @@ async def test_gating_suite():
         check("foundation tickets first (FND-1, FND-2)", ids[:2] == ["FND-1", "FND-2"])
         # Invariant: delegated auth on every build, no custom hashing.
         check("exactly one AUTH-1 ticket", ids.count("AUTH-1") == 1)
+        # Invariant: every build MUST commission an application entrypoint, and
+        # it must run LAST so it can register the routers. (Week 6 verification
+        # found real blueprints with five routers and no app to mount them on.)
+        check("exactly one APP-1 entrypoint ticket", ids.count("APP-1") == 1)
+        check("entrypoint ticket is last", ids[-1] == "APP-1")
+        app_t = tk.get("APP-1", {})
+        check("entrypoint depends on all other tickets",
+              len(app_t.get("dependencies", [])) == len(ids) - 1)
+        check("entrypoint asks for the FastAPI app + routers",
+              "FastAPI" in app_t.get("description", "")
+              and "include_router" in app_t.get("description", ""))
         check("no bcrypt/custom-auth in measures", "bcrypt" not in measures_text(bp))
         check("auth measure mentions delegated provider",
               "delegate" in measures_text(bp) and "auth0" in measures_text(bp))

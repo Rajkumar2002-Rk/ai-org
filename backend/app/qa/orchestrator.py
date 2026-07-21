@@ -15,6 +15,7 @@ The QA agent never talks to the user — the API layer exposes counts only.
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -26,6 +27,8 @@ from app.developers.orchestrator import _contract_text
 from app.models import Blueprint, GeneratedFile, PipelineStatus, Project, QAResult
 from app.qa import assembly, level1, level2, root_cause
 from app.qa.outcome import TestOutcome
+from app.redis_client import redis_client
+from app.reviewer import orchestrator as reviewer_orchestrator
 
 logger = logging.getLogger("qa.orchestrator")
 
@@ -37,26 +40,56 @@ def _key(outcome: TestOutcome) -> str:
     return outcome.name
 
 
-def _file_for_target(target: str, files: list[dict]) -> dict | None:
-    """Find the generated file most likely responsible for a failing test.
+_TRACEBACK_FILE_RE = re.compile(r'File "(?:/tmp/qa-build-[^/]+/)([^"]+\.py)"')
 
-    `target` is either a filepath (frontend checks) or "METHOD /path" (API
-    tests); for the latter we look for the route string in the file contents.
+
+def _file_from_traceback(reason: str, files: list[dict]) -> dict | None:
+    """Pull the culprit out of a startup traceback.
+
+    Assembly failures name the exact file that blew up. Using that beats
+    guessing, and it is the difference between regenerating the broken module
+    and regenerating something arbitrary.
+    """
+    hits = _TRACEBACK_FILE_RE.findall(reason or "")
+    for rel in reversed(hits):        # deepest frame first
+        for f in files:
+            if f.get("filepath") == rel or (f.get("filepath") or "").endswith("/" + rel):
+                return f
+    return None
+
+
+def _file_for_target(target: str, files: list[dict], reason: str = "") -> dict | None:
+    """Find the generated file responsible for a failing test.
+
+    `target` is a filepath (frontend/static checks) or "METHOD /path" (API
+    tests). Assembly-level failures have no single owning file, so they are
+    resolved from the traceback instead of guessed — the old substring fallback
+    picked whichever shortest file merely CONTAINED the text (for target "app"
+    that was effectively random, and it regenerated innocent files).
     """
     if not target:
         return None
+
     for f in files:
         if f.get("filepath") == target or f.get("filename") == target:
             return f
 
+    if target == "app":
+        return _file_from_traceback(reason, files)
+
     parts = target.split(" ", 1)
-    path = parts[1] if len(parts) == 2 else target
-    # Match the most specific literal segment of the route.
-    literal = path.split("{")[0].rstrip("/") or path
+    if len(parts) != 2:
+        return None
+    literal = parts[1].split("{")[0].rstrip("/")
+    if len(literal) < 2:
+        return None
+
+    # Require the route as a QUOTED string — that is how a route is declared,
+    # so it is a real match rather than an incidental substring.
     best = None
     for f in files:
         content = f.get("content") or ""
-        if literal and literal in content:
+        if f'"{literal}' in content or f"'{literal}" in content:
             if best is None or len(content) < len(best.get("content") or ""):
                 best = f
     return best
@@ -87,7 +120,14 @@ async def _regenerate(file_row: dict, ticket: dict, blueprint: dict,
             f"everything that already works:\n{evidence}\n"
             f"Validate all inputs, never return a 500 for bad input (return a "
             f"4xx), enforce authorization on protected routes, reject negative "
-            f"amounts, and use parameterised queries only."
+            f"amounts, and use parameterised queries only.\n"
+            f"CRITICAL — do NOT make a test pass by weakening security. Never "
+            f"hardcode, mock, default or invent credentials or secrets; never "
+            f"set environment variables in code; never remove a fail-fast check "
+            f"on missing configuration; never widen CORS; never drop an "
+            f"authorization check. If the code is correct and the environment is "
+            f"simply missing configuration, LEAVE IT AS IS — a refusal to start "
+            f"without required secrets is correct behaviour, not a bug."
         ),
     }
     try:
@@ -100,15 +140,67 @@ async def _regenerate(file_row: dict, ticket: dict, blueprint: dict,
         return None
 
 
+async def _recertify(project_id: int, blueprint: dict, file_ids: set[int]) -> dict:
+    """Re-run the Opus security review over code that changed since certification.
+
+    THE INVARIANT: the security certificate must never describe code that no
+    longer exists on disk. QA's repair loop runs AFTER certification, so without
+    this the certificate would attest to code that has since been replaced —
+    which is exactly how an insecure change slipped past the Week-5 gate during
+    verification.
+
+    The authoritative signal is the certificate's own content fingerprint, not
+    QA's bookkeeping: comparing hashes catches drift from ANY source, including
+    a stage that never declared it changed anything. QA's tracked edits are
+    unioned in so a certificate predating fingerprints still recertifies.
+    """
+    raw = await redis_client.get(f"security_cert:{project_id}")
+    cert = json.loads(raw) if raw else {}
+
+    drifted = set(await reviewer_orchestrator.drifted_files(project_id, cert))
+    targets = drifted | set(file_ids)
+    if not targets:
+        return cert
+
+    result = await reviewer_orchestrator.review_subset(
+        project_id, blueprint, sorted(targets)
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    cert["passed"] = bool(cert.get("passed", True)) and result["passed"]
+    cert["issues_found"] = cert.get("issues_found", 0) + result["issues_found"]
+    cert["issues_fixed"] = cert.get("issues_fixed", 0) + result["issues_fixed"]
+    cert["model_used"] = reviewer_orchestrator.reviewer.SECURITY_MODEL
+    cert["recertified_after_qa"] = {
+        "files_rechecked": result["files_reviewed"],
+        "drifted_from_certificate": sorted(drifted),
+        "rewritten_by_qa": sorted(file_ids),
+        "passed": result["passed"],
+        "issues_found": result["issues_found"],
+        "issues_fixed": result["issues_fixed"],
+        "timestamp": now,
+    }
+    # Re-fingerprint so the certificate again describes what is on disk.
+    cert["file_hashes"] = await reviewer_orchestrator.file_hashes(project_id)
+    cert["timestamp"] = now
+    await redis_client.set(f"security_cert:{project_id}", json.dumps(cert), ex=86400)
+    return cert
+
+
 # ------------------------------------------------------------------ one round
-async def _run_round(files: list[dict]) -> tuple[list[TestOutcome], assembly.TestEnv]:
+async def _run_round(files: list[dict],
+                     expected_endpoints: list[str]) -> tuple[list[TestOutcome], assembly.TestEnv]:
     """Assemble, test, tear down. Returns outcomes (assembly problems included)."""
-    env = await assembly.assemble(files)
+    env = await assembly.assemble(files, expected_endpoints)
     outcomes: list[TestOutcome] = []
     try:
-        # Assembly problems ARE Level 1 findings, not crashes.
+        # Assembly problems ARE Level 1 findings, not crashes. The reason shown
+        # to a human is truncated, so carry the FULL startup log alongside it —
+        # the frame naming the culprit file is often above the truncation point,
+        # and without it an assembly failure can't be attributed or retried.
         for f in env.failures:
-            outcomes.append(TestOutcome(f.test_name, 1, False, f.reason, "app"))
+            o = TestOutcome(f.test_name, 1, False, f.reason, "app")
+            o.evidence = env.logs
+            outcomes.append(o)
 
         if env.ok:
             outcomes.extend(await level1.run(env))
@@ -143,9 +235,14 @@ async def run(project_id: int) -> dict:
     blueprint_id = bp_row[0] if bp_row else None
     blueprint = json.loads(bp_row[1]) if bp_row else {}
 
+    expected_endpoints = [e.get("path") for e in (blueprint.get("api_endpoints") or [])
+                          if e.get("path")]
+
     # Final state per test name, plus how many times we retried each issue.
     final: dict[str, TestOutcome] = {}
     retries: dict[str, int] = {}
+    # Every file QA rewrites after the Opus certificate -> must be re-reviewed.
+    modified_files: set[int] = set()
 
     try:
         for round_no in range(settings.qa_max_retries + 1):
@@ -160,11 +257,26 @@ async def run(project_id: int) -> dict:
             files = [{"id": r[0], "ticket_id": r[1], "filename": r[2], "filepath": r[3],
                       "content": r[4], "agent_type": r[5]} for r in rows]
 
-            outcomes, _env = await _run_round(files)
+            outcomes, _env = await _run_round(files, expected_endpoints)
 
+            # This round's results ARE the current state. A test that failed in
+            # an earlier round and no longer appears was RESOLVED — carry it
+            # forward as passed rather than leaving a stale failure that would
+            # mark the whole project failed for a problem QA already fixed.
+            current: dict[str, TestOutcome] = {}
             for o in outcomes:
                 o.retry_count = retries.get(_key(o), 0)
-                final[_key(o)] = o
+                current[_key(o)] = o
+            for name, prev in final.items():
+                if name not in current and not prev.passed:
+                    resolved = TestOutcome(
+                        name, prev.level, True,
+                        f"resolved after {retries.get(name, 0)} repair attempt(s)",
+                        prev.target,
+                    )
+                    resolved.retry_count = retries.get(name, 0)
+                    current[name] = resolved
+            final = current
 
             failures = [o for o in outcomes if not o.passed]
             if not failures:
@@ -186,7 +298,7 @@ async def run(project_id: int) -> dict:
             by_file: dict[int, list[TestOutcome]] = {}
             file_by_id = {}
             for f in retryable:
-                row = _file_for_target(f.target, files)
+                row = _file_for_target(f.target, files, f.reason + "\n" + (f.evidence or ""))
                 if row is None:
                     continue
                 by_file.setdefault(row["id"], []).append(f)
@@ -211,8 +323,24 @@ async def run(project_id: int) -> dict:
                         if gf is not None:
                             gf.content = new_content
                             await db.commit()
+                    # Certified code has been replaced -> owes a re-review.
+                    modified_files.add(file_id)
                 for f in group:
                     retries[_key(f)] = retries.get(_key(f), 0) + 1
+
+        # ---- re-certify anything QA rewrote (MUST happen before we call the
+        # project secured/tested — see _recertify) -----------------------
+        # Always ask, even when QA believes it changed nothing: the certificate's
+        # fingerprint is what decides, not QA's own bookkeeping.
+        recert = await _recertify(project_id, blueprint, modified_files)
+        if recert.get("recertified_after_qa"):
+            if not recert.get("passed", True):
+                final["security: re-check after repairs"] = TestOutcome(
+                    "security: re-check after repairs", 2, False,
+                    "Code changed while fixing test failures did not pass the "
+                    "security re-check, so this build is not certified.",
+                    "app",
+                )
 
         # ---- persist final results -------------------------------------
         escalated = 0
@@ -238,17 +366,25 @@ async def run(project_id: int) -> dict:
 
             total = len(final)
             passed = sum(1 for o in final.values() if o.passed)
-            all_passed = passed == total and total > 0
+            # Still certified? If QA rewrote code, the re-review decides.
+            certified = recert.get("passed", True) if recert else True
+            all_passed = passed == total and total > 0 and certified
 
             st = await db.get(PipelineStatus, stage_id)
             if st is not None:
                 st.status = "done" if all_passed else "error"
                 st.completed_at = datetime.now(timezone.utc)
                 if not all_passed:
-                    st.error_message = f"{total - passed} test(s) failed"
+                    st.error_message = (
+                        f"{total - passed} test(s) failed"
+                        if certified else "security re-check failed after repairs"
+                    )
             project = await db.get(Project, project_id)
             if project is not None:
-                project.status = "tested" if all_passed else "qa_failed"
+                if not certified:
+                    project.status = "security_blocked"
+                else:
+                    project.status = "tested" if all_passed else "qa_failed"
             await db.commit()
 
         return {
@@ -258,6 +394,9 @@ async def run(project_id: int) -> dict:
             "escalated": escalated,
             "all_passed": all_passed,
             "blueprint_id": blueprint_id,
+            "files_rewritten_by_qa": len(modified_files),
+            "recertified": recert.get("recertified_after_qa") if recert else None,
+            "still_certified": certified,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 

@@ -14,6 +14,9 @@ class TestOutcome:
     target: str = ""    # e.g. "POST /orders" or "frontend/app/page.tsx"
     retry_count: int = 0
     root_cause_agent: str | None = None
+    # Full untruncated log for attribution (never shown to the user, never
+    # stored — `reason` is the human-readable summary that gets persisted).
+    evidence: str = ""
 
 
 def failure_is_server_error(status: int) -> bool:

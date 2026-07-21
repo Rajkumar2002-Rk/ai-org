@@ -17,6 +17,7 @@ that is a legitimate QA FINDING, not a crash: `assemble()` returns a handle
 whose `ok` is False and whose `failures` explain what broke, and the QA agent
 records them as Level 1 failures with root-cause tracing like any other bug.
 """
+import ast
 import asyncio
 import logging
 import os
@@ -45,6 +46,29 @@ _STDLIB_SKIP = set(sys.stdlib_module_names) | {
     "app", "backend", "frontend", "mobile", "tests", "__future__",
 }
 
+# Config the generated app legitimately requires from the environment.
+#
+# Generated apps are now told to delegate auth to a provider and to fail fast
+# when its config is missing — that is CORRECT security behaviour. If the test
+# environment does not supply it, the app rightly refuses to boot and QA blames
+# the Developer for a bug that does not exist. (Observed in verification: the
+# Developer "fixed" it by hardcoding mock Auth0 credentials to get past QA.)
+# These are obviously-fake loopback-only values; nothing here is a real secret.
+_TEST_ENV = {
+    "SECRET_KEY": "qa-test-secret-not-a-real-key",
+    "STRIPE_TOKEN_ENC_KEY": "qa-test-enc-key-0123456789abcdef",
+    "STRIPE_CLIENT_ID": "ca_qa_test_client_id",
+    "STRIPE_SECRET_KEY": "sk_test_qa_placeholder",
+    "STRIPE_WEBHOOK_SECRET": "whsec_qa_test_placeholder",
+    "AUTH0_DOMAIN": "qa-test.example.auth0.com",
+    "AUTH0_ISSUER": "https://qa-test.example.auth0.com/",
+    "AUTH0_AUDIENCE": "https://qa-test.local/api",
+    "AUTH0_API_AUDIENCE": "https://qa-test.local/api",
+    "AUTH0_CLIENT_ID": "qa-test-client-id",
+    "AUTH0_CLIENT_SECRET": "qa-test-client-secret",
+    "APP_ENV": "test",
+}
+
 # import-name -> pip package, where they differ.
 _PACKAGE_ALIASES = {
     "sqlalchemy": "SQLAlchemy",
@@ -63,8 +87,11 @@ _PACKAGE_ALIASES = {
     "pydantic_settings": "pydantic-settings",
 }
 
-_IMPORT_RE = re.compile(r"^\s*(?:from\s+([A-Za-z0-9_.]+)|import\s+([A-Za-z0-9_.,\s]+))",
-                        re.MULTILINE)
+# NOTE: this used to be a regex. It was wrong: `import\s+([A-Za-z0-9_.,\s]+)`
+# put \s inside the character class, so a leading `import os` greedily swallowed
+# every following import line and QA tried to `pip install 'HTTPException'`.
+# That made QA fabricate "hallucinated dependency" findings and burn all 3
+# retries on a bug that did not exist. Parse the real syntax tree instead.
 
 
 @dataclass
@@ -111,13 +138,31 @@ def _safe_relpath(filepath: str, filename: str) -> str | None:
 
 
 def _third_party_imports(code: str) -> set[str]:
-    """Top-level import roots that look like installable packages."""
+    """Top-level import roots that look like installable packages.
+
+    Uses the AST so multi-line and parenthesised imports are read correctly and
+    imported NAMES are never mistaken for package names. Relative imports
+    (`from .models import X`) are local, not installable, so they are skipped.
+    A file that will not parse returns nothing — the syntax error is already
+    reported as its own finding by `_syntax_check`.
+    """
     found: set[str] = set()
-    for from_mod, import_mod in _IMPORT_RE.findall(code):
-        mods = [from_mod] if from_mod else import_mod.split(",")
-        for m in mods:
-            root = m.strip().split(".")[0].split(" as ")[0].strip()
-            if root and not root.startswith(".") and root not in _STDLIB_SKIP:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return found
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = (alias.name or "").split(".")[0]
+                if root and root not in _STDLIB_SKIP:
+                    found.add(root)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:      # relative import -> local module
+                continue
+            root = (node.module or "").split(".")[0]
+            if root and root not in _STDLIB_SKIP:
                 found.add(root)
     return found
 
@@ -241,21 +286,82 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
     return []
 
 
-def _find_app_module(written: dict[str, str]) -> tuple[str | None, str | None]:
-    """Locate the FastAPI entrypoint -> (import path, working dir prefix)."""
+def _find_app_module(written: dict[str, str]) -> str | None:
+    """Locate the FastAPI entrypoint and return its FULL dotted module path
+    relative to the assembly root (e.g. 'backend.app.main').
+
+    The full path is used — not a 'backend'-stripped one — because generated
+    code mixes both import styles: the binding contract says `from app.models
+    import X`, but agents also emit `from backend.app.database import get_db`.
+    Running from the root with BOTH the root and root/backend on PYTHONPATH
+    (see `_python_path`) makes both styles resolve.
+    """
     candidates = [r for r in written if r.endswith(".py") and "FastAPI(" in written[r]]
     if not candidates:
-        return None, None
+        return None
     # Prefer the conventional backend/app/main.py from the binding contract.
     candidates.sort(key=lambda r: (not r.endswith("app/main.py"), len(r)))
-    rel = candidates[0]
+    return candidates[0][:-3].replace("/", ".")
 
-    # Run with cwd = the dir ABOVE the top package so `app.main` resolves like
-    # it does in the real project layout.
-    parts = rel[:-3].split("/")
-    if parts[0] == "backend":
-        return ".".join(parts[1:]), "backend"
-    return ".".join(parts), ""
+
+def _python_path(root: str) -> str:
+    """ONLY the assembly root.
+
+    It is tempting to also add root/backend so the contract's `app.x` style
+    resolves alongside `backend.app.x`. Do not: two search paths make the same
+    file importable under two names, Python executes it twice, and SQLAlchemy
+    dies with "Table 'users' is already defined for this MetaData instance".
+    The two styles are reconciled by ALIASING instead (see `_write_alias_hook`),
+    which keeps a single module object.
+    """
+    return root
+
+
+def _write_alias_hook(root: str, module: str) -> None:
+    """Make `app.x` and `backend.app.x` the SAME module.
+
+    Generated files genuinely mix both import styles (the entrypoint used
+    `from app.models`, the routers used `from backend.app.models`). Aliasing
+    them to one module object is what lets a mixed-style build run at all.
+    `sitecustomize` is imported automatically at interpreter start, and root is
+    on sys.path, so this installs before any app code runs.
+    """
+    top = module.split(".")[0]
+    real_pkg = ".".join(module.split(".")[:-1]) or top     # e.g. backend.app
+    alias = "app" if real_pkg != "app" else "backend.app"
+    if real_pkg == alias:
+        return
+
+    hook = f'''"""QA test-harness shim: alias {alias}.* -> {real_pkg}.* (single module identity)."""
+import importlib
+import importlib.abc
+import importlib.machinery
+import sys
+
+_ALIAS = {alias!r}
+_REAL = {real_pkg!r}
+
+
+class _AliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == _ALIAS or fullname.startswith(_ALIAS + "."):
+            return importlib.machinery.ModuleSpec(fullname, self)
+        return None
+
+    def create_module(self, spec):
+        real = _REAL + spec.name[len(_ALIAS):]
+        mod = importlib.import_module(real)
+        sys.modules[spec.name] = mod
+        return mod
+
+    def exec_module(self, module):
+        return None
+
+
+sys.meta_path.insert(0, _AliasFinder())
+'''
+    with open(os.path.join(root, "sitecustomize.py"), "w", encoding="utf-8") as fh:
+        fh.write(hook)
 
 
 async def _provision_db(db_name: str) -> tuple[str | None, list[Failure]]:
@@ -295,17 +401,26 @@ async def _drop_db(db_name: str) -> None:
         logger.warning("Could not drop QA test database %s", db_name)
 
 
-def _create_tables(venv_dir: str, root: str, cwd_prefix: str, db_url: str) -> None:
-    """Best effort: import the generated models and create their tables."""
+def _create_tables(venv_dir: str, root: str, module: str, db_url: str) -> None:
+    """Best effort: import the generated models and create their tables.
+
+    Tries both import styles, since generated code uses either.
+    """
+    pkg = module.rsplit(".", 1)[0] if "." in module else ""      # e.g. backend.app
+    candidates = [c for c in (pkg, "app", "backend.app") if c]
     boot = (
-        "import asyncio, importlib, pkgutil, sys\n"
-        "mods = []\n"
-        "for m in list(sys.modules): pass\n"
-        "try:\n"
-        "    db = importlib.import_module('app.database')\n"
-        "    importlib.import_module('app.models')\n"
-        "except Exception as e:\n"
-        "    print('no-models', e); raise SystemExit(0)\n"
+        "import asyncio, importlib\n"
+        f"cands = {candidates!r}\n"
+        "db = None\n"
+        "for c in cands:\n"
+        "    try:\n"
+        "        db = importlib.import_module(c + '.database')\n"
+        "        importlib.import_module(c + '.models')\n"
+        "        break\n"
+        "    except Exception:\n"
+        "        db = None\n"
+        "if db is None:\n"
+        "    print('no-models'); raise SystemExit(0)\n"
         "async def go():\n"
         "    eng = getattr(db, 'engine', None)\n"
         "    Base = getattr(db, 'Base', None)\n"
@@ -314,9 +429,9 @@ def _create_tables(venv_dir: str, root: str, cwd_prefix: str, db_url: str) -> No
         "        await c.run_sync(Base.metadata.create_all)\n"
         "asyncio.run(go())\n"
     )
-    env = {**os.environ, "DATABASE_URL": db_url, "PYTHONPATH": os.path.join(root, cwd_prefix)}
-    _run([_venv_python(venv_dir), "-c", boot],
-         cwd=os.path.join(root, cwd_prefix), timeout=60, env=env)
+    env = {**os.environ, **_TEST_ENV, "DATABASE_URL": db_url,
+           "PYTHONPATH": _python_path(root)}
+    _run([_venv_python(venv_dir), "-c", boot], cwd=root, timeout=60, env=env)
 
 
 async def _wait_healthy(base_url: str, proc: subprocess.Popen, timeout: int) -> bool:
@@ -338,9 +453,49 @@ async def _wait_healthy(base_url: str, proc: subprocess.Popen, timeout: int) -> 
 
 
 # ------------------------------------------------------------------ entrypoint
-async def assemble(files: list[dict]) -> TestEnv:
+def _norm_path(path: str) -> str:
+    """`/orders/{order_id}` and `/orders/{id}` are the same route shape."""
+    return re.sub(r"\{[^}]*\}", "{}", (path or "").rstrip("/")) or "/"
+
+
+async def _check_designed_endpoints(base_url: str, expected: list[str]) -> list[Failure]:
+    """A partially-booted app is a FAILED assembly, not a passing test run.
+
+    Generated entrypoints tend to guard router imports; a broken router then gets
+    skipped and the app still starts, so QA would happily test the two endpoints
+    that survived and report "mostly passing" on an app whose payment routes were
+    never loaded. Compare what booted against what the Architect designed.
+    """
+    if not expected:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{base_url}/openapi.json")
+            spec = r.json() if r.status_code == 200 else {}
+    except Exception as exc:
+        return [Failure("assembly: app's API is unreadable", str(exc)[:300])]
+
+    live = {_norm_path(p) for p in (spec.get("paths") or {})}
+    missing = [p for p in expected if _norm_path(p) not in live]
+    if not missing:
+        return []
+    return [Failure(
+        "assembly: designed features are missing from the running app",
+        f"The app started but {len(missing)} of {len(expected)} designed "
+        f"endpoints are not there: {', '.join(missing[:8])}. This usually means "
+        f"a module failed to import and was silently skipped, so those features "
+        f"would be untested and unavailable.",
+    )]
+
+
+async def assemble(files: list[dict],
+                   expected_endpoints: list[str] | None = None) -> TestEnv:
     """Build and boot a throwaway instance. NEVER raises — assembly problems
-    come back as `env.failures` so the QA agent can log them as findings."""
+    come back as `env.failures` so the QA agent can log them as findings.
+
+    `expected_endpoints` are the blueprint's designed paths; if the booted app is
+    missing any, assembly is treated as FAILED (env.ok stays False).
+    """
     env = TestEnv()
     if not files:
         env.failures.append(Failure("assembly: nothing to test",
@@ -355,7 +510,7 @@ async def assemble(files: list[dict]) -> TestEnv:
 
         env.failures.extend(_syntax_check(env.root, written))
 
-        module, cwd_prefix = _find_app_module(written)
+        module = _find_app_module(written)
         if module is None:
             env.failures.append(Failure(
                 "assembly: no runnable app found",
@@ -363,6 +518,9 @@ async def assemble(files: list[dict]) -> TestEnv:
                 "so there is nothing to start and test.",
             ))
             return env
+
+        # Reconcile the two import styles BEFORE anything imports app code.
+        _write_alias_hook(env.root, module)
 
         venv_dir, fails = _make_venv(env.root)
         env.failures.extend(fails)
@@ -378,19 +536,17 @@ async def assemble(files: list[dict]) -> TestEnv:
             env.db_name = None
             db_url = settings.database_url
         else:
-            _create_tables(venv_dir, env.root, cwd_prefix, db_url)
+            _create_tables(venv_dir, env.root, module, db_url)
 
         # Launch on a random free port, bound to loopback only.
         env.port = _free_port()
         env.base_url = f"http://{TEST_HOST}:{env.port}"
-        workdir = os.path.join(env.root, cwd_prefix) if cwd_prefix else env.root
+        workdir = env.root
         child_env = {
             **os.environ,
+            **_TEST_ENV,          # provider config the app legitimately needs
             "DATABASE_URL": db_url,
-            "PYTHONPATH": workdir,
-            # Generated apps read secrets from env per the binding contract.
-            "SECRET_KEY": "qa-test-secret",
-            "STRIPE_TOKEN_ENC_KEY": "qa-test-enc-key-0123456789abcdef",
+            "PYTHONPATH": _python_path(env.root),
         }
         log_path = os.path.join(env.root, "qa-app.log")
         log_fh = open(log_path, "w")
@@ -415,6 +571,12 @@ async def assemble(files: list[dict]) -> TestEnv:
                 f"{settings.qa_boot_timeout}s. Startup output: {env.logs[-800:] or '(none)'}",
             ))
             return env
+
+        # Booted — but a partially-loaded app must NOT be reported as healthy.
+        missing = await _check_designed_endpoints(env.base_url, expected_endpoints or [])
+        if missing:
+            env.failures.extend(missing)
+            return env      # ok stays False: this is a failed assembly
 
         env.ok = True
         return env

@@ -378,6 +378,46 @@ def _security_ticket() -> dict:
     }
 
 
+def _entrypoint_ticket(other_ids: list[str]) -> dict:
+    """The file that actually STARTS the app.
+
+    Week-6 QA caught that a real blueprint commissioned five routers and no
+    application to mount them on: not one generated file created a FastAPI
+    instance, so nothing could boot. Weeks 3-5 all passed it because each file
+    is individually valid — only running the app reveals it.
+
+    Deliberately NOT named FND-*: the developer orchestrator runs every FND-*
+    ticket in the FIRST wave, but an entrypoint has to import the routers the
+    other tickets produce, so it can only be written once they exist. Hence its
+    dependencies are every other ticket, which puts it in the final wave.
+    """
+    return {
+        "id": "APP-1",
+        "title": "Application entrypoint (FastAPI app + router registration)",
+        "assigned_to": "backend",
+        "description": (
+            "Create backend/app/main.py — the file that starts the application. "
+            "It MUST: (1) create the FastAPI instance as a module-level variable "
+            "named exactly `app`; (2) import EVERY router module listed in the "
+            "already-generated files (use their real paths) and register each "
+            "with app.include_router(...); (3) expose GET /health returning "
+            "{\"status\": \"ok\"}; (4) configure CORS with an explicit allowed "
+            "origin list read from an environment variable — NEVER "
+            "allow_origins=[\"*\"] together with allow_credentials=True. "
+            "Import shared models and the database session from the existing "
+            "app.models / app.database modules — never redefine them. The app "
+            "object MUST be importable as `app` (uvicorn loads "
+            "`backend.app.main:app`).\n"
+            "DO NOT hide import errors behind try/except — if a router cannot be "
+            "imported the application must fail loudly, not start up missing "
+            "features. DO NOT set, default, mock or invent ANY environment "
+            "variable (no os.environ[...] = ...); configuration comes from the "
+            "real environment only, and a missing required secret must fail fast."
+        ),
+        "dependencies": list(other_ids),
+    }
+
+
 def _auth_ticket(auth: dict) -> dict:
     """Delegated-auth ticket for the Backend Dev (POST-REVIEW DECISION 1).
 
@@ -646,6 +686,10 @@ async def build_blueprint(summary: dict) -> dict:
 
     # Security is mandatory on every build.
     tickets.append(_security_ticket())
+
+    # Entrypoint LAST — it registers the routers every other ticket produced,
+    # so it depends on all of them and lands in the final build wave.
+    tickets.append(_entrypoint_ticket([t.get("id") for t in tickets if t.get("id")]))
 
     return {
         "tech_stack": creative.get("tech_stack", {}),

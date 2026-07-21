@@ -53,9 +53,16 @@ def _deterministic(outcome: TestOutcome) -> str | None:
     if "no default export" in reason:
         return DEVELOPER_FIX
 
-    # The app exposes nothing / won't boot: the code as a whole doesn't fulfil
-    # the tickets, which is a rework rather than a one-line fix.
-    if "no runnable app found" in name or "app did not start" in name:
+    # Nothing in the entire build creates an application. That is not something
+    # a Developer can fix by rewriting a router — the BLUEPRINT never
+    # commissioned an entrypoint. Sending it back to the Developer burns all
+    # three retries on a structurally unfixable task (observed in verification),
+    # so it goes to the Architect and escalates immediately.
+    if "no runnable app found" in name:
+        return ARCHITECT_REWORK
+
+    # The app exists but crashes on startup: that IS the Developer's code.
+    if "app did not start" in name:
         return DEVELOPER_REWORK
     if "has endpoints" in name or "discoverable" in name:
         return DEVELOPER_REWORK
