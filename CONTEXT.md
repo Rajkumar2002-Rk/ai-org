@@ -141,17 +141,51 @@ case were all reasoned correctly. **No over-escalation** was found in either
 probe: trivial Developer bugs stuffed with the words "schema", "blueprint" and
 "architecture" still came back `developer_fix`.
 
-**Model stability — a real weakness.** Repeating identical inputs 4×:
-`B1 architect_rework ×4` (stable), `B2 developer_fix ×4` (stable), but
-**`B3 (undeclared ticket dependency) → ba_rework ×3, developer_rework ×1`**, and
-`architect_rework` on an earlier run. On the hardest borderline case the model is
-unstable AND mostly wrong: its own stated reason ("a required module was never
-generated") describes an Architect gap, not a misunderstood requirement.
-Practical blast radius is limited — `ba_rework` and `architect_rework` both
-escalate, so the routing is right by accident 3 times in 4; the `developer_rework`
-outcome is the harmful one, wrongly auto-retrying ~25% of the time.
-**Do not treat a single classification as authoritative on genuinely ambiguous
-failures.**
+### ⚠️ KNOWN GAP — classification is NOT repeat-stable on ambiguous input
+
+**Category: an LLM reliability limit, not a code bug.** Nothing here is fixable
+by editing a rule — it needs dedicated design thought, and was explicitly NOT
+solved as part of Step 3's closeout.
+
+The same failure, classified 5 times with identical input (borderline case B3,
+"an undeclared dependency between two tickets"):
+
+```
+run 1 (Step 3 first pass) : architect_rework   x1
+runs 2-5 (stability probe): ba_rework          x3
+                            developer_rework   x1
+```
+
+Three different labels across five identical calls, spanning all three
+escalation tiers. For contrast, the other two borderline cases WERE stable
+(`B1 architect_rework ×4`, `B2 developer_fix ×4`), so this is specifically about
+genuinely ambiguous input, not general flakiness.
+
+It is also mostly WRONG, not merely unstable: the model's own stated reason for
+`ba_rework` was *"a required module and endpoint were never generated"* — that
+describes an Architect ticket gap, not a misunderstood requirement. The correct
+answer (`architect_rework`) came up 1 time in 5.
+
+**Blast radius:** `ba_rework` and `architect_rework` both escalate to a human, so
+the routing outcome is accidentally right ~3 times in 4. The `developer_rework`
+outcome is the harmful one — roughly 25% of the time an unfixable-by-Developer
+failure gets auto-retried instead of escalated, burning retries on work that
+cannot succeed. That is a milder version of the Step 1 defect.
+
+**Options to consider when this is designed properly (none implemented):**
+- **Majority vote** on ambiguous classifications — classify N times, take the
+  mode. Cheap on Flash-Lite, but N× the calls and it does not help when the model
+  is *consistently* wrong.
+- **A confidence signal that forces escalation regardless of label** — have the
+  model return a confidence, and escalate anything below a threshold rather than
+  auto-retrying it. Fails safe: uncertainty routes to a human instead of
+  spending retries.
+- **Restrict auto-retry to deterministically-classified failures only** —
+  anything the model decided escalates by default. Most conservative; costs
+  autonomy on cases the model actually gets right.
+
+**Operating rule until then: do not treat a single classification as
+authoritative on a genuinely ambiguous failure.**
 
 **Known gap, deliberately NOT fixed (new scope): `ba_rework` is unreachable in
 production.** The label works when evidence of a requirements mismatch is in the
@@ -500,6 +534,21 @@ maintainability, scalability, transparency, and trust.
   changes.
 - Full code export is always available to the user — no
   vendor lock-in, ever.
+- **Any agent whose output BRANCHES BEHAVIOUR must be tested for
+  repeat-run consistency** — classification, routing, and gating
+  decisions get run N times on identical input, and disagreement
+  is a finding, not noise. A single correct-looking answer proves
+  nothing about the next one. (Added 2026-07-21 after Step 3
+  verification caught the QA classifier returning three different
+  tiers across five identical calls — and caught it BY ACCIDENT,
+  because a repeat run happened to disagree with the first.)
+  Untested this way so far, and worth doing: **BA
+  `understanding.classify()`** (decides which questions to skip,
+  whether to run competitive research, and platform/mobile
+  routing) and **Architect ticket generation** (decides what gets
+  built at all). Both branch behaviour on LLM output; neither has
+  ever been run twice on the same input to see if it agrees with
+  itself.
 
 ---
 
