@@ -5,29 +5,57 @@ fully before doing anything else in this project.
 
 ---
 
-# ⚠️ ACTIVE SESSION STATE — READ FIRST (2026-07-21)
+# WEEK 6 VERIFICATION SESSION (2026-07-21) — six defects found and fixed
 
-## NOTHING IS COMMITTED YET
+## STATUS: COMMITTED AND PUSHED ✓
 
-`HEAD` is still **`7035a8d`** ("CONTEXT.md: correct QA agent reference data after
-Week 6"). **All six fixes below exist ONLY in the working tree.** If the working
-tree is lost, all of this verification work is lost with it.
+All six fixes are committed as **`d438366`** ("Week 6 verification: fix six
+defects found by running QA for real") and pushed to `origin/master`. **The
+working tree is clean.** Nothing here is at risk.
 
 ```
- M backend/app/architect/builder.py          +44
- M backend/app/developers/agents.py          +5/-1
- M backend/app/qa/assembly.py                +242/-...
- M backend/app/qa/orchestrator.py            +177/-...
- M backend/app/qa/outcome.py                 +3
- M backend/app/qa/root_cause.py              +13/-...
- M backend/app/reviewer/orchestrator.py      +104
- M backend/tests/test_architect_offline.py   +11
- M backend/tests/test_qa_offline.py          +147
- ?? backend/tests/_verify_pipeline.py    (temp driver — do NOT commit)
- ?? backend/tests/_verify_cert.py        (temp, unused — DELETE)
- ?? backend/tests/_verify_run.log        (run log — do NOT commit)
-                     9 files changed, 683 insertions(+), 63 deletions(-)
+d438366  Week 6 verification: fix six defects found by running QA for real
+7035a8d  CONTEXT.md: correct QA agent reference data after Week 6
+1ae9b7e  Week 6 - QA Agent (#10): three-level testing on an ephemeral instance
 ```
+
+Committed in `d438366` (10 files, +985/-63):
+```
+ backend/app/architect/builder.py          +44   APP-1 entrypoint ticket
+ backend/app/developers/agents.py          +5/-1 filepaths in the prompt
+ backend/app/qa/assembly.py               +242   AST imports, alias hook, endpoint diff, _TEST_ENV
+ backend/app/qa/orchestrator.py           +177   _recertify, stale-failure clearing, targeting
+ backend/app/qa/outcome.py                  +3   TestOutcome.evidence
+ backend/app/qa/root_cause.py              +13   architect_rework classification
+ backend/app/reviewer/orchestrator.py     +104   file_hashes, drifted_files, review_subset
+ backend/tests/test_architect_offline.py   +11   APP-1 invariants
+ backend/tests/test_qa_offline.py         +147   section F regression
+ CONTEXT.md                               +302   this handoff
+ backend/tests/verify_pipeline.py         (new)  real end-to-end pipeline driver
+```
+
+Regression at commit time: **226 checks, 0 failures** (174 Architect / Weeks 3-5,
+52 QA / Weeks 5-6). Container md5s matched the tree on all 7 changed modules;
+0 leftover temp dirs, 0 orphaned `qa_test_*` databases.
+
+`_verify_cert.py` and `_verify_run.log` were deleted; `_verify_pipeline.py` was
+kept and renamed **`backend/tests/verify_pipeline.py`** — it drives a real
+BA→PI→Architect→Developers→CodeReviewer→QA run and Steps 5-6 will need it.
+
+## THE ONLY GENUINELY OPEN WORK: verification Steps 2-6
+
+Step 1 (real pipeline run) is **done** — it is what produced the six defects
+below. Steps 2-6 were never started:
+
+| Step | What it asks for | Needs fresh pipeline spend? |
+| --- | --- | --- |
+| 2 | Trigger the retry-and-escalate loop for real; show `retry_count` incrementing across attempts and confirm what happens at attempt 3 | **No** — project 142's 17 `qa_results` rows + targeted synthetic bugs |
+| 3 | Inspect real root-cause classification quality across all four categories; say honestly whether any blur together | **No** — same data, synthetic bugs for missing categories |
+| 4 | Prove teardown directly: temp dirs + Postgres databases before/after | **No** — one local QA cycle |
+| 5 | Run with `qa_frontend_full_build=true`; what does a real `next build` catch, how long, how much downloaded | **Yes** |
+| 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes**, and needs token instrumentation built first |
+
+Start with Steps 2-4 on existing data — **no new pipeline spend needed.**
 
 ## What this session was
 
@@ -262,14 +290,10 @@ until that exists.
 
 ## NEXT STEPS for whoever resumes this
 
-Do these in order. Do **not** skip straight to committing.
+Review, regression, and commit are **done** (see STATUS at the top). What remains:
 
-1. **Review the working tree first.** `git diff` against `7035a8d`. Nine modified
-   files, 683 insertions. Read `qa/assembly.py`, `qa/orchestrator.py` and
-   `reviewer/orchestrator.py` most carefully — that is where the security-critical
-   changes are.
-2. **Regression test again before trusting anything.** Do not assume the earlier
-   green run still holds:
+1. **Re-run the regression suites before trusting the tree**, if any time has
+   passed or anything was touched:
    ```
    docker compose build backend && docker compose up -d backend
    docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
@@ -277,18 +301,21 @@ Do these in order. Do **not** skip straight to committing.
    docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
        backend python tests/test_architect_offline.py
    ```
-   Both must print `RESULT: ALL CHECKS PASSED ✓`.
-3. **Delete the temp files, then commit.** `rm backend/tests/_verify_cert.py
-   backend/tests/_verify_run.log`. Keep `_verify_pipeline.py` only if the user
-   wants the driver retained — otherwise delete it too. Commit the nine real
-   files. **No `Co-Authored-By` line, ever** (permanent user rule). Do not push
-   until the user says so.
-4. **Then continue verification Step 2** using the **existing project 142/144
-   data — no new pipeline spend needed.** Steps 2 (retry/escalate loop), 3
-   (root-cause classification quality), and 4 (teardown proof) can all be driven
-   from project 142's 17 `qa_results` rows plus targeted synthetic bugs.
-   Step 5 (`qa_frontend_full_build=true`) and Step 6 (real cost) do need fresh
-   runs; Step 6 needs token instrumentation built first.
+   Both must print `RESULT: ALL CHECKS PASSED ✓` (expect 52 and 174 checks).
+2. **Continue verification at Step 2**, using the existing project 142/144 data.
+   Steps 2, 3 and 4 need **no new pipeline spend** — drive them from project
+   142's 17 `qa_results` rows plus targeted synthetic bugs. See the Steps 2-6
+   table at the top of this section for what each one asks for.
+3. **Steps 5 and 6 need fresh runs.** Use `backend/tests/verify_pipeline.py`.
+   Budget ~$0.50-0.70 per full run (Opus reviews every file and ignores
+   `CODEGEN_MODE` by design). **Build token instrumentation before Step 6** —
+   `codegen.generate()` still captures no usage, so any cost figure today is a
+   guess.
+4. **Do not start Week 7 (DevOps #11) until verification is closed** — the point
+   of this session was that "built" and "verified" are different states.
+
+Permanent rules that still apply: **no `Co-Authored-By` line, ever**; never
+commit `.env`; keep the repo private.
 
 ### Known-open, NOT yet fixed (deliberately logged, not actioned)
 - **Duplicate filepaths from the Architect/Developers.** Two tickets can be
