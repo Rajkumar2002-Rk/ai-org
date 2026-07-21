@@ -13,10 +13,12 @@ TWO DESIGN RULES, both taken from the standing principle in CONTEXT.md —
    NULL token counts — never 0. A silent 0 would understate spend and read as
    good news, which is exactly the failure mode this project keeps finding. Any
    analysis MUST check for `capture_ok = false` rows before trusting a total.
-2. **Tokens are the durable fact; cost is derived.** Rates change, and most are
-   not yet confirmed for this project, so `cost_usd` is NULL when the rate is
-   unknown. It can always be recomputed later from the stored token counts and
-   `model_used` — but a token count not captured at call time is gone forever.
+2. **Tokens are the durable fact; cost is derived.** `cost_usd` is NULL whenever
+   no confirmed rate exists, and is always recomputable later from the stored
+   token counts and `model_used` — whereas a token count not captured at call
+   time is gone forever. Rates also expire: a promotional rate that silently
+   goes stale is the same failure as a check that cannot fail, so `_RATE_EXPIRY`
+   is an active tripwire the test suite asserts on.
 
 Attribution reuses the QA pass's existing `run_id` (migration 0008) through a
 contextvar, so no call site has to thread an extra argument down through the
@@ -97,26 +99,55 @@ def extract_google(resp) -> tuple[int, int] | None:
 # ----------------------------------------------------------------- pricing
 # USD per 1,000,000 tokens, as (input, output).
 #
-# ONLY rates that are actually documented for this project belong here. An
-# invented rate produces a confident wrong number, which is worse than no number
-# at all — so anything unconfirmed is simply absent, `cost_usd` comes out NULL,
-# and the token counts remain available to price later. Add entries here as
-# rates are confirmed; historical rows can then be recomputed.
+# ONLY rates actually confirmed for this project belong here. An invented rate
+# produces a confident wrong number, which is worse than no number at all — so
+# anything unconfirmed is simply absent, `cost_usd` comes out NULL, and the token
+# counts remain available to price later. Rates confirmed 2026-07-21.
 _PRICING: dict[str, tuple[float, float]] = {
-    # Documented in CONTEXT.md (UPDATED ROUTING, Week 4 onwards).
     "gemini-flash-lite-latest": (0.10, 0.40),
     "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "claude-opus-4-8": (5.00, 25.00),
+    # INTRODUCTORY pricing — time-bound, see _RATE_EXPIRY below.
+    "claude-sonnet-5": (2.00, 10.00),
 }
 
-# Models we knowingly have no confirmed rate for. Listed explicitly so a NULL
-# cost is visibly "rate not confirmed" rather than "model not recognised".
-_RATE_UNCONFIRMED = {"gpt-4o", "gpt-4o-mini", "claude-opus-4-8", "claude-sonnet-5"}
+# Rates that are promotional and WILL become wrong on a known date. A rate that
+# silently goes stale is the same failure as a check that cannot fail: the number
+# still looks confident, and nothing announces that it stopped being true. So
+# this is an active tripwire, not a comment — `stale_rates()` is asserted by
+# tests/test_token_instrumentation.py, which starts FAILING once the date passes
+# and names what to do about it.
+_RATE_EXPIRY: dict[str, str] = {
+    "claude-sonnet-5": "2026-08-31",
+}
+
+
+def stale_rates(today: str | None = None) -> list[str]:
+    """Models whose promotional rate has expired and must be re-confirmed.
+
+    Compared as ISO date strings, which sort correctly and need no tz handling.
+    """
+    if today is None:
+        from datetime import date
+        today = date.today().isoformat()
+    return sorted(m for m, expires in _RATE_EXPIRY.items() if today > expires)
 
 
 def price(model_used: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    rate = _PRICING.get((model_used or "").lower())
+    key = (model_used or "").lower()
+    rate = _PRICING.get(key)
     if rate is None:
         return None
+    if key in _RATE_EXPIRY and stale_rates():
+        # Still computed — the token counts are real and this is the best figure
+        # available — but never silently.
+        logger.warning(
+            "Pricing %s with an EXPIRED introductory rate (lapsed %s). "
+            "cost_usd for this call is not trustworthy until _PRICING is updated.",
+            key, _RATE_EXPIRY[key],
+        )
     return round(prompt_tokens / 1e6 * rate[0] + completion_tokens / 1e6 * rate[1], 8)
 
 

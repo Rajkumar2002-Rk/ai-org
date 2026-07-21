@@ -268,10 +268,10 @@ proving the orchestrator's `finally` fires).
 
 ### ⚠️ STANDING PRINCIPLE — "absence of evidence" is not "evidence of success"
 
-**This is the fourth time in four verification steps that the same failure
-pattern has BEEN the finding.** These are not four unrelated bugs; they are one
-recurring design error, and it is worth watching for by name rather than
-rediscovering it each time:
+**Every verification step so far has found the same failure pattern, and in each
+one it WAS the finding.** These are not unrelated bugs; they are one recurring
+design error, and it is worth watching for by name rather than rediscovering it
+each time:
 
 | Step | Where it hid | What it did |
 | --- | --- | --- |
@@ -279,6 +279,8 @@ rediscovering it each time:
 | 3 | `root_cause` short-circuits | `"server error" + level 1 → developer_fix` fired before any reasoning, so the most common failure class got a confident label nobody had actually thought about. |
 | 3 | `environment_fault`'s absence | QA's own broken harness had no category to land in, so it scored as a Developer bug — and the "repair" hardcoded credentials. |
 | 4 | The teardown checks themselves | `X is None or X not in after[...]` — a resource that was never created reported a clean teardown. |
+| 6 | The usage rows that were never written | `usage.record()` swallows write errors by design, so instrumentation can never break a pipeline run. A systematic failure therefore produced a "successful" run holding **zero** usage rows. **A low cost total and a missing cost total are indistinguishable without checking the ROW COUNT for the `run_id`.** |
+| 6 | A promotional rate going stale | Claude Sonnet 5's introductory pricing expires 2026-08-31. A rate that quietly lapses still produces a confident-looking number and nothing announces it stopped being true — so `_RATE_EXPIRY` is an active tripwire the suite asserts on, and the suite also proves the tripwire itself can fire. |
 
 The shape is always identical: **a check whose passing condition is satisfiable
 by nothing happening.** A missing fingerprint, an unreasoned label, an
@@ -295,6 +297,13 @@ assert the property under test.
 actually built something — a build that silently no-ops also produces zero
 errors. Step 6 must prove the token instrumentation actually captured usage — a
 counter that never increments also reports a number under budget.
+
+**Operating rule for every cost figure from here on: check the ROW COUNT for the
+`run_id` before reading the total.** `SELECT count(*), count(*) FILTER (WHERE NOT
+capture_ok) FROM llm_usage WHERE run_id = '…'` — a cheap run and a run whose
+usage writes failed produce the same small number, and only the row count tells
+them apart. Quote the row count alongside any dollar figure; a total without one
+is not a measurement.
 
 ### STEP 6 INSTRUMENTATION — BUILT AND PROVEN (2026-07-21); measurement pending
 
@@ -323,21 +332,37 @@ the first measured cost number together.
 2. **Tokens are the durable fact; cost is derived.** `cost_usd` is NULL when no
    confirmed rate exists and is recomputable later from the stored counts.
 
-⚠️ **Only Gemini Flash-Lite's rate ($0.10/$0.40 per MTok) is documented for this
-project.** GPT-4o, GPT-4o-mini, Claude Sonnet and Claude Opus 4.8 all price as
-NULL right now. **Opus dominates real spend** (it reviews every file and ignores
-`CODEGEN_MODE`), so those rates must be confirmed before any dollar total means
-anything. Token counts are captured regardless.
+**Rates — all confirmed 2026-07-21**, USD per MTok (in / out), in
+`app/usage._PRICING`:
 
-**Proof: `backend/tests/test_token_instrumentation.py` — 48 checks, 0 failures.**
+| model id (as billed) | in | out | 1M+1M |
+| --- | --- | --- | --- |
+| `claude-opus-4-8` | $5.00 | $25.00 | **$30.00** |
+| `gpt-4o` | $2.50 | $10.00 | $12.50 |
+| `claude-sonnet-5` | $2.00 | $10.00 | $12.00 — ⏳ **intro, expires 2026-08-31** |
+| `gpt-4o-mini` | $0.15 | $0.60 | $0.75 |
+| `gemini-flash-lite-latest` | $0.10 | $0.40 | **$0.50** |
+
+Opus is **60×** Flash-Lite per token and reviews EVERY file ignoring
+`CODEGEN_MODE` by design, so it dominates unit economics — which is why the Step
+5+6 cost report splits the security review out from everything else rather than
+quoting one total.
+
+`claude-sonnet-5` is on introductory pricing. `_RATE_EXPIRY` makes that an
+**active tripwire**: `usage.stale_rates()` is asserted by the test suite, which
+starts FAILING after 2026-08-31 and names the fix. The suite also proves the
+tripwire itself fires (`stale_rates(today="2099-01-01")`), because a staleness
+check that never triggers is the same bug one level up.
+
+**Proof: `backend/tests/test_token_instrumentation.py` — 66 checks, 0 failures.**
 Each provider is handed a mocked response with a KNOWN, deliberately asymmetric
 token pair, and the exact numbers are asserted back out of the database:
 
 | provider | reported | stored (p/c/total) | model id recorded | cost |
 | --- | --- | --- | --- | --- |
-| openai | 1234 / 567 | 1234 / 567 / 1801 | `gpt-4o` | NULL — rate unconfirmed |
-| anthropic | 2345 / 678 | 2345 / 678 / 3023 | `claude-sonnet-5` | NULL — rate unconfirmed |
-| google | 3456 / 789 | 3456 / 789 / 4245 | `gemini-flash-lite-latest` | **$0.00066120** |
+| openai | 1234 / 567 | 1234 / 567 / 1801 | `gpt-4o` | $0.00875500 |
+| anthropic | 2345 / 678 | 2345 / 678 / 3023 | `claude-sonnet-5` | $0.01147000 |
+| google | 3456 / 789 | 3456 / 789 / 4245 | `gemini-flash-lite-latest` | $0.00066120 |
 
 Mocked on purpose: a real call returns an UNKNOWN count, so the only assertable
 property would be "nonzero" — which a hardcoded constant also satisfies. A known
@@ -613,7 +638,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All five must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-21**, not estimated: **56 / 174 / 19 / 35 / 48 = 332 checks.** (An
+   2026-07-21**, not estimated: **56 / 174 / 19 / 35 / 66 = 350 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All five are free — every LLM seam is patched or mocked.
    NOTE: `test_qa_classification.py` is deliberately NOT in this list — it makes
@@ -623,10 +648,9 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    INSTRUMENTATION" above), so that single run produces the `next build` evidence
    AND the first measured cost number at the same time. Steps 2, 3 and 4 are
    CLOSED. Before greenlighting the run:
-   - **Confirm the missing pricing rates** (GPT-4o, GPT-4o-mini, Claude Sonnet,
-     Claude Opus 4.8) in `app/usage._PRICING`. Opus dominates spend and currently
-     prices as NULL. Token counts are captured either way, so this can also be
-     backfilled by recomputation — but the dollar figure is meaningless until then.
+   - ~~Confirm the missing pricing rates~~ **DONE 2026-07-21** — all five rates
+     are in `app/usage._PRICING` and verified to compute real costs. Sonnet 5's
+     intro rate is time-bound (expires 2026-08-31) with an active tripwire.
    - **Apply the standing principle to both halves**: prove `next build` actually
      built something (a silent no-op also produces zero errors), and check the
      ROW COUNT in `llm_usage` for the run_id (a lost write and a cheap run look

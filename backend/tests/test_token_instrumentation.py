@@ -216,6 +216,48 @@ async def prove_capture_failure_is_visible():
         check(f"{label}: cost is NULL when tokens are unknown", row.cost_usd is None)
 
 
+# ============================== every model the router can pick must price
+async def prove_every_routed_model_prices():
+    print("\n=== P: every model routing can choose has a confirmed rate ===")
+    # Concrete billed ids — what _via_* actually passes to usage.price() — with
+    # the published per-MTok rates. 1M in + 1M out makes the expected cost
+    # exactly the two rates summed, so the arithmetic is checkable by hand.
+    expected = {
+        "gpt-4o": (2.50, 10.00),
+        "gpt-4o-mini": (0.15, 0.60),
+        "claude-sonnet-5": (2.00, 10.00),
+        "claude-opus-4-8": (5.00, 25.00),
+        "gemini-flash-lite-latest": (0.10, 0.40),
+    }
+    for model, (rin, rout) in expected.items():
+        cost = usage.price(model, 1_000_000, 1_000_000)
+        print(f"    {model:26} 1M in + 1M out -> ${cost}")
+        check(f"{model}: prices to a real number, not NULL", cost is not None)
+        check(f"{model}: cost is nonzero", bool(cost))
+        check(f"{model}: arithmetic matches the published rate",
+              cost is not None and abs(cost - (rin + rout)) < 1e-9,
+              f"got {cost}, expected {rin + rout}")
+
+    # The split that actually drives unit economics: Opus reviews every file and
+    # ignores CODEGEN_MODE by design, so it dominates spend.
+    opus = usage.price("claude-opus-4-8", 1_000_000, 1_000_000)
+    flash = usage.price("gemini-flash-lite-latest", 1_000_000, 1_000_000)
+    check("Opus is an order of magnitude dearer than Flash-Lite (sanity)",
+          opus is not None and flash is not None and opus > flash * 10,
+          f"opus=${opus} vs flash=${flash}")
+
+    stale = usage.stale_rates()
+    check("no promotional rate has silently expired", not stale,
+          f"EXPIRED {stale}: re-confirm and update app/usage._PRICING, then "
+          f"update or remove the _RATE_EXPIRY entry" if stale else "")
+    # Prove the tripwire can FIRE, rather than trusting that it would. A staleness
+    # check that never triggers is exactly the pattern this suite exists to catch.
+    check("the expiry tripwire actually fires once the date passes",
+          usage.stale_rates(today="2099-01-01") == ["claude-sonnet-5"],
+          str(usage.stale_rates(today="2099-01-01")))
+    print(f"    time-bound rates: {usage._RATE_EXPIRY} — stale today: {stale or 'none'}")
+
+
 # ================================================== aggregate + honesty of totals
 async def prove_totals_flag_incompleteness():
     print("\n=== A: a run's total must be able to say it is incomplete ===")
@@ -273,13 +315,14 @@ async def main():
     token = usage.set_run_context(run_id=RUN_ID, project_id=PROJECT_ID, stage="qa")
     try:
         await prove("openai", "gpt-4o", patch_openai, openai_response,
-                    1234, 567, expect_model="gpt-4o", expect_priced=False)
+                    1234, 567, expect_model="gpt-4o", expect_priced=True)
         await prove("anthropic", "claude-sonnet", patch_anthropic, anthropic_response,
-                    2345, 678, expect_model="claude-sonnet-5", expect_priced=False)
+                    2345, 678, expect_model="claude-sonnet-5", expect_priced=True)
         await prove("google", "gemini-2.5-flash-lite", patch_google, google_response,
                     3456, 789, expect_model="gemini-flash-lite-latest",
                     expect_priced=True)
         await prove_capture_failure_is_visible()
+        await prove_every_routed_model_prices()
         await prove_totals_flag_incompleteness()
     finally:
         usage.reset_run_context(token)
