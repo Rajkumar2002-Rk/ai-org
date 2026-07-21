@@ -35,6 +35,22 @@ class Settings(BaseSettings):
     pi_model: str = "gpt-4o"
     pi_temperature: float = 0.4
 
+    # QA agent (Week 6). Gemini 2.5 Flash-Lite per the UPDATED ROUTING in
+    # CONTEXT.md ("apply from Week 4 onwards"); 0.1 = consistent test cases.
+    qa_model: str = "gemini-2.5-flash-lite"
+    qa_temperature: float = 0.1
+    # Ephemeral test environment limits (seconds) — every step is bounded so QA
+    # can never hang the pipeline.
+    qa_install_timeout: int = 180
+    qa_boot_timeout: int = 45
+    qa_request_timeout: int = 10
+    # Max retries per failing issue before it is escalated (never infinite).
+    qa_max_retries: int = 3
+    # Full `npm install && next build` for generated UI. Off by default: it
+    # downloads hundreds of MB and takes minutes per run. When off, the frontend
+    # check still validates imports, hallucinated deps and structure.
+    qa_frontend_full_build: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

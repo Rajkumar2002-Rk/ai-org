@@ -42,6 +42,9 @@ class Project(Base):
     code_reviews: Mapped[list["CodeReview"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    qa_results: Mapped[list["QAResult"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Conversation(Base):
@@ -168,6 +171,41 @@ class PipelineStatus(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     project: Mapped["Project"] = relationship(back_populates="pipeline_stages")
+
+
+class QAResult(Base):
+    """One row per QA test (final state after any retries).
+
+    `blueprint_id` pins the result to the exact blueprint version that was
+    tested — BA/Architect classification is non-deterministic on borderline
+    inputs, so a QA run is a snapshot of THAT blueprint, not a permanent
+    guarantee. A future re-test can be compared against the same version.
+    """
+
+    __tablename__ = "qa_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    # The blueprint version these results describe (nullable: assembly may fail
+    # before a blueprint is resolvable).
+    blueprint_id: Mapped[int | None] = mapped_column(
+        ForeignKey("blueprints.id", ondelete="SET NULL"), nullable=True
+    )
+    test_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 1 = user interaction, 2 = security attack, 3 = root cause tracing
+    test_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # developer_fix | developer_rework | architect_rework | ba_rework
+    root_cause_agent: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="qa_results")
 
 
 class CodeReview(Base):

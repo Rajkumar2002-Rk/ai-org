@@ -489,25 +489,160 @@ Security review runs Opus on EVERY file and ignores CODEGEN_MODE by design, so a
 full build's security pass costs real Opus money (~$0.30-0.60 for ~7 files,
 ~$1-2 for a large build). Test on small ideas; the machinery is proven.
 
+---
+
+**Week 6 — QA Agent (#10) — DONE**
+Three levels of testing against a REAL, temporarily running instance of the
+generated app. Verified against synthetic good/bad/broken apps: 5 classes of
+planted vulnerability caught, 0 false positives on well-built code (34 tests),
+assembly failure handled as a finding rather than a crash. QA never talks to the
+user. Week-5 Architect gating suite still passes.
+
+### New agent / layer (Week 6)
+- **Ephemeral test environment** (`app/qa/assembly.py`) — the prerequisite that
+  made live testing possible. Pulls files from `generated_files`, writes them to
+  a temp dir in the binding-contract module layout (path-traversal safe), creates
+  a venv with `--system-site-packages` (so fastapi/sqlalchemy are reused, not
+  refetched), installs only genuinely missing deps, provisions a THROWAWAY
+  Postgres database, launches uvicorn on a random free port bound to 127.0.0.1,
+  waits for health, and **always** tears everything down in a `finally`.
+  Deliberately minimal: no AWS, no SSL, no domain, no persistence — full
+  deployment stays scoped to DevOps (#11, Week 7).
+  **Assembly failure is a QA FINDING, not a crash**: `assemble()` never raises;
+  it returns failures that are logged as Level 1 issues with root-cause tracing.
+- **LEVEL 1 — user interaction** (`app/qa/level1.py`) — endpoints discovered from
+  the RUNNING app's own `/openapi.json` (tests what was actually built, not what
+  was intended). Per endpoint: happy path, empty inputs, wrong data types,
+  double-click (two concurrent identical requests), very long inputs (2000
+  chars), missing required fields one at a time, and network interruption
+  (client abort, then verify the app still responds). Rule: **5xx = failure,
+  4xx = pass** (rejecting bad input is the app working). Generated UI files get a
+  static pass: relative/alias imports must resolve to files that were actually
+  generated, and pages must export a component.
+- **LEVEL 2 — security attack simulation** (`app/qa/level2.py`) — actively
+  exploits the running instance: access without login, invalid credentials, SQL
+  injection through **every** input (declared body fields, free-form bodies,
+  query strings, path params), IDOR by changing IDs in the URL, negative payment
+  amounts, malicious file names (only if an upload endpoint exists).
+  **Scope guard:** `_assert_local()` runs before every request — QA can only ever
+  attack the throwaway loopback instance, never an external host.
+- **LEVEL 3 — root cause tracing** (`app/qa/root_cause.py`) — labels each failure
+  `developer_fix` / `developer_rework` / `architect_rework` / `ba_rework`.
+  Deterministic rules decide first (free + reliable); the QA model (Gemini 2.5
+  Flash-Lite @ 0.1) is consulted only when they are ambiguous.
+- **Bounded repair loop** (`app/qa/orchestrator.py`) — developer-level failures
+  are grouped by the responsible file and sent back to the **Developer agent**
+  with the QA evidence appended to the ticket, then re-assembled and re-tested.
+  Max 3 retries per issue; still failing → marked escalated, logged, run
+  CONTINUES. The round counter is the only loop driver — it cannot run forever.
+
+### ROUTING POLICY (decided this session)
+Only `developer_*` causes are auto-routed back. `architect_rework` and
+`ba_rework` are classified, logged and **escalated for a human** — re-running the
+Architect regenerates the whole blueprint (invalidating the built code and the
+Week-5 security certificate), and BA rework needs the user, which QA must never
+talk to.
+
+### Files created / changed in Week 6
+- `app/qa/assembly.py`, `level1.py`, `level2.py`, `root_cause.py`,
+  `orchestrator.py`, `graph.py`, `outcome.py`, `__init__.py` (all new)
+- `app/models.py` — QAResult table
+- `alembic/versions/0007_qa_results.py` — qa_results
+- `app/config.py` — qa_model (gemini-2.5-flash-lite), qa_temperature (0.1),
+  bounded timeouts (install/boot/request), qa_max_retries (3),
+  qa_frontend_full_build (default False)
+- `app/architect/builder.py` — blueprint `llm_routing.qa` was a stale
+  `gpt-4o-mini`; corrected to `gemini-2.5-flash-lite` per CONTEXT UPDATED ROUTING
+- `app/main.py` — POST /pipeline/qa, GET /pipeline/{id}/qa-status, `_run_qa`
+- `app/schemas.py` — QAStatusResponse (counts only)
+- `frontend/app/page.tsx` — secure→QA handoff; "Testing every button and
+  screen…" → "X tests run. Everything passed. ✓" (no test names, no agent or
+  model names)
+- `backend/tests/test_qa_offline.py` (new) — QA verification suite
+
+### New database (Week 6)
+- `qa_results` (id, project_id, **blueprint_id**, test_name, test_level, passed,
+  failure_reason, root_cause_agent, retry_count, created_at)
+- `blueprint_id` pins every result to the exact blueprint version tested. BA/
+  Architect classification is non-deterministic on borderline inputs, so **a QA
+  run is a snapshot of THAT blueprint, not a permanent guarantee** — a future
+  re-test can be compared against the same version.
+
+### What now works end to end
+**BA → PI review-gate → Build it → Architect → design explanation → Developers →
+Code Reviewer (Opus security) → QA (Testing every button and screen…) → "X tests
+run. Everything passed. ✓"** Redis `qa:status:{id}` + `qa_report:{id}`; project
+status `tested` / `qa_failed`.
+
+### Scope note — frontend "build check"
+A real `npm install && next build` per QA run downloads hundreds of MB and takes
+minutes, so it is **opt-in** via `settings.qa_frontend_full_build` (default
+False). With it off, UI files are still checked for imports that resolve to real
+generated files (the cross-file drift bug) and for pages that actually export a
+component. Turn it on for a demo if a full UI compile is wanted.
+
+### Cost note (Week 6)
+QA is nearly free: test generation is **deterministic Python**, not LLM. The only
+model call is Level 3 root-cause classification, on Gemini Flash-Lite, and only
+when the deterministic rules are ambiguous. The expensive part is wall-clock
+(venv + boot per round), not tokens.
+
 ### Current phase
-**Week 6 — (see Weekly Claude Code Prompts v2).** Likely QA Agent (#10) and/or
-Design Review (#8). QA/Docs/Cost use Gemini 2.5 Flash-Lite per the updated
-routing. Also still pending: Qdrant vector store, code export to disk, and the
-DevOps deploy step that turns generated files into a running/hosted app.
+**Week 7 — DevOps agent (#11).** Real deployment: AWS, SSL, domain, Safe Mode
+snapshots, version timeline — the thing that turns generated files into a hosted
+app with a live URL. Note Week 6 deliberately built only a throwaway LOCAL test
+instance; none of that assembly logic is a deployment pipeline. Also still
+pending: Design Review (#8), Qdrant vector store, code export to disk.
 
 ### What NOT to touch next session
-- Do NOT modify the BA, Product Intelligence, Architect, Developer, or Code
-  Reviewer agents unless the new week requires it — all tested and locked.
-- Do NOT change existing schemas or migrations (0001–0006), the Redis
-  conversation/pipeline/build/secure state formats, or the /conversation/* and
+- Do NOT modify the BA, Product Intelligence, Architect, Developer, Code
+  Reviewer, or QA agents unless the new week requires it — all tested and locked.
+- Do NOT change existing schemas or migrations (0001–0007), the Redis
+  conversation/pipeline/build/secure/qa state formats, or the /conversation/* and
   /pipeline/* endpoint contracts.
 - Do NOT weaken the BINDING PROJECT CONTRACT or the foundation-first ordering.
-- Security review is ALWAYS claude-opus-4-8 and must always keep bypass_cheap —
-  never let CODEGEN_MODE or budget downgrade it.
-- Do NOT change CODEGEN_MODE defaults (`real` stays the default) or the locked
-  routing.
-- Do NOT build QA, Design Review, DevOps, Documentation, Monitoring, Auto-fix,
-  or Cost Tracker agents until their week.
+- Security review is ALWAYS claude-opus-4-8 and must always keep bypass_cheap.
+- Do NOT let QA auto-rerun the Architect or BA (see ROUTING POLICY above), and do
+  NOT remove `_assert_local()` — the attack simulation must stay loopback-only.
+- Do NOT remove the `finally: teardown()` — a leaked test container/DB/temp dir
+  per run would pile up fast.
+- Do NOT build Design Review, DevOps, Documentation, Monitoring, Auto-fix, or
+  Cost Tracker agents until their week.
+
+### What I learned — Week 6
+- **You cannot test what you cannot run.** The three test levels were the easy
+  part; the real prerequisite was assembly — turning code stored as TEXT in a
+  database back into a running process. Most of the difficulty in "add testing"
+  was environment plumbing, not test logic.
+- **Assembly failure IS the test result.** The instinct is to treat "the app
+  won't start" as an error that aborts QA. It is actually the single most
+  valuable finding QA can produce, and it deserves the same root-cause tracing as
+  any other bug. Designing `assemble()` to never raise — to return findings
+  instead — is what made that possible.
+- **4xx is a pass, 5xx is a failure.** The whole of Level 1 collapses to one
+  rule. An app that *rejects* bad input is working correctly; an app that
+  *crashes* on it is not. Getting that rule right up front removed almost all
+  ambiguity about what counts as a bug.
+- **Deterministic tests beat generated tests.** Empty input, wrong types, long
+  strings, double-clicks and missing fields are all mechanically derivable from
+  the OpenAPI schema. Generating them in Python made QA free, fast, repeatable,
+  and immune to model non-determinism — the LLM is reserved for the one genuinely
+  judgement-shaped task, root-cause classification.
+- **Test the tester with a known-bad fixture.** A QA agent that reports "all
+  passed" is indistinguishable from a QA agent that is silently broken. Running
+  it against a deliberately vulnerable app proved it catches real bugs, and
+  running it against a well-built app proved it does not invent them. That second
+  half matters just as much — a noisy tester gets ignored.
+- **Coverage gaps hide in the "untyped" case.** The planted SQL-injection bug was
+  initially missed because the endpoint took a free-form dict body, so OpenAPI
+  declared no fields to attack — exactly the endpoints most likely to be unsafe.
+  Anything that iterates over *declared* inputs needs an explicit answer for
+  inputs that were never declared.
+- **Autonomy needs a blast radius.** "Send it back to the right agent
+  automatically" sounds good until you notice that re-running the Architect
+  would discard a passing Opus security certificate. Auto-fixing at the Developer
+  level is safe and useful; anything that invalidates upstream work should stop
+  and ask a human.
 
 ### What I learned — Week 5
 - Separation of concerns in review: one pass judges quality (cheap model), a
@@ -1180,19 +1315,25 @@ Redis keys: `ba:state:{id}`, `ba:ci:{id}`, `pipeline:status:{id}`,
   in cheap mode; UI leaks no model names (grep-verified).
 
 ## 8. WHAT IS NOT DONE / LEFT MID-TASK (critical for a new engineer)
-- **The generated app is NOT runnable/deployed.** Generated code is stored as
-  TEXT in `generated_files`. Nothing writes files to disk, installs deps,
-  assembles, runs, or hosts them. There is NO live URL for a generated app.
-  That is the **DevOps agent (#11)**, a future week. localhost:3000 is the
-  PLATFORM, not any generated app.
+- **The generated app is NOT deployed.** Generated code is stored as TEXT in
+  `generated_files`. There is NO live/hosted URL for a generated app — that is
+  the **DevOps agent (#11)**, Week 7. localhost:3000 is the PLATFORM, not any
+  generated app.
+  **Updated in Week 6:** the QA agent DOES now write those files to disk and run
+  them, but only as a **throwaway local instance** (temp dir + venv + random
+  loopback port + temp Postgres DB), torn down the moment testing finishes. That
+  is test scaffolding, NOT deployment: no AWS, no SSL, no domain, no persistence,
+  no Safe Mode, no versioning. Do not mistake `app/qa/assembly.py` for a deploy
+  pipeline.
 - **No code export to disk** yet (core rule says "full code export always
   available") — not implemented.
 - **Absolute imports** in generated code (`backend.app.models`) may not resolve
   when packaged — flagged for the Code Reviewer / a future assembly step.
 - **Qdrant vector store** (in the locked tech stack) — not added.
 - **Agents built:** BA(#1), Product Intelligence(#2), Architect(#3),
-  Developers(#4–7), Code Reviewer(#9). **NOT built:** Design Review(#8),
-  QA(#10), DevOps(#11), Documentation(#12), Monitoring(#13), Auto-fix(#14),
+  Developers(#4–7), Code Reviewer(#9), QA(#10 — Week 6).
+  **NOT built:** Design Review(#8),
+  DevOps(#11), Documentation(#12), Monitoring(#13), Auto-fix(#14),
   Cost Tracker(#15).
 - **8-scenario gating is non-deterministic** on borderline classifications
   (restaurant-staff internal vs customer-facing; "iPhone app" platform;

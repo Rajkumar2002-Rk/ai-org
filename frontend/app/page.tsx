@@ -27,13 +27,14 @@ export default function Home() {
   const [showSources, setShowSources] = useState(false);
   const [pipeline, setPipeline] = useState<
     | "idle" | "reviewing" | "review" | "designing" | "building"
-    | "securing" | "secured" | "error"
+    | "securing" | "secured" | "testing" | "tested" | "error"
   >("idle");
   const [review, setReview] = useState<any>(null);
   const [designExplain, setDesignExplain] = useState<any>(null);
   const [showDesign, setShowDesign] = useState(false);
   const [build, setBuild] = useState<any>(null);
   const [security, setSecurity] = useState<any>(null);
+  const [qa, setQa] = useState<any>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -220,9 +221,43 @@ export default function Home() {
           setSecurity(data.certificate);
           setPipeline("secured");
           clearInterval(t);
+          startQA();
         } else if (data.status === "error") {
           setSecurity(data.certificate);
           setPipeline("error");
+          clearInterval(t);
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2500);
+    return () => clearInterval(t);
+  }, [pipeline, projectId]);
+
+  async function startQA() {
+    if (projectId == null) return;
+    setPipeline("testing");
+    try {
+      await fetch(`${API_URL}/pipeline/qa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+    } catch {
+      setPipeline("error");
+    }
+  }
+
+  // Poll the QA agent. Counts only — never test names or technical details.
+  useEffect(() => {
+    if (pipeline !== "testing" || projectId == null) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/pipeline/${projectId}/qa-status`);
+        const data = await res.json();
+        if (data.status === "done" || data.status === "error") {
+          setQa(data);
+          setPipeline("tested");
           clearInterval(t);
         }
       } catch {
@@ -592,12 +627,35 @@ export default function Home() {
               <span>Making sure everything is safe and secure…</span>
             </div>
           )}
-          {pipeline === "secured" && (
+          {security &&
+            (pipeline === "secured" || pipeline === "testing" || pipeline === "tested") && (
+              <div style={s.reviewCard}>
+                <div style={s.reviewTitle}>Security check passed ✓</div>
+                <div style={s.designBody}>
+                  Your app passed all security checks. Your data is protected.
+                  Security review completed by our most advanced AI model.
+                </div>
+              </div>
+            )}
+
+          {/* QA — one plain sentence, no test names or technical details */}
+          {pipeline === "testing" && (
+            <div style={s.pipeline}>
+              <span style={s.spinner} />
+              <span>Testing every button and screen…</span>
+            </div>
+          )}
+          {pipeline === "tested" && qa && (
             <div style={s.reviewCard}>
-              <div style={s.reviewTitle}>Security check passed ✓</div>
+              <div style={s.reviewTitle}>
+                {qa.failed === 0
+                  ? `${qa.total} tests run. Everything passed. ✓`
+                  : `${qa.total} tests run.`}
+              </div>
               <div style={s.designBody}>
-                Your app passed all security checks. Your data is protected.
-                Security review completed by our most advanced AI model.
+                {qa.failed === 0
+                  ? "We tried every button, form and screen — including the ways people accidentally break things. It all held up."
+                  : "We tried every button, form and screen. A few things need another pass, and they've been sent back to be sorted out."}
               </div>
             </div>
           )}

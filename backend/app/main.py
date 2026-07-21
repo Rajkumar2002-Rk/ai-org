@@ -24,6 +24,7 @@ from app.models import (
     Project,
 )
 from app.product_intel import graph as pi_graph
+from app.qa import graph as qa_graph
 from app.reviewer import orchestrator as reviewer_orchestrator
 from sqlalchemy import func as sqlfunc, select
 from app.redis_client import redis_client
@@ -35,6 +36,7 @@ from app.schemas import (
     MessageResponse,
     PipelineStartRequest,
     PipelineStatusResponse,
+    QAStatusResponse,
     ResearchStatusResponse,
     ReviewResponse,
     StartResponse,
@@ -101,6 +103,23 @@ def _build_key(project_id: int) -> str:
 
 def _secure_key(project_id: int) -> str:
     return f"secure:status:{project_id}"
+
+
+def _qa_key(project_id: int) -> str:
+    return f"qa:status:{project_id}"
+
+
+async def _run_qa(project_id: int) -> None:
+    """Background job: run the QA agent (assemble -> L1 + L2 -> root cause)."""
+    try:
+        report = await qa_graph.run(project_id)
+        await redis_client.set(f"qa_report:{project_id}", json.dumps(report), ex=86400)
+        await redis_client.set(
+            _qa_key(project_id), "done" if report["all_passed"] else "error", ex=86400
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("QA run failed for project %s", project_id)
+        await redis_client.set(_qa_key(project_id), "error", ex=86400)
 
 
 async def _run_review(project_id: int) -> None:
@@ -388,3 +407,36 @@ async def security_status(project_id: int):
     cert_raw = await redis_client.get(f"security_cert:{project_id}")
     cert = json.loads(cert_raw) if cert_raw else None
     return SecurityStatusResponse(status=status, certificate=cert)
+
+
+@app.post("/pipeline/qa", response_model=QAStatusResponse)
+async def pipeline_qa(req: PipelineStartRequest, db: AsyncSession = Depends(get_db)):
+    """Kick off the QA agent on the reviewed code (background).
+
+    Assembles a throwaway local instance, runs Level 1 + Level 2 against it,
+    traces root causes, and tears the instance down.
+    """
+    result = await db.execute(
+        select(GeneratedFile.id).where(GeneratedFile.project_id == req.project_id).limit(1)
+    )
+    if result.first() is None:
+        raise HTTPException(status_code=400, detail="No generated files to test yet")
+    if await redis_client.get(_qa_key(req.project_id)) == "running":
+        return QAStatusResponse(status="running")
+    await redis_client.set(_qa_key(req.project_id), "running", ex=86400)
+    asyncio.create_task(_run_qa(req.project_id))
+    return QAStatusResponse(status="running")
+
+
+@app.get("/pipeline/{project_id}/qa-status", response_model=QAStatusResponse)
+async def qa_status(project_id: int):
+    """Counts only — the user never sees test names or technical details."""
+    status = await redis_client.get(_qa_key(project_id)) or "not_started"
+    raw = await redis_client.get(f"qa_report:{project_id}")
+    report = json.loads(raw) if raw else {}
+    return QAStatusResponse(
+        status=status,
+        total=report.get("total", 0),
+        passed=report.get("passed", 0),
+        failed=report.get("failed", 0),
+    )

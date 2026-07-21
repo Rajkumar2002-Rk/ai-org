@@ -115,7 +115,8 @@ def _llm_routing() -> dict:
         "design_review": "claude-sonnet",
         "code_reviewer": "gpt-4o-mini",
         "security_review": "claude-opus-4-8",
-        "qa": "gpt-4o-mini",
+        # Gemini per CONTEXT.md UPDATED ROUTING (Week 4 onwards).
+        "qa": "gemini-2.5-flash-lite",
         "devops": "gpt-4o-mini",
         "documentation": "gpt-4o-mini",
         "monitoring": "gpt-4o-mini",

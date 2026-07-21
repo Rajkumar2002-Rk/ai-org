@@ -56,3 +56,12 @@ class BuildStatusResponse(BaseModel):
 class SecurityStatusResponse(BaseModel):
     status: str  # not_started | running | done | error
     certificate: dict[str, Any] | None = None
+
+
+class QAStatusResponse(BaseModel):
+    """Counts only — no test names, no technical detail reaches the user."""
+
+    status: str  # not_started | running | done | error
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
