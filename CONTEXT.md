@@ -377,6 +377,32 @@ providers, given a response with the usage block stripped, record
 `capture_ok=false` with NULL tokens (never 0), and the aggregate reports
 `captured=3, capture_failed=3` instead of a clean-looking total.
 
+**⚠️ THERE ARE TWO LLM PATHS, and the first instrumentation only covered one.**
+Caught during pre-flight for the paid run, before any money was spent.
+`app/llm.py` holds a **separate** `AsyncOpenAI` client used by **BA, Product
+Intelligence, the Architect**, competitive intel and design explanations —
+none of which go through `codegen.generate()`. Instrumenting only `codegen`
+would have produced a pipeline total **with the Architect missing from it**: a
+low number that looks entirely plausible. Both paths now record.
+
+`llm.moderate()` is deliberately NOT recorded — OpenAI's moderation endpoint is
+free and returns no usage block, so recording it would emit a stream of
+`capture_ok=false` rows and bury genuine capture failures. Intentional
+exclusion, documented so it is not mistaken for a gap.
+
+Service-path pre-flight (real GPT-4o-mini calls through the running backend, not
+mocks) — **4 rows, all `capture_ok=true`**, one BA message costing $0.00020070:
+```
+gpt-4o-mini  p=412 c=25  $0.00007680
+gpt-4o-mini  p=222 c=31  $0.00005190
+gpt-4o-mini  p=72  c=6   $0.00001440
+gpt-4o-mini  p=256 c=32  $0.00005760
+```
+Known limitation: BA / PI / Architect rows carry `stage=NULL` because those
+layers have no `project_id` at the call site. **The Opus-vs-rest split does not
+depend on stage tagging** — it filters on `model_used`. `developers` and
+`reviewer` stages ARE tagged.
+
 **⚠️ Found while building this — a real limit, logged not fixed.** The first
 version of the proof used a fabricated `project_id`; every insert was rejected by
 the foreign key, and `usage.record()` swallowed the error **by design** — so the

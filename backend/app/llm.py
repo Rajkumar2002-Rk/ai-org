@@ -3,6 +3,18 @@
 When no OpenAI key is configured every call returns ``None`` so callers
 fall back to deterministic templates. This keeps the whole BA flow
 working end-to-end with zero external dependencies.
+
+TOKEN CAPTURE: this module is a SECOND LLM path, entirely separate from
+``codegen.generate()``. BA, Product Intelligence, the Architect,
+competitive intel and design explanations all call through here, so an
+instrumentation that covered only codegen would report a pipeline total
+with the Architect missing from it — a low number that looks plausible.
+Both paths therefore record into ``llm_usage``.
+
+``moderate()`` is deliberately NOT recorded: OpenAI's moderation endpoint
+is free and returns no usage block, so recording it would emit a stream of
+capture_ok=false rows and make genuine capture failures harder to spot.
+That is an intentional exclusion, not an oversight.
 """
 import json
 import logging
@@ -10,6 +22,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app import usage
 from app.config import settings
 
 logger = logging.getLogger("ba.llm")
@@ -40,6 +53,8 @@ async def chat(
                 {"role": "user", "content": user},
             ],
         )
+        await usage.record("openai", settings.ba_model, settings.ba_model,
+                           usage.extract_openai(resp))
         return (resp.choices[0].message.content or "").strip()
     except Exception:  # pragma: no cover - network/credential failures
         logger.exception("LLM chat call failed; falling back to template")
@@ -80,8 +95,9 @@ async def complete_json(
     if _client is None:
         return None
     try:
+        chosen = model or settings.ba_model
         resp = await _client.chat.completions.create(
-            model=model or settings.ba_model,
+            model=chosen,
             temperature=temperature,
             response_format={"type": "json_object"},
             messages=[
@@ -89,6 +105,7 @@ async def complete_json(
                 {"role": "user", "content": user},
             ],
         )
+        await usage.record("openai", chosen, chosen, usage.extract_openai(resp))
         content = resp.choices[0].message.content or "{}"
         return json.loads(content)
     except Exception:  # pragma: no cover

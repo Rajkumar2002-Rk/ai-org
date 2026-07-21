@@ -38,6 +38,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       CODEGEN_MODE: ${CODEGEN_MODE:-real}
+      # Step 5 verification: run a real `next build` against generated frontend
+      # code instead of the cheap syntax-only check. Off by default — a full
+      # build downloads a node toolchain and is slow.
+      QA_FRONTEND_FULL_BUILD: ${QA_FRONTEND_FULL_BUILD:-false}
     depends_on:
       postgres:
         condition: service_healthy

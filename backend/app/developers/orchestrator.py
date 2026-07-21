@@ -9,6 +9,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from app import usage
 from app.database import async_session
 from app.developers import agents
 from app.models import GeneratedFile, PipelineStatus, Project
@@ -89,6 +90,8 @@ def _waves(tickets: list[dict]) -> list[list[dict]]:
 
 async def run(project_id: int, blueprint: dict) -> None:
     """Build all tickets. Records a pipeline_status 'building' stage."""
+    # Attribute this stage's token spend (see app/usage.py).
+    usage.set_run_context(project_id=project_id, stage="developers")
     tickets = blueprint.get("sprint_tickets", [])
     routing = blueprint.get("llm_routing", {})
 

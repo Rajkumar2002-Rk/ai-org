@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from app import usage
 from app.database import async_session
 from app.models import CodeReview, GeneratedFile, PipelineStatus, Project
 from app.reviewer import reviewer
@@ -118,6 +119,10 @@ async def review_subset(project_id: int, blueprint: dict,
 
 async def run(project_id: int, blueprint: dict) -> dict:
     """Review all files; return the security certificate."""
+    # Attribute this stage's token spend. The Opus half of the cost split is
+    # identifiable by model_used regardless, but tagging makes the report
+    # readable without relying on model names.
+    usage.set_run_context(project_id=project_id, stage="reviewer")
     general_model = blueprint.get("llm_routing", {}).get("code_reviewer", "gpt-4o-mini")
 
     async with async_session() as db:
