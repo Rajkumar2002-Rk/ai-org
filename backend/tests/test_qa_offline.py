@@ -229,6 +229,18 @@ def test_root_cause_rules():
          root_cause.DEVELOPER_FIX),
         ("POST /pay — rejects negative amounts", "negative amount accepted", 2,
          root_cause.DEVELOPER_FIX),
+        # Step 3: harness faults must never be blamed on an agent.
+        ("assembly: app did not start",
+         "RuntimeError: Missing required authentication environment variables: "
+         "AUTH0_DOMAIN. Refusing to start with an insecure auth configuration.", 1,
+         root_cause.ENVIRONMENT_FAULT),
+        ("assembly: could not create test database", "connection refused", 1,
+         root_cause.ENVIRONMENT_FAULT),
+        # Step 3: architect-level evidence must not be pattern-matched down to
+        # developer_fix just because the text contains "server error".
+        ("POST /api/orders — happy path",
+         "Server error 500 — column orders.customer_email does not exist and is "
+         "not present in the blueprint's database schema.", 1, None),
     ]
     for name, reason, level, expected in cases:
         got = root_cause._deterministic(TestOutcome(name, level, False, reason, "x"))
@@ -240,6 +252,7 @@ def test_root_cause_rules():
         (root_cause.DEVELOPER_REWORK, True),
         (root_cause.ARCHITECT_REWORK, False),
         (root_cause.BA_REWORK, False),
+        (root_cause.ENVIRONMENT_FAULT, False),
     ):
         o = TestOutcome("t", 1, False, "r", "x")
         o.root_cause_agent = cause

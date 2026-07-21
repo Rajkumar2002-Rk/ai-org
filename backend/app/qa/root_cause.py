@@ -6,15 +6,19 @@ When a test fails, trace it back to where it actually started and label it:
     developer_rework   — the feature was implemented wrongly / is missing
     architect_rework   — wrong technical decision (schema, endpoint, paradigm)
     ba_rework          — the requirement itself was misunderstood
+    environment_fault  — the code is fine; QA's own test harness is broken
 
 Deterministic signals decide first (they are free and reliable); the QA model
-(Gemini 2.5 Flash-Lite @ 0.1) is only consulted when the signals are ambiguous.
+(Gemini 2.5 Flash-Lite @ 0.1) is consulted when they are ambiguous — including
+whenever a failure carries architect-level evidence, which must never be
+pattern-matched down to developer_fix on a surface string.
 
 ROUTING POLICY (confirmed with the user): only developer_* is sent back
 automatically. architect_rework / ba_rework are classified, logged and escalated
 for a human, because re-running the Architect regenerates the whole blueprint
 (invalidating the built code and the Week-5 security certificate), and BA rework
-needs the user — and QA must never talk to the user.
+needs the user — and QA must never talk to the user. environment_fault also
+escalates: no agent can fix it, because nothing is wrong with their output.
 """
 import json
 import logging
@@ -30,11 +34,67 @@ DEVELOPER_FIX = "developer_fix"
 DEVELOPER_REWORK = "developer_rework"
 ARCHITECT_REWORK = "architect_rework"
 BA_REWORK = "ba_rework"
+# Fifth category: the failure is in the TEST HARNESS, not in the generated code.
+ENVIRONMENT_FAULT = "environment_fault"
 
-VALID_CAUSES = {DEVELOPER_FIX, DEVELOPER_REWORK, ARCHITECT_REWORK, BA_REWORK}
+VALID_CAUSES = {DEVELOPER_FIX, DEVELOPER_REWORK, ARCHITECT_REWORK, BA_REWORK,
+                ENVIRONMENT_FAULT}
 
-# Only these are auto-routed back to an agent. The rest are escalated.
+# Only these are auto-routed back to an agent. Everything else escalates to a
+# human — including environment_fault, which no agent can fix.
 AUTO_FIX_CAUSES = {DEVELOPER_FIX, DEVELOPER_REWORK}
+
+
+# Evidence that a failure is the harness's own fault. Blaming the Developer for
+# these is not harmless: it caused a real security regression during Week 6
+# verification — the generated app correctly refused to boot without Auth0
+# config, QA called that a bug, and the "repair" hardcoded fake credentials to
+# satisfy it. Kept deliberately high-precision: a false environment_fault would
+# hide a genuine bug, which is worse than an over-eager Developer label.
+_ENV_NAME_SIGNALS = (
+    "could not create test database",
+    "could not create test environment",
+    "could not write file",
+    "unexpected error",
+)
+_ENV_REASON_SIGNALS = (
+    # The app's own fail-fast firing because config is absent — correct
+    # behaviour by the code, missing setup by the harness.
+    "refusing to start",
+    # One module imported under two names: a harness sys.path problem, not the
+    # generated code's fault.
+    "is already defined for this metadata",
+)
+
+# Architect-level evidence. When any of these appear the failure must NOT be
+# short-circuited to developer_fix on a surface string — it needs real judgment.
+_ARCHITECT_SIGNALS = ("blueprint", "schema", "designed", "not defined")
+
+# The generated project's own top-level packages — these always exist on disk.
+_PROJECT_PACKAGES = ("backend", "app", "frontend", "mobile")
+
+
+def _is_environment_fault(name: str, reason: str) -> bool:
+    if any(s in name for s in _ENV_NAME_SIGNALS):
+        return True
+    if any(s in reason for s in _ENV_REASON_SIGNALS):
+        return True
+
+    # "No module named 'backend'" — that package IS on disk (the harness wrote
+    # it), so failing to import it means sys.path was set up wrongly by the test
+    # runner. Deliberately requires the EXACT top-level package name: a dotted
+    # miss like "backend.app.payments" means a file was never generated, which
+    # is the Developer's problem, and a third-party name is a dependency
+    # problem. Neither should be excused as an environment fault.
+    m = re.search(r"no module named ['\"]([a-z0-9_]+)['\"]", reason)
+    if m and m.group(1) in _PROJECT_PACKAGES:
+        return True
+    # "missing required ... environment variable": the app is right and the test
+    # environment simply did not supply configuration.
+    if "environment variable" in reason and any(
+            w in reason for w in ("missing", "required", "not set")):
+        return True
+    return False
 
 
 # ------------------------------------------------------------------ heuristics
@@ -42,6 +102,12 @@ def _deterministic(outcome: TestOutcome) -> str | None:
     """Cheap, reliable signals — no model call needed."""
     reason = (outcome.reason or "").lower()
     name = (outcome.name or "").lower()
+
+    # FIRST: is this QA's own fault? Checked before anything else, because
+    # harness faults masquerade as generated-code failures (they surface as
+    # "app did not start") and would otherwise be blamed on the Developer.
+    if _is_environment_fault(name, reason):
+        return ENVIRONMENT_FAULT
 
     # A syntax error or an unresolvable import is a bug in one file.
     if "syntax error" in name or "syntax error" in reason:
@@ -77,23 +143,36 @@ def _deterministic(outcome: TestOutcome) -> str | None:
             return DEVELOPER_FIX
 
     # Crash on hostile-but-ordinary input = missing validation in that handler.
+    #
+    # NARROWED: every Level-1 endpoint failure message contains "Server error",
+    # so this rule used to swallow the entire most-common failure class and label
+    # it developer_fix without any reasoning — even when the same text said the
+    # column was "not present in the blueprint's database schema". Architect-level
+    # evidence now falls through to the model instead of being pattern-matched
+    # away.
     if "server error" in reason and outcome.level == 1:
-        return DEVELOPER_FIX
+        if not any(s in reason for s in _ARCHITECT_SIGNALS):
+            return DEVELOPER_FIX
     return None
 
 
 _SYS = (
     "You trace software test failures to their ROOT CAUSE and label who must "
     "fix it. Reply ONLY with JSON "
-    '{"root_cause": "developer_fix"|"developer_rework"|"architect_rework"|"ba_rework", '
-    '"why": "one short sentence"}.\n'
+    '{"root_cause": "developer_fix"|"developer_rework"|"architect_rework"|'
+    '"ba_rework"|"environment_fault", "why": "one short sentence"}.\n'
     "developer_fix = a bug inside one function or file.\n"
     "developer_rework = the feature was built wrongly or is missing entirely.\n"
     "architect_rework = the technical design is wrong (wrong database schema, "
     "wrong endpoint design, wrong approach) — code changes cannot fix it.\n"
     "ba_rework = the requirement itself was misunderstood; the app is building "
     "the wrong thing.\n"
-    "Prefer developer_fix unless the evidence clearly points higher up."
+    "environment_fault = the application code is CORRECT and the test harness is "
+    "at fault — missing configuration or secrets in the test environment, import "
+    "paths set up wrongly by the test runner, or the harness failing to build its "
+    "own sandbox. An app that refuses to start because required configuration is "
+    "absent is behaving CORRECTLY; that is environment_fault, never a code bug.\n"
+    "Prefer developer_fix unless the evidence clearly points elsewhere."
 )
 
 

@@ -38,6 +38,7 @@ logger = logging.getLogger("qa.orchestrator")
 # never looked at — that silent no-op is what Step 2 verification caught.
 ESCALATED_PREFIX = "[escalated after retries] "
 ESCALATED_TIER_PREFIX = "[escalated — needs Architect/BA, not auto-fixable] "
+ESCALATED_ENV_PREFIX = "[escalated — QA's own test environment is at fault, the generated code is not] "
 ESCALATED_UNTRACED_PREFIX = "[escalated — could not be traced to a specific file] "
 
 
@@ -397,7 +398,11 @@ async def run(project_id: int) -> dict:
                 reason = o.reason or None
                 if not o.passed:
                     # Say WHY this failure is not (or is no longer) being retried.
-                    if retries.get(name, 0) >= settings.qa_max_retries:
+                    if o.root_cause_agent == root_cause.ENVIRONMENT_FAULT:
+                        # Never blamed on an agent — nothing is wrong with their
+                        # output, so this goes straight to a human.
+                        prefix = ESCALATED_ENV_PREFIX
+                    elif retries.get(name, 0) >= settings.qa_max_retries:
                         prefix = ESCALATED_PREFIX
                     elif name in untraceable:
                         prefix = ESCALATED_UNTRACED_PREFIX

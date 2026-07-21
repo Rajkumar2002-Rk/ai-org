@@ -50,7 +50,7 @@ below. Steps 2-6 were never started:
 | Step | What it asks for | Needs fresh pipeline spend? |
 | --- | --- | --- |
 | 2 | ~~Trigger the retry-and-escalate loop for real~~ **CLOSED 2026-07-21** — see "STEP 2 RESULT" below | No (none used) |
-| 3 | Inspect real root-cause classification quality across all four categories; say honestly whether any blur together | **No** — same data, synthetic bugs for missing categories |
+| 3 | ~~Root-cause classification quality~~ **CLOSED 2026-07-21** — see "STEP 3 RESULT" below | No (a few Gemini Flash-Lite calls, fractions of a cent) |
 | 4 | Prove teardown directly: temp dirs + Postgres databases before/after | **No** — one local QA cycle |
 | 5 | Run with `qa_frontend_full_build=true`; what does a real `next build` catch, how long, how much downloaded | **Yes** |
 | 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes**, and needs token instrumentation built first |
@@ -93,6 +93,73 @@ Evidence (real `qa_results` rows, projects 145-148):
 | 148 | 1 | **true** | — | gap 5 fixed — missing-routes finding is retried, not a silent no-op |
 
 Project 146 is the first `architect_rework` row ever written to this database.
+
+### STEP 3 RESULT — root-cause classification quality: CLOSED (2026-07-21)
+
+Probe: `backend/tests/test_qa_classification.py`. Reports the classification
+PATH (which deterministic rule fired, by name, or "model" plus the model's own
+stated reason) — the question was whether the classifier REASONS or
+pattern-matches.
+
+**Audit of the 9 real classified rows: 4 of 6 `developer_rework` labels were
+wrong in reality** — they were faults in QA's own harness (`ModuleNotFoundError:
+'backend'`, missing `AUTH0_*`, the dual-path double-import), not Developer bugs.
+Every one of Step 1's six defects surfaced as a Developer-blamed failure.
+
+**Two fixes (both authorised):**
+
+1. **The `"server error" + level 1` rule was swallowing the most common failure
+   class.** `level1.py` emits `"Server error {code} — ..."` for EVERY 5xx
+   endpoint failure, so that whole class was labelled `developer_fix` by
+   substring match, with no reasoning — even when the same text said the column
+   was *"not present in the blueprint's database schema"*. Now narrowed: it only
+   short-circuits when the text carries no architect-level signal
+   (`blueprint`, `schema`, `designed`, `not defined`); otherwise the model
+   decides. Effect: that case went from `developer_fix` (no reasoning) to
+   `architect_rework` — *"The database schema lacks the required customer_email
+   column referenced across multiple application files."*
+2. **New fifth category `environment_fault`** — the code is fine, QA's own
+   harness is broken. Never auto-retried, escalates straight to a human with its
+   own message (`[escalated — QA's own test environment is at fault, the
+   generated code is not]`). This gap caused the AUTH0 security regression: the
+   app correctly refused to boot without config, QA called it a Developer bug,
+   and the "repair" hardcoded fake credentials. Detection is deliberately
+   high-precision — a false `environment_fault` would HIDE a real bug:
+   - `No module named 'backend'` (exact top-level package, which is on disk) →
+     environment. `No module named 'backend.app.payments'` (dotted) → Developer,
+     a file was never generated. `No module named 'stripe'` → Developer.
+   - "refusing to start" / "missing required ... environment variable" →
+     environment (the app is behaving correctly).
+   - `"is already defined for this metadata"` → environment (double import via
+     harness `sys.path`).
+   Verified in both directions, including a guard that a genuine `NameError` at
+   startup is still `developer_rework` and never excused.
+
+**Model quality when consulted:** good on clear cases — the blatant domain
+mismatch, the typo dressed in architect vocabulary, and the missing-validation
+case were all reasoned correctly. **No over-escalation** was found in either
+probe: trivial Developer bugs stuffed with the words "schema", "blueprint" and
+"architecture" still came back `developer_fix`.
+
+**Model stability — a real weakness.** Repeating identical inputs 4×:
+`B1 architect_rework ×4` (stable), `B2 developer_fix ×4` (stable), but
+**`B3 (undeclared ticket dependency) → ba_rework ×3, developer_rework ×1`**, and
+`architect_rework` on an earlier run. On the hardest borderline case the model is
+unstable AND mostly wrong: its own stated reason ("a required module was never
+generated") describes an Architect gap, not a misunderstood requirement.
+Practical blast radius is limited — `ba_rework` and `architect_rework` both
+escalate, so the routing is right by accident 3 times in 4; the `developer_rework`
+outcome is the harmful one, wrongly auto-retrying ~25% of the time.
+**Do not treat a single classification as authoritative on genuinely ambiguous
+failures.**
+
+**Known gap, deliberately NOT fixed (new scope): `ba_rework` is unreachable in
+production.** The label works when evidence of a requirements mismatch is in the
+failure text, but nothing in QA produces such evidence — `summary` reaches QA
+only inside `root_cause.classify()` (`root_cause.py:128`); no Level 1 or Level 2
+test compares the built app against `summary_json`. **An app that flawlessly
+implements the WRONG product passes every QA test and produces no failure to
+classify.** Closing it needs comparison testing against the requirements.
 
 **Known gap, deliberately NOT fixed (new scope, not a defect): retry
 productivity is not auditable from `qa_results`.** Only the final state per test
@@ -351,12 +418,12 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
        backend python tests/test_architect_offline.py
    ```
    Both must print `RESULT: ALL CHECKS PASSED ✓` (expect 52 and 174 checks).
-2. **Continue verification at Step 3** (root-cause classification quality) —
-   Step 2 is CLOSED (see STEP 2 RESULT above). Steps 3 and 4 need **no new
-   pipeline spend**: drive them from the existing 140-144 rows plus synthetic
-   fixtures. `tests/test_qa_retry_loop.py` is the pattern to copy — it drives the
-   real orchestrator with every LLM seam patched, so scenarios are deterministic
-   and free.
+2. **Continue verification at Step 4** (prove teardown directly: temp dirs and
+   Postgres databases before/after a QA cycle). Steps 2 and 3 are CLOSED — see
+   their RESULT sections above. Step 4 needs **no new pipeline spend**.
+   `tests/test_qa_retry_loop.py` is the pattern to copy for orchestrator-level
+   scenarios (all LLM seams patched, deterministic, free);
+   `tests/test_qa_classification.py` is the pattern for probing decision paths.
 3. **Steps 5 and 6 need fresh runs.** Use `backend/tests/verify_pipeline.py`.
    Budget ~$0.50-0.70 per full run (Opus reviews every file and ignores
    `CODEGEN_MODE` by design). **Build token instrumentation before Step 6** —
