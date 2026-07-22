@@ -272,6 +272,11 @@ async def _run_round(files: list[dict],
             o.evidence = env.logs
             outcomes.append(o)
 
+        # File-level checks first, ALWAYS. They need the generated files, not a
+        # running backend — chaining them to env.ok meant a backend that failed
+        # to boot silently cost the frontend all of its coverage.
+        outcomes.extend(await level1.run_static(env))
+
         if env.ok:
             outcomes.extend(await level1.run(env))
             outcomes.extend(await level2.run(env))

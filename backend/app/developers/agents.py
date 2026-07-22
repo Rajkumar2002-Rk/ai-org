@@ -124,7 +124,29 @@ def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
         f"Description: {ticket.get('description')}\n"
         f"Other files already generated (reuse, don't duplicate): {names}\n"
     )
+    # The Architect assigns the output path so two tickets can never land on the
+    # same file. State it explicitly — the agent still needs to know where its
+    # own module lives in order to write correct imports.
+    if ticket.get("filepath"):
+        parts.append(
+            f"Write this ticket's code to EXACTLY this path: "
+            f"{ticket['filepath']}\nReturn that same value as \"filepath\". Do "
+            f"not choose a different location — another ticket may own it.\n"
+        )
     return "\n".join(parts)
+
+
+def _pin_path(file: dict, ticket: dict) -> dict:
+    """Force the Architect's assigned path onto the generated file.
+
+    The prompt asks for it, but a prompt is a request, not a guarantee — and a
+    file landing on another ticket's path silently destroys that ticket's work.
+    This is the enforcement.
+    """
+    assigned = (ticket.get("filepath") or "").strip()
+    if not assigned:
+        return file
+    return {**file, "filepath": assigned, "filename": assigned.rpartition("/")[2]}
 
 
 def _stub(agent_type: str, ticket: dict) -> dict:
@@ -156,6 +178,7 @@ async def build_ticket(
         file = await _generate(agent_type, model, prompt)
         if file is None:
             continue  # generation failed -> retry
+        file = _pin_path(file, ticket)
         last = file
         ok, issues = await _self_review(model, ticket, file)
         if ok:
@@ -167,6 +190,6 @@ async def build_ticket(
     if last is not None:
         return {**last, "agent_type": agent_type, "ticket_id": ticket.get("id"),
                 "status": "needs_review"}
-    stub = _stub(agent_type, ticket)
+    stub = _pin_path(_stub(agent_type, ticket), ticket)
     return {**stub, "agent_type": agent_type, "ticket_id": ticket.get("id"),
             "status": "needs_review"}

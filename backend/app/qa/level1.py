@@ -272,7 +272,17 @@ async def _full_frontend_build(env: TestEnv) -> list[TestOutcome]:
 
     fe = os.path.join(env.root or "", "frontend")
     if not os.path.isdir(fe):
-        return []
+        # Never return [] here: a check that produces NO outcome is
+        # indistinguishable from one that passed. Say which case this is.
+        if any(r.startswith("frontend/") for r in (env.files or {})):
+            return [TestOutcome(
+                "frontend — build", 1, False,
+                "Interface files were generated but no frontend directory exists "
+                "to build them in.", "frontend")]
+        return [TestOutcome(
+            "frontend — build (not applicable)", 1, True,
+            "This build has no interface files, so there is nothing to build.",
+            "frontend")]
     if not os.path.exists(os.path.join(fe, "package.json")):
         return [TestOutcome("frontend — build", 1, False,
                             "No package.json was generated, so the interface cannot "
@@ -290,8 +300,15 @@ async def _full_frontend_build(env: TestEnv) -> list[TestOutcome]:
 
 
 # ------------------------------------------------------------------ entrypoint
-async def run(env: TestEnv) -> list[TestOutcome]:
-    """Run every Level 1 test against the running throwaway instance."""
+async def run_static(env: TestEnv) -> list[TestOutcome]:
+    """Checks that need only the generated FILES — never a booted backend.
+
+    These used to sit inside run(), which the orchestrator calls only when
+    assembly succeeded. So a backend that failed to boot silently cost the
+    frontend ALL of its coverage, including the full `next build`, even though
+    frontend buildability has nothing to do with whether the backend starts.
+    Two independent things were chained to one condition; this unchains them.
+    """
     results: list[TestOutcome] = _check_frontend(env)
 
     if settings.qa_frontend_full_build:
@@ -300,6 +317,16 @@ async def run(env: TestEnv) -> list[TestOutcome]:
         except Exception as exc:  # pragma: no cover
             results.append(TestOutcome("frontend — build", 1, False, str(exc)[:300],
                                        "frontend"))
+    return results
+
+
+async def run(env: TestEnv) -> list[TestOutcome]:
+    """Level 1 tests against the RUNNING instance.
+
+    Static file checks live in run_static(), which the orchestrator calls
+    whether or not the app booted.
+    """
+    results: list[TestOutcome] = []
 
     async with httpx.AsyncClient(timeout=settings.qa_request_timeout) as client:
         try:

@@ -825,7 +825,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All five must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-22**, not estimated: **63 / 174 / 19 / 35 / 66 = 357 checks.** (An
+   2026-07-22**, not estimated: **68 / 191 / 19 / 35 / 66 = 379 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All five are free — every LLM seam is patched or mocked.
    NOTE: `test_qa_classification.py` is deliberately NOT in this list — it makes
@@ -866,13 +866,18 @@ Permanent rules that still apply: **no `Co-Authored-By` line, ever**; never
 commit `.env`; keep the repo private.
 
 ### Known-open, NOT yet fixed (deliberately logged, not actioned)
-- **Duplicate filepaths from the Architect/Developers.** Two tickets can be
-  assigned the same output path and one silently overwrites the other. Seen
-  repeatedly: `BE-2`+`BE-3` → `backend/app/orders.py` (project 142/143),
-  `PAY-1`+`SEC-1` → `backend/app/stripe_routes.py` (140), `PAY-1`+`BE-3` →
-  `backend/app/routers/stripe.py` (144). A paid-for ticket's work is discarded.
-  This is an Architect/Developer defect, not a QA one — QA reporting it is QA
-  working correctly.
+- ~~**Duplicate filepaths from the Architect/Developers.**~~ **FIXED 2026-07-22**
+  — stopped being theoretical when it caused project 201's build to fail
+  (`ImportError: cannot import name 'OrderItem'`; 3 tickets wrote
+  `backend/app/main.py`, 2 wrote `routes/orders.py`, only ~13 of 16 paths
+  survived). Fixed in three layers: `architect/builder._assign_filepaths()`
+  gives every ticket one explicit unique path (deterministic disambiguation —
+  a colliding `page.tsx` MOVES DIRECTORY rather than being renamed, since Next
+  routes on the filename); `developers/agents._pin_path()` enforces it against
+  the model's own choice; and `developers/orchestrator.run()` keeps an
+  `owner_of` map so a residual collision is logged and relocated, never a silent
+  overwrite. Historic sightings: `BE-2`+`BE-3` (142/143), `PAY-1`+`SEC-1` (140),
+  `PAY-1`+`BE-3` (144).
 - **No single fresh run has yet gone green end-to-end.** Every mechanism is
   verified, but run 144's gate blocked legitimately and 142 now correctly reports
   `passed: false`. That may say more about generated-code quality than about the

@@ -364,6 +364,119 @@ def _foundation_tickets() -> list[dict]:
     ]
 
 
+def _frontend_foundation_ticket() -> dict:
+    """The manifest that makes the generated UI a buildable project.
+
+    Verification found the mirror image of the APP-1 defect on the frontend: a
+    real blueprint commissioned five Next.js pages and NO package.json, so
+    `next build` could not start at all. Pages are individually valid files, so
+    nothing before QA notices — and QA's frontend build was itself gated behind
+    the backend booting, which hid it a second time.
+
+    Named FND-* on purpose: `developers/orchestrator._waves()` runs every FND-*
+    ticket in the FIRST wave, which is right here — the manifest has no
+    dependencies and later frontend agents benefit from seeing it. This is the
+    OPPOSITE of APP-1, which must run last.
+    """
+    return {
+        "id": "FND-3",
+        "title": "Frontend project manifest",
+        "assigned_to": "frontend",
+        "filepath": "frontend/package.json",
+        "description": (
+            "Create frontend/package.json — the manifest that makes the "
+            "interface a buildable Next.js project. It MUST be valid JSON (no "
+            "comments, no trailing commas) and MUST include: a \"name\" and "
+            "\"private\": true; \"scripts\" with dev/build/start wired to next; "
+            "and \"dependencies\" pinning next, react and react-dom, plus "
+            "\"devDependencies\" with typescript and the @types packages, since "
+            "the pages are TypeScript. Only list packages that genuinely exist "
+            "on npm. Do NOT invent internal packages, and do NOT add a "
+            "dependency the generated pages do not import."
+        ),
+        "dependencies": [],
+    }
+
+
+# Paths named inside a ticket's own text, e.g. "Create backend/app/models.py".
+_PATH_IN_TEXT = re.compile(
+    r"\b((?:backend|frontend|mobile)/[\w./\[\]-]+"
+    r"\.(?:py|tsx|ts|jsx|js|json|mjs))"
+)
+
+# Where a ticket's file goes when nothing names one, per agent type.
+_DEFAULT_DIR = {
+    "backend": ("backend/app/routes", "py"),
+    "frontend": ("frontend/app", "tsx"),
+    "integration": ("backend/app/integrations", "py"),
+    "mobile": ("mobile/screens", "tsx"),
+}
+# Filenames whose NAME is meaningful to the framework — Next.js routes on
+# `page.tsx` specifically, so a colliding one must move to another directory
+# rather than be renamed.
+_STRUCTURAL_BASENAMES = {"page.tsx", "page.jsx", "index.tsx", "index.ts"}
+
+
+def _slug(text: str) -> str:
+    return (re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")[:40]
+            or "module")
+
+
+def _assign_filepaths(tickets: list[dict]) -> list[dict]:
+    """Give every ticket ONE explicit, UNIQUE output path.
+
+    Nothing used to decide this: each Developer agent invented its own path from
+    the ticket text, so two tickets could land on the same file and the later
+    one silently overwrote the earlier. A paid-for ticket's work simply vanished,
+    and — worse — the surviving file could import a module written against a
+    different ticket's assumptions.
+
+    That is not theoretical. Project 201 failed to boot on
+    `ImportError: cannot import name 'OrderItem'`, and of its 16 generated files
+    only ~13 distinct paths survived: THREE tickets wrote backend/app/main.py and
+    TWO wrote backend/app/routes/orders.py.
+
+    Resolution order per ticket: an explicit `filepath` the Architect already
+    set, else a path named in the ticket's own text, else a derived one. Then a
+    global uniqueness pass that disambiguates DETERMINISTICALLY — never a silent
+    overwrite.
+    """
+    used: set[str] = set()
+    for t in tickets:
+        path = (t.get("filepath") or "").strip()
+        if not path:
+            m = _PATH_IN_TEXT.search(f"{t.get('title', '')} {t.get('description', '')}")
+            path = m.group(1) if m else ""
+        if not path:
+            directory, ext = _DEFAULT_DIR.get(
+                t.get("assigned_to") or "backend", _DEFAULT_DIR["backend"])
+            stem = _slug(t.get("title") or t.get("id"))
+            path = (f"{directory}/{stem}/page.{ext}"
+                    if t.get("assigned_to") in ("frontend", "mobile")
+                    else f"{directory}/{stem}.{ext}")
+
+        if path in used:
+            head, _, base = path.rpartition("/")
+            suffix = _slug(t.get("id") or "dup")
+            if base in _STRUCTURAL_BASENAMES:
+                # Renaming would break framework routing — move it instead.
+                path = f"{head}/{suffix}/{base}"
+            else:
+                stem, _, ext = base.rpartition(".")
+                path = f"{head}/{stem}_{suffix}.{ext}"
+            n = 2
+            while path in used:      # pathological: same id twice
+                path = f"{path.rpartition('.')[0]}{n}.{path.rpartition('.')[2]}"
+                n += 1
+            logger.warning(
+                "Ticket %s collided on an already-assigned filepath; moved to %s",
+                t.get("id"), path,
+            )
+        used.add(path)
+        t["filepath"] = path
+    return tickets
+
+
 def _security_ticket() -> dict:
     return {
         "id": "SEC-1",
@@ -659,7 +772,10 @@ async def build_blueprint(summary: dict) -> dict:
     api_endpoints = list(creative.get("api_endpoints", []))
 
     # Foundation first — the shared contract every other ticket builds against.
-    tickets = _foundation_tickets() + list(creative.get("sprint_tickets", []))
+    # FND-3 (the frontend manifest) joins it so the generated UI is a buildable
+    # project rather than loose pages; without it `next build` cannot start.
+    tickets = (_foundation_tickets() + [_frontend_foundation_ticket()]
+               + list(creative.get("sprint_tickets", [])))
 
     # Deterministic guarantees on top of the creative output:
     if mobile and not any(t.get("assigned_to") == "mobile" for t in tickets):
@@ -690,6 +806,11 @@ async def build_blueprint(summary: dict) -> dict:
     # Entrypoint LAST — it registers the routers every other ticket produced,
     # so it depends on all of them and lands in the final build wave.
     tickets.append(_entrypoint_ticket([t.get("id") for t in tickets if t.get("id")]))
+
+    # LAST: every ticket gets one explicit, unique output path. Two tickets
+    # sharing a path meant one silently overwrote the other — see
+    # _assign_filepaths for the real failure this caused.
+    _assign_filepaths(tickets)
 
     return {
         "tech_stack": creative.get("tech_stack", {}),

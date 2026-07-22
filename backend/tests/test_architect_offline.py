@@ -287,11 +287,93 @@ def test_reviewer_flag():
           and "leakage" in reviewer._PAYMENT_SECURITY_FOCUS.lower())
 
 
+async def test_unique_filepaths():
+    """Two tickets writing the same file silently destroyed one ticket's work.
+
+    Real failure it caused: project 201 would not boot
+    (ImportError: cannot import name 'OrderItem'), and of 16 generated files
+    only ~13 distinct paths survived — THREE tickets wrote backend/app/main.py
+    and TWO wrote backend/app/routes/orders.py.
+    """
+    print("\n=== TEST 5: every ticket owns a UNIQUE output filepath ===")
+    from app.architect import builder
+
+    bp = await builder.build_blueprint(summary(build="a coffee shop with online "
+                                                     "ordering, card payments and tips"))
+    tickets = bp["sprint_tickets"]
+    paths = [t.get("filepath") for t in tickets]
+
+    check("every ticket has a filepath", all(paths))
+    check("no ticket shares a filepath with another",
+          len(set(paths)) == len(paths))
+    if len(set(paths)) != len(paths):
+        dupes = {p for p in paths if paths.count(p) > 1}
+        print(f"      DUPLICATES: {dupes}")
+    check("APP-1 owns backend/app/main.py",
+          tickets_by_id(bp)["APP-1"].get("filepath") == "backend/app/main.py")
+    check("FND-1 owns backend/app/models.py",
+          tickets_by_id(bp)["FND-1"].get("filepath") == "backend/app/models.py")
+
+    # The frontend manifest — without it `next build` cannot start at all.
+    tk = tickets_by_id(bp)
+    check("FND-3 frontend manifest ticket exists", "FND-3" in tk)
+    check("FND-3 owns frontend/package.json",
+          tk.get("FND-3", {}).get("filepath") == "frontend/package.json")
+    check("FND-3 runs in the FIRST wave (FND- prefix, no dependencies)",
+          tk.get("FND-3", {}).get("dependencies") == [])
+    check("FND-3 demands real npm packages only",
+          "genuinely exist" in tk.get("FND-3", {}).get("description", ""))
+
+    # Direct test of the collision resolver, independent of any blueprint.
+    collided = builder._assign_filepaths([
+        {"id": "BE-1", "assigned_to": "backend",
+         "description": "Create backend/app/routes/orders.py"},
+        {"id": "BE-2", "assigned_to": "backend",
+         "description": "Also create backend/app/routes/orders.py"},
+        {"id": "FE-1", "assigned_to": "frontend",
+         "description": "Create frontend/app/page.tsx"},
+        {"id": "FE-2", "assigned_to": "frontend",
+         "description": "Also create frontend/app/page.tsx"},
+    ])
+    out = [t["filepath"] for t in collided]
+    print(f"      resolved: {out}")
+    check("colliding backend tickets get distinct paths", out[0] != out[1])
+    check("the first ticket keeps the original path",
+          out[0] == "backend/app/routes/orders.py")
+    check("a colliding page.tsx MOVES DIRECTORY (renaming would break routing)",
+          out[3].endswith("/page.tsx") and out[3] != out[2],
+          )
+    check("all four resolved paths are unique", len(set(out)) == 4)
+
+
+def test_developer_pins_assigned_path():
+    print("\n=== TEST 6: the Developer is PINNED to the assigned filepath ===")
+    from app.developers import agents
+
+    ticket = {"id": "BE-9", "filepath": "backend/app/routes/orders.py",
+              "assigned_to": "backend"}
+    # The model ignored the instruction and picked another ticket's file.
+    rogue = {"filename": "main.py", "filepath": "backend/app/main.py",
+             "content": "x = 1"}
+    pinned = agents._pin_path(rogue, ticket)
+    check("a rogue filepath is overridden with the assigned one",
+          pinned["filepath"] == "backend/app/routes/orders.py")
+    check("filename is derived from the assigned path",
+          pinned["filename"] == "orders.py")
+    check("content is untouched", pinned["content"] == "x = 1")
+    check("a ticket with no assigned path leaves the file alone",
+          agents._pin_path(rogue, {"id": "X"})["filepath"] == "backend/app/main.py")
+    check("the prompt states the required path",
+          "backend/app/routes/orders.py" in agents._base_prompt(ticket, [], ""))
+
+
 async def main():
     await test_payment_domain()
     await test_non_payment_domain()
     await test_gating_suite()
     test_reviewer_flag()
+    await test_unique_filepaths()
+    test_developer_pins_assigned_path()
 
     print("\n" + "=" * 60)
     if _failures:

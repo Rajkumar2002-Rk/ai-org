@@ -104,6 +104,11 @@ async def run(project_id: int, blueprint: dict) -> None:
 
     contract = _contract_text(blueprint)
     built: list[dict] = []
+    # Last line of defence against two tickets writing the same file. The
+    # Architect now assigns unique paths and the Developer is pinned to them, but
+    # a blueprint predating that fix — or a path arriving from anywhere else —
+    # must still never silently destroy another ticket's work.
+    owner_of: dict[str, str] = {}
     try:
         for wave in _waves(tickets):
             results = await asyncio.gather(
@@ -114,11 +119,25 @@ async def run(project_id: int, blueprint: dict) -> None:
             )
             async with async_session() as db:
                 for r in results:
+                    path = r.get("filepath") or r["filename"]
+                    ticket_id = r.get("ticket_id") or ""
+                    if owner_of.get(path, ticket_id) != ticket_id:
+                        stem, dot, ext = path.rpartition(".")
+                        moved = (f"{stem}_{ticket_id.lower()}.{ext}" if dot
+                                 else f"{path}_{ticket_id.lower()}")
+                        logger.warning(
+                            "Ticket %s would have overwritten %s (owned by %s); "
+                            "wrote %s instead — neither ticket's work is lost.",
+                            ticket_id, path, owner_of[path], moved,
+                        )
+                        path = moved
+                        r["filepath"] = path
+                    owner_of[path] = ticket_id
                     db.add(GeneratedFile(
                         project_id=project_id,
-                        ticket_id=r.get("ticket_id") or "",
-                        filename=r["filename"],
-                        filepath=r.get("filepath", r["filename"]),
+                        ticket_id=ticket_id,
+                        filename=path.rpartition("/")[2],
+                        filepath=path,
                         content=r["content"],
                         agent_type=r.get("agent_type", "backend"),
                         status=r.get("status", "generated"),

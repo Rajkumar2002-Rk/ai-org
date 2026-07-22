@@ -461,6 +461,54 @@ async def test_missing_certificate_fails_closed():
         qo.reviewer_orchestrator.review_subset = real_review
 
 
+async def test_frontend_checks_not_gated_on_backend_boot():
+    """Frontend buildability has nothing to do with whether the backend starts.
+
+    Both were chained to one condition: _full_frontend_build lived inside
+    level1.run(), which _run_round calls only `if env.ok`. On project 201 the
+    backend failed to boot, so the frontend got ZERO coverage and Step 5's whole
+    question went unanswered — silently, because a test that never runs reports
+    nothing at all.
+    """
+    print("\n=== F: frontend checks run even when the backend never booted ===")
+    from app.config import settings
+    from app.qa import level1
+    from app.qa.assembly import TestEnv
+
+    prev = settings.qa_frontend_full_build
+    settings.qa_frontend_full_build = True
+    try:
+        # Interface files exist, backend did NOT boot.
+        env = TestEnv()
+        env.ok = False
+        env.files = {"frontend/app/page.tsx":
+                     "export default function P(){ return null }"}
+        out = await level1.run_static(env)
+        names = [o.name for o in out]
+        check("run_static yields outcomes on a build that never booted",
+              bool(out), str(names))
+        build = [o for o in out if o.name.startswith("frontend — build")]
+        check("the frontend build is REPORTED, never silently skipped",
+              bool(build), str(names))
+        check("interface files with nowhere to build them is a FAILURE",
+              bool(build) and build[0].passed is False,
+              str([(o.name, o.passed) for o in build]))
+
+        # A backend-only build genuinely has no interface — say so explicitly.
+        env2 = TestEnv()
+        env2.ok = False
+        env2.files = {"backend/app/main.py": "app = 1"}
+        out2 = await level1.run_static(env2)
+        names2 = [o.name for o in out2]
+        check("a build with no interface says 'not applicable' (never [])",
+              any("not applicable" in n for n in names2), str(names2))
+        check("...and that is recorded as PASSING, not as a failure",
+              all(o.passed for o in out2 if o.name.startswith("frontend — build")),
+              str([(o.name, o.passed) for o in out2]))
+    finally:
+        settings.qa_frontend_full_build = prev
+
+
 def test_env_provides_provider_config():
     print("\n=== F: test env supplies provider config (no false 'bug') ===")
     for key in ("AUTH0_DOMAIN", "AUTH0_API_AUDIENCE", "STRIPE_CLIENT_ID",
@@ -488,6 +536,7 @@ async def main():
     test_mixed_import_styles_single_module()
     await test_certificate_drift_detection()
     await test_missing_certificate_fails_closed()
+    await test_frontend_checks_not_gated_on_backend_boot()
     test_env_provides_provider_config()
     test_entrypoint_ticket_forbids_workarounds()
 
