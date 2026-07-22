@@ -8,19 +8,33 @@ review, real QA against a real running instance. No fixtures.
 """
 import asyncio
 import json
+import os
 import sys
 import time
 
 import httpx
 
 API = "http://backend:8000"
-LOG = open("/app/tests/_verify_run.log", "a", buffering=1)
+LOG_PATH = "/app/tests/_verify_run.log"
+
+# Opening the log must never be able to kill a PAID run. A transient bind-mount
+# hiccup once took this whole driver down at import time, before a single API
+# call — the run cost nothing that time, but it would have been maddening at
+# minute forty. stdout is the real transcript; the file is a convenience.
+try:
+    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+    LOG = open(LOG_PATH, "a", buffering=1)
+except OSError as exc:
+    print(f"(run log unavailable: {exc} — continuing, stdout still has everything)",
+          flush=True)
+    LOG = None
 
 
 def log(msg: str) -> None:
     line = f"[{time.strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
-    LOG.write(line + "\n")
+    if LOG is not None:
+        LOG.write(line + "\n")
 
 
 # Deliberately small coffee-shop idea. Mentions ordering + paying + tips so the
