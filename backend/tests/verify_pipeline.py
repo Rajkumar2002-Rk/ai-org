@@ -62,25 +62,63 @@ ANSWERS = {
 }
 
 
+POLL_INTERVAL = 3
+
+
 async def poll(client, url, key="status", done=("done",), bad=("error",),
                limit=900, label=""):
-    """Poll a status endpoint until done/error."""
-    start = time.time()
+    """Poll a status endpoint until done/error.
+
+    SUSPEND-AWARE. The deadline is wall-clock, and a sleeping laptop used to be
+    indistinguishable from a stalled stage: a 14-hour suspend mid-build reported
+    as "TIMED OUT after 1200s" the instant the machine woke, and the driver then
+    carried a half-finished build onward. Any gap far larger than the poll
+    interval is a suspend, not a stall, so it extends the deadline instead of
+    consuming it — and says so, rather than silently absorbing the time.
+    """
+    deadline = time.time() + limit
     last = None
-    while time.time() - start < limit:
+    last_tick = time.time()
+    while time.time() < deadline:
         r = await client.get(url)
         data = r.json()
         s = data.get(key)
         if s != last:
             log(f"    {label} status -> {s}  {json.dumps({k: v for k, v in data.items() if k != 'certificate'})[:200]}")
             last = s
-        if s in done:
+        if s in done or s in bad:
             return data
-        if s in bad:
-            return data
-        await asyncio.sleep(3)
+        await asyncio.sleep(POLL_INTERVAL)
+
+        now = time.time()
+        gap = now - last_tick
+        if gap > POLL_INTERVAL * 20:
+            deadline += gap
+            log(f"    {label}: {gap:.0f}s wall-clock gap looks like a machine "
+                f"suspend, not a stall — extending the deadline by that much.")
+        last_tick = now
+
     log(f"    {label} TIMED OUT after {limit}s")
     return {"status": "timeout"}
+
+
+def require_done(data: dict, label: str, pid: int) -> bool:
+    """A stage that did not finish leaves the build in an UNKNOWN state.
+
+    "We don't know whether it finished" must not resolve to "carry on". Letting a
+    timed-out build through is how a 6-of-15-file project reached the Opus review
+    (which certified the partial set) and then QA (which reported failures caused
+    by files that were never written) — findings that describe the interruption,
+    not the system under test.
+    """
+    status = data.get("status")
+    if status == "done":
+        return True
+    log(f"\n!! {label.upper()} DID NOT COMPLETE (status={status}) — ABORTING.")
+    log("   A stage in an unknown state must not flow into the next one: "
+        "everything downstream would be measuring the interruption.")
+    log(f"\nPROJECT_ID={pid}")
+    return False
 
 
 async def main():
@@ -130,7 +168,9 @@ async def main():
 
         log("\n-- Architect --")
         await client.post(f"{API}/pipeline/start", json={"project_id": pid})
-        await poll(client, f"{API}/pipeline/{pid}/status", label="architect")
+        a = await poll(client, f"{API}/pipeline/{pid}/status", label="architect")
+        if not require_done(a, "architect", pid):
+            return
         bp = (await client.get(f"{API}/pipeline/{pid}/blueprint")).json()
         tickets = bp.get("sprint_tickets", [])
         log(f"  blueprint: {len(tickets)} tickets, "
@@ -143,6 +183,10 @@ async def main():
         await client.post(f"{API}/pipeline/build", json={"project_id": pid})
         b = await poll(client, f"{API}/pipeline/{pid}/build-status", label="build", limit=1200)
         log(f"  files built: {b.get('complete')}/{b.get('total')}")
+        if not require_done(b, "build", pid):
+            log(f"   (only {b.get('complete')} of {b.get('total')} files were "
+                f"written — Opus would have certified a partial set.)")
+            return
         for f in b.get("files", []):
             log(f"    {f.get('status'):<13} {f.get('agent_type'):<11} {f.get('filename')}")
 
