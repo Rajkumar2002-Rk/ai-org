@@ -41,6 +41,12 @@ ESCALATED_PREFIX = "[escalated after retries] "
 ESCALATED_TIER_PREFIX = "[escalated — needs Architect/BA, not auto-fixable] "
 ESCALATED_ENV_PREFIX = "[escalated — QA's own test environment is at fault, the generated code is not] "
 ESCALATED_UNTRACED_PREFIX = "[escalated — could not be traced to a specific file] "
+# No agent can fix a certificate that is missing — it is an operational problem
+# (Redis lost it, or it expired), not a defect in anyone's output. It still needs
+# a marker: a failure sitting at retry_count=0 with no stated reason is exactly
+# the silent no-op Step 2 closed.
+ESCALATED_CERT_PREFIX = "[escalated — no security certificate, this build cannot be certified] "
+CERT_MISSING_TEST = "security: certificate is missing"
 
 
 # ------------------------------------------------------------------ helpers
@@ -192,9 +198,34 @@ async def _recertify(project_id: int, blueprint: dict, file_ids: set[int]) -> di
     QA's bookkeeping: comparing hashes catches drift from ANY source, including
     a stage that never declared it changed anything. QA's tracked edits are
     unioned in so a certificate predating fingerprints still recertifies.
+
+    FAILS CLOSED ON A MISSING CERTIFICATE TOO. `drifted_files` returns [] when
+    there is no certificate at all — correctly, since drift is meaningless
+    without a baseline — but that used to flow through here as an empty dict and
+    land on `certified = True`. A build with NO security certificate would then
+    be marked `tested`. Same failure as defect #6 with a different trigger: that
+    one was a certificate that no longer matched disk, this one is a certificate
+    that is not there at all, e.g. after Redis loses it (no persistence volume,
+    plus a 24h TTL on the key). "We can't tell" must never resolve to "it's fine".
     """
     raw = await redis_client.get(f"security_cert:{project_id}")
     cert = json.loads(raw) if raw else {}
+
+    if not cert:
+        logger.error(
+            "No security certificate for project %s — QA cannot certify this "
+            "build. Blocking rather than defaulting to certified.", project_id,
+        )
+        return {
+            "passed": False,
+            "certificate_missing": True,
+            "reason": (
+                "No security certificate exists for this build, so it cannot be "
+                "shown to have passed security review. The code was not "
+                "re-reviewed here on purpose: silently spending an Opus review "
+                "to paper over a lost certificate would hide why it went missing."
+            ),
+        }
 
     drifted = set(await reviewer_orchestrator.drifted_files(project_id, cert))
     targets = drifted | set(file_ids)
@@ -389,7 +420,15 @@ async def run(project_id: int) -> dict:
         # Always ask, even when QA believes it changed nothing: the certificate's
         # fingerprint is what decides, not QA's own bookkeeping.
         recert = await _recertify(project_id, blueprint, modified_files)
-        if recert.get("recertified_after_qa"):
+        if recert.get("certificate_missing"):
+            # Surface it as a failing test, not just a status flag, so the
+            # reason travels with the results instead of being inferred.
+            final[CERT_MISSING_TEST] = TestOutcome(
+                CERT_MISSING_TEST, 2, False,
+                recert.get("reason") or "No security certificate for this build.",
+                "app",
+            )
+        elif recert.get("recertified_after_qa"):
             if not recert.get("passed", True):
                 final["security: re-check after repairs"] = TestOutcome(
                     "security: re-check after repairs", 2, False,
@@ -405,7 +444,9 @@ async def run(project_id: int) -> dict:
                 reason = o.reason or None
                 if not o.passed:
                     # Say WHY this failure is not (or is no longer) being retried.
-                    if o.root_cause_agent == root_cause.ENVIRONMENT_FAULT:
+                    if name == CERT_MISSING_TEST:
+                        prefix = ESCALATED_CERT_PREFIX
+                    elif o.root_cause_agent == root_cause.ENVIRONMENT_FAULT:
                         # Never blamed on an agent — nothing is wrong with their
                         # output, so this goes straight to a human.
                         prefix = ESCALATED_ENV_PREFIX
@@ -435,7 +476,9 @@ async def run(project_id: int) -> dict:
             total = len(final)
             passed = sum(1 for o in final.values() if o.passed)
             # Still certified? If QA rewrote code, the re-review decides.
-            certified = recert.get("passed", True) if recert else True
+            # Defaults are FAIL-CLOSED in both directions: an absent recert dict
+            # and an absent `passed` key both mean "not shown to have passed".
+            certified = bool(recert.get("passed", False)) if recert else False
             all_passed = passed == total and total > 0 and certified
 
             st = await db.get(PipelineStatus, stage_id)

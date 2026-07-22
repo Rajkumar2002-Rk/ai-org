@@ -52,8 +52,10 @@ below. Steps 2-6 were never started:
 | 2 | ~~Trigger the retry-and-escalate loop for real~~ **CLOSED 2026-07-21** — see "STEP 2 RESULT" below | No (none used) |
 | 3 | ~~Root-cause classification quality~~ **CLOSED 2026-07-21** — see "STEP 3 RESULT" below | No (a few Gemini Flash-Lite calls, fractions of a cent) |
 | 4 | ~~Prove teardown directly: temp dirs + Postgres databases before/after~~ **CLOSED 2026-07-21** — see "STEP 4 RESULT" below | No (none used) |
-| 5 | Run with `qa_frontend_full_build=true`; what does a real `next build` catch, how long, how much downloaded | **Yes** |
-| 6 | Real token usage and dollar cost for one QA cycle, split Gemini vs free deterministic work | **Yes** — instrumentation is now BUILT and PROVEN (2026-07-21, see below); only the measurement itself still needs the paid run |
+| 5 | ~~Run with `qa_frontend_full_build=true`~~ **CLOSED 2026-07-22** — the build never executed; see "STEP 5 RESULT" | Yes (spent) |
+| 6 | ~~Real token usage and dollar cost~~ **CLOSED 2026-07-22** — measured; see "STEP 6 RESULT" | Yes (spent) |
+
+**ALL SIX VERIFICATION STEPS ARE NOW CLOSED.**
 
 Steps 2-4 are CLOSED and cost **$0.00** between them. **Steps 5 and 6 are all
 that remain, and both need fresh pipeline spend** — Step 6 also needs token
@@ -281,6 +283,32 @@ each time:
 | 4 | The teardown checks themselves | `X is None or X not in after[...]` — a resource that was never created reported a clean teardown. |
 | 6 | The usage rows that were never written | `usage.record()` swallows write errors by design, so instrumentation can never break a pipeline run. A systematic failure therefore produced a "successful" run holding **zero** usage rows. **A low cost total and a missing cost total are indistinguishable without checking the ROW COUNT for the `run_id`.** |
 | 6 | A promotional rate going stale | Claude Sonnet 5's introductory pricing expires 2026-08-31. A rate that quietly lapses still produces a confident-looking number and nothing announces it stopped being true — so `_RATE_EXPIRY` is an active tripwire the suite asserts on, and the suite also proves the tripwire itself can fire. |
+| 5+6 | **A missing certificate reading as "certified"** | A host restart mid-run destroyed `security_cert:201` in Redis while Postgres still said `status='secured'`. `drifted_files()` returns `[]` when there is no certificate — correct in itself, since drift is meaningless without a baseline — but that flowed through `_recertify()` as `{}` and landed on `certified = True`. QA would have marked the build **`tested` with no security certificate ever verified against the final code**. Same shape as defect #6, different trigger: **data loss, not code drift.** |
+
+**On that seventh entry — the symptom was the code path; the ROOT CAUSE was
+storage.** `docker-compose.yml` declared a volume for Postgres and **none for
+Redis**, so the store holding the security certificate was pure cache while the
+store holding `status='secured'` was durable. The two disagreed after a restart
+and the disagreement resolved in the unsafe direction. Fixing only `_recertify()`
+would have left a system that still loses certificates and merely complains more
+loudly about it. Both are fixed: a `redis_data` volume **with `appendonly yes`**
+(RDB snapshotting is exactly what dropped the writes — everything since the last
+snapshot is lost on an ungraceful kill), plus the fail-closed default.
+
+**The fix needed a fix, and the existing suite caught it.** The first version
+emitted the blocking result as a failing test with `retry_count=0` and **no
+escalation marker** — reintroducing precisely the silent no-op Step 2 closed
+(a failure that never says why it was not retried). `test_qa_retry_loop` failed on
+`no silent retry_count=0 failure left behind`. There is now a fifth marker,
+`ESCALATED_CERT_PREFIX` — *"[escalated — no security certificate, this build
+cannot be certified]"* — because no agent can fix a missing certificate; it is
+operational, not a defect in anyone's output.
+
+Related and still true: `_recertify()` writes the certificate with `ex=86400`, so
+a certificate **expires after 24 hours**. Under the fail-closed fix that now
+BLOCKS rather than silently passing — correct, but it means a project QA'd more
+than a day after certification legitimately needs re-certifying. Deliberate, and
+recorded so it is not mistaken for a bug later.
 
 The shape is always identical: **a check whose passing condition is satisfiable
 by nothing happening.** A missing fingerprint, an unreasoned label, an
@@ -412,6 +440,132 @@ failure loses all usage silently, with only a log line to show for it** — the 
 shape as everything else in the STANDING PRINCIPLE table, one level up.
 **Before trusting any cost total, check that the expected NUMBER OF ROWS landed
 for that `run_id`.** A low total and a missing total look identical otherwise.
+
+### STEP 5 RESULT — frontend full build: CLOSED (2026-07-22), and it never ran
+
+Run on project **201** with `qa_frontend_full_build=true`. **The answer to "what
+does a real `next build` catch" is: it cannot execute at all.** Zero bytes
+downloaded, zero build time. That is a finding, not a missing result — and it
+must not be recorded as "the frontend build passed", because no build happened.
+
+**Two independent blockers, either one sufficient:**
+
+1. **The Architect never commissions a `package.json`.** 16 files were generated,
+   5 of them under `frontend/` (`app/page.tsx`, `app/menu/page.tsx`,
+   `app/orders/new/page.tsx`, `app/orders/[order_id]/confirm/page.tsx`,
+   `app/settings/page.tsx`) — and **no project manifest.** `_full_frontend_build`
+   correctly reports "No package.json was generated" and never reaches
+   `npm install`. This is **defect #2 all over again on the frontend side**: the
+   Architect commissions parts and no thing to assemble them into.
+2. **The frontend build is gated behind BACKEND assembly succeeding.**
+   `_full_frontend_build` lives inside `level1.run()`, and `_run_round` only calls
+   Level 1 `if env.ok`. The backend failed to boot, so Level 1 never ran and the
+   frontend was never even attempted. **Frontend buildability does not depend on
+   the backend booting, but the check does.** Any project whose backend fails to
+   start gets zero frontend coverage — silently, because nothing reports a test
+   that was never attempted.
+
+⚠️ **Latent silent-skip, related:** `_full_frontend_build` opens with
+`if not os.path.isdir(fe): return []` — a build with no frontend directory at all
+produces **no outcome whatsoever**, not even a skip notice. Here the directory
+existed so the failure was reported, but the `return []` is the same
+absence-of-evidence shape and should become an explicit "not applicable" outcome.
+
+### STEP 6 RESULT — measured cost: CLOSED (2026-07-22)
+
+**⭐ THE REFERENCE NUMBER — one real build, `CODEGEN_MODE=real`, project 201:**
+
+## **$0.953857 across 86 captured calls, 0 capture failures**
+
+| | cost | rows | share |
+| --- | --- | --- | --- |
+| **Opus security review** | **$0.168260** | 7 | **17.6%** |
+| **Everything else** | **$0.785597** | 79 | **82.4%** |
+| **TOTAL** | **$0.953857** | **86** | |
+
+By model:
+
+| model | rows | tokens | cost |
+| --- | --- | --- | --- |
+| `claude-sonnet-5` (frontend codegen) | 12 | 90,173 | **$0.667482** |
+| `claude-opus-4-8` (security) | 7 | 13,700 | $0.168260 |
+| `gpt-4o` (backend codegen) | 13 | 21,744 | $0.108990 |
+| `gpt-4o-mini` (BA/PI/review pass 1) | 30 | 23,892 | $0.006329 |
+| `gemini-flash-lite-latest` (QA/integration) | 24 | 23,704 | $0.002796 |
+
+**⭐ THIS OVERTURNS THE STANDING ASSUMPTION.** CONTEXT.md said spend was
+"overwhelmingly Claude Opus 4.8". It is not. **Frontend code generation on
+Claude Sonnet is 70% of a real build; Opus is under a fifth.** The old belief was
+an artefact of `CODEGEN_MODE=cheap`, where codegen is nearly free and Opus is all
+that is left. Any optimisation aimed at the security review is aimed at the wrong
+17.6%.
+
+**Scope of that number:** BA → PI → Architect → Developers → Opus security review.
+It does NOT include a completed QA cycle, because QA failed at assembly (below).
+
+#### Recovery overhead — NOT part of build economics
+
+A host restart killed the original run mid-QA and destroyed the certificate, so
+the security review and QA were re-run. **$1.609656 across 81 rows** (Opus
+$1.562260 / 37 rows / 97.1%). **This is a crash-recovery artefact and must never
+be folded into cost-per-build.** Session total on project 201 was $2.563513;
+the build cost is $0.953857.
+
+**⚠️ Buried in that recovery number is a real economic finding: the SAME 16 files
+reviewed twice cost $0.168260 and then $1.562260 — a 9× swing.** Review #1 found
+37 issues and fixed 22; review #2 found 109 and fixed 109 (fixing costs calls).
+CONTEXT.md already noted "the Opus security pass is strict and non-deterministic";
+this is the first time that variance has been priced. **Security-review cost is
+not a stable per-build constant** — do not budget it as one.
+
+#### Why QA failed (honest escalation, working as designed)
+
+One result row, `retry_count=3`, escalated:
+```
+ImportError: cannot import name 'OrderItem' from 'backend.app.models'
+  backend/app/routes/orders.py line 4
+```
+`orders.py` imports `OrderItem`; `models.py` never defines it — a **cross-ticket
+contract violation**. Classified `developer_rework`, retried the full 3 times on
+GPT-4o, never fixed, then escalated with `[escalated after retries]`. The loop
+behaved exactly as Step 2 verified.
+
+**Likely upstream cause — the known duplicate-filepath gap, now with a count.**
+Of 16 generated files only ~13 distinct paths survive: **3 tickets all wrote
+`backend/app/main.py`** and **2 wrote `backend/app/routes/orders.py`**. Whichever
+ticket lands last wins, so the surviving `orders.py` can reference a `models.py`
+written against a different ticket's assumptions. This is the Architect/Developer
+defect already logged as known-open — it is now implicated in a real build
+failure, not just theoretically wasteful.
+
+#### ✅ Defect #6's recertification mechanism CONFIRMED in a real run
+
+QA rewrote 2 files during its repair rounds. The certificate caught it by
+fingerprint and re-reviewed exactly those:
+```
+recertified_after_qa: files_rechecked=2, drifted_from_certificate=[326, 327],
+                      rewritten_by_qa=[326, 327], issues_found=9, issues_fixed=9,
+                      passed=true
+```
+Project ended `qa_failed` — **not** `security_blocked` — which is correct: tests
+failed, security re-check passed. First real-world confirmation that the Week-6
+defect-#6 fix works outside a synthetic fixture.
+
+#### Instrumentation coverage — verified from this run's own rows
+
+| stage | rows | cost |
+| --- | --- | --- |
+| `reviewer` | 84 | $1.677781 |
+| `developers` | 47 | $0.764513 |
+| `qa` | 15 | $0.104541 |
+| **`NULL` = `app/llm.py`** | **21** | **$0.016679** |
+
+**21 rows with `stage=NULL` — `gpt-4o-mini` ×19 (BA, Product Intelligence) and
+`gpt-4o` ×2 (Architect).** Every `codegen.generate()` call happens inside a
+stage-tagged orchestrator, so these can ONLY be the `app/llm.py` path. Had the
+second-path gap not been caught, that count would be zero and the build total
+would have excluded the Architect entirely. **167 rows total, `capture_ok=false`
+on 0 of them.**
 
 ## What this session was
 
@@ -633,6 +787,13 @@ and its description demands `FastAPI` + `include_router`.
 
 ## Cost so far — and why Step 6 matters
 
+⚠️ **SUPERSEDED — do not use these figures for decisions.** The measured
+reference number is **$0.953857 per real build** (see "STEP 6 RESULT" above).
+Everything in this section predates instrumentation, was run under
+`CODEGEN_MODE=cheap`, and its central claim — that spend is "overwhelmingly
+Opus" — was **measured to be wrong**: Opus is 17.6% of a real build, and
+frontend codegen on Sonnet is 70%. Kept for history only.
+
 Roughly **$3.50–4.50** of real spend: 5 full pipeline runs (140–144) plus 2
 recertifications, overwhelmingly Claude Opus 4.8 (the security pass ignores
 `CODEGEN_MODE` by design and runs on every file).
@@ -664,7 +825,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All five must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-21**, not estimated: **56 / 174 / 19 / 35 / 66 = 350 checks.** (An
+   2026-07-22**, not estimated: **63 / 174 / 19 / 35 / 66 = 357 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All five are free — every LLM seam is patched or mocked.
    NOTE: `test_qa_classification.py` is deliberately NOT in this list — it makes
@@ -691,8 +852,15 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    `CODEGEN_MODE` by design). **Build token instrumentation before Step 6** —
    `codegen.generate()` still captures no usage, so any cost figure today is a
    guess.
-4. **Do not start Week 7 (DevOps #11) until verification is closed** — the point
-   of this session was that "built" and "verified" are different states.
+4. ~~Do not start Week 7 until verification is closed~~ — **VERIFICATION IS NOW
+   CLOSED (all six steps, 2026-07-22).** Week 7 (DevOps #11) is unblocked. The
+   point of the exercise stands: "built" and "verified" are different states, and
+   six steps produced seven instances of one failure pattern plus a measured cost
+   number that overturned the standing assumption about where spend goes.
+   **Carry forward into Week 7:** the three known-open defects below are now
+   implicated in a real failed build, not just theoretical — duplicate filepaths
+   caused a cross-ticket `ImportError`, and no `package.json` is ever
+   commissioned. Both are Architect defects and both block a working deliverable.
 
 Permanent rules that still apply: **no `Co-Authored-By` line, ever**; never
 commit `.env`; keep the repo private.

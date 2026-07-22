@@ -394,6 +394,73 @@ async def test_certificate_drift_detection():
     check("hash is stable", ro._hash("same") == ro._hash("same"))
 
 
+async def test_missing_certificate_fails_closed():
+    print("\n=== F: a MISSING certificate must BLOCK, never default to certified ===")
+    import json as _json
+
+    from app.qa import orchestrator as qo
+
+    # Redis holds the certificate and had no persistence volume, so a restart
+    # could delete it while Postgres still said the project was `secured`.
+    # drifted_files() correctly returns [] with no certificate (drift is
+    # meaningless without a baseline), which used to flow through _recertify as
+    # {} and land on `certified = True` — a build marked `tested` with no
+    # security certificate at all.
+    class _FakeRedis:
+        def __init__(self, value):
+            self.value = value
+
+        async def get(self, key):
+            return self.value
+
+        async def set(self, *a, **k):
+            return None
+
+    calls = {"review_subset": 0}
+
+    async def _counting_review(*a, **k):
+        calls["review_subset"] += 1
+        return {"passed": True, "issues_found": 0, "issues_fixed": 0,
+                "files_reviewed": 0}
+
+    real_redis = qo.redis_client
+    real_review = qo.reviewer_orchestrator.review_subset
+    qo.reviewer_orchestrator.review_subset = _counting_review
+    try:
+        # --- 1) no certificate at all (project 424242 has no generated files)
+        qo.redis_client = _FakeRedis(None)
+        recert = await qo._recertify(424242, {}, set())
+        check("missing certificate returns a blocking result, not {}", bool(recert))
+        check("missing certificate is flagged as such",
+              recert.get("certificate_missing") is True)
+        check("missing certificate does NOT report passed",
+              recert.get("passed") is False)
+        # The exact expression qo.run() uses to decide the project's fate.
+        certified = bool(recert.get("passed", False)) if recert else False
+        check("=> certified is FALSE (this defaulted to True before the fix)",
+              certified is False)
+        check("no Opus review was silently spent papering over the loss",
+              calls["review_subset"] == 0, str(calls))
+
+        # --- 2) the fix must block the MISSING case without blocking the normal
+        #        one: a real, undrifted certificate still certifies.
+        qo.redis_client = _FakeRedis(
+            _json.dumps({"passed": True, "file_hashes": {}}))
+        ok = await qo._recertify(424242, {}, set())
+        check("a real undrifted certificate still certifies",
+              (bool(ok.get("passed", False)) if ok else False) is True)
+
+        # --- 3) a certificate that itself failed must not be rescued by defaults
+        qo.redis_client = _FakeRedis(
+            _json.dumps({"passed": False, "file_hashes": {}}))
+        bad = await qo._recertify(424242, {}, set())
+        check("a failed certificate stays failed",
+              (bool(bad.get("passed", False)) if bad else False) is False)
+    finally:
+        qo.redis_client = real_redis
+        qo.reviewer_orchestrator.review_subset = real_review
+
+
 def test_env_provides_provider_config():
     print("\n=== F: test env supplies provider config (no false 'bug') ===")
     for key in ("AUTH0_DOMAIN", "AUTH0_API_AUDIENCE", "STRIPE_CLIENT_ID",
@@ -420,6 +487,7 @@ async def main():
     test_file_targeting()
     test_mixed_import_styles_single_module()
     await test_certificate_drift_detection()
+    await test_missing_certificate_fails_closed()
     test_env_provides_provider_config()
     test_entrypoint_ticket_forbids_workarounds()
 

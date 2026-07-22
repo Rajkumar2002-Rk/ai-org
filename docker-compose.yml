@@ -17,6 +17,15 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Redis holds the security certificate. It had NO volume, so a host restart
+    # during verification lost project 201's certificate while Postgres still
+    # said the project was `secured` — the two stores disagreed and the
+    # disagreement resolved unsafely. appendonly (AOF) rather than the default
+    # RDB snapshots: snapshotting is exactly what dropped the writes, since
+    # everything since the last snapshot is lost on an ungraceful kill.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
     ports:
       - "6379:6379"
     healthcheck:
@@ -59,3 +68,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
