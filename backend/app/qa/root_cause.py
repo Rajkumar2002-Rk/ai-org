@@ -64,6 +64,11 @@ _ENV_REASON_SIGNALS = (
     # One module imported under two names: a harness sys.path problem, not the
     # generated code's fault.
     "is already defined for this metadata",
+    # QA's own container has no Node toolchain, so the interface cannot be built
+    # here. Blaming the generated frontend for that would send a perfectly good
+    # file back to the Developer three times — the same mistake that made QA
+    # "fix" correct fail-fast auth by hardcoding credentials.
+    "no node toolchain",
 )
 
 # Architect-level evidence. When any of these appear the failure must NOT be

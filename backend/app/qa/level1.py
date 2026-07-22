@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import shutil
 
 import httpx
 
@@ -287,6 +288,19 @@ async def _full_frontend_build(env: TestEnv) -> list[TestOutcome]:
         return [TestOutcome("frontend — build", 1, False,
                             "No package.json was generated, so the interface cannot "
                             "be built.", "frontend")]
+    # A missing toolchain is QA's problem, not the generated code's. Without this
+    # check `_run` returns -1 ("No such file or directory: 'npm'") and the
+    # failure reads as "Interface dependencies failed to install" — blaming the
+    # Developer for the harness, which is exactly how QA once "fixed" correct
+    # fail-fast auth by hardcoding credentials. The wording is matched by
+    # root_cause._ENV_REASON_SIGNALS so it classifies as environment_fault.
+    if shutil.which("npm") is None:
+        return [TestOutcome(
+            "frontend — build", 1, False,
+            "QA's test environment has no Node toolchain (npm is not installed "
+            "in the test container), so the interface could not be built here. "
+            "The generated interface code is not at fault.", "frontend")]
+
     code, out = _run(["npm", "install", "--no-audit", "--no-fund"], cwd=fe, timeout=600)
     if code != 0:
         return [TestOutcome("frontend — dependencies install", 1, False,
