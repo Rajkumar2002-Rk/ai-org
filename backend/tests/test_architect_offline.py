@@ -324,6 +324,18 @@ async def test_unique_filepaths():
     check("FND-3 demands real npm packages only",
           "genuinely exist" in tk.get("FND-3", {}).get("description", ""))
 
+    # The root layout — Next.js App Router refuses to build any page without it.
+    check("FND-4 root layout ticket exists", "FND-4" in tk)
+    check("FND-4 owns frontend/app/layout.tsx",
+          tk.get("FND-4", {}).get("filepath") == "frontend/app/layout.tsx")
+    check("FND-4 runs in the FIRST wave (FND- prefix, no dependencies)",
+          tk.get("FND-4", {}).get("dependencies") == [])
+    fnd4 = tk.get("FND-4", {}).get("description", "")
+    check("FND-4 mandates the <html> and <body> tags a root layout needs",
+          "<html" in fnd4 and "<body>" in fnd4)
+    check("FND-4 keeps the layout server-only (no 'use client')",
+          "use client" in fnd4)  # phrased as a prohibition
+
     # Direct test of the collision resolver, independent of any blueprint.
     collided = builder._assign_filepaths([
         {"id": "BE-1", "assigned_to": "backend",

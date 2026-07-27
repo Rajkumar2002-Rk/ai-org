@@ -88,8 +88,13 @@ def _waves(tickets: list[dict]) -> list[list[dict]]:
     return waves
 
 
-async def run(project_id: int, blueprint: dict) -> None:
-    """Build all tickets. Records a pipeline_status 'building' stage."""
+async def run(project_id: int, blueprint: dict) -> dict:
+    """Build all tickets. Records a pipeline_status 'building' stage.
+
+    Returns {"status": "built"|"build_failed", "total": int, "stubbed": [ids]}.
+    "build_failed" means at least one ticket produced only a placeholder stub —
+    the caller MUST NOT report the build as done in that case (see _run_build).
+    """
     # Attribute this stage's token spend (see app/usage.py).
     usage.set_run_context(project_id=project_id, stage="developers")
     tickets = blueprint.get("sprint_tickets", [])
@@ -145,14 +150,39 @@ async def run(project_id: int, blueprint: dict) -> None:
                 await db.commit()
             built.extend(results)
 
+        # A stub means a ticket produced NO code — the LLM was unavailable or
+        # returned nothing on every attempt (this is how an OpenAI quota outage
+        # once put 8 TODO-text files past the build stage, where Opus then
+        # "certified" them and only QA caught it via syntax errors). A build
+        # that is partly placeholder text has not been built, and must not flow
+        # into the security review as if it had. Same rule as the driver's
+        # require_done: an unknown/empty state must never read as success.
+        stubbed = [r for r in built if r.get("status") == agents.STUB_STATUS]
         async with async_session() as db:
             st = await db.get(PipelineStatus, stage_id)
-            st.status = "done"
-            st.completed_at = datetime.now(timezone.utc)
             project = await db.get(Project, project_id)
-            if project is not None:
-                project.status = "built"
+            if stubbed:
+                ids = ", ".join(sorted(str(r.get("ticket_id")) for r in stubbed))
+                msg = (f"{len(stubbed)} of {len(built)} tickets produced no code "
+                       f"(placeholder stubs): {ids}. The most common cause is an "
+                       f"LLM provider outage/quota error. Not certifiable.")
+                logger.error("Build for project %s incomplete — %s", project_id, msg)
+                st.status = "error"
+                st.error_message = msg
+                if project is not None:
+                    project.status = "build_failed"
+            else:
+                st.status = "done"
+                if project is not None:
+                    project.status = "built"
+            st.completed_at = datetime.now(timezone.utc)
             await db.commit()
+
+        return {
+            "status": "build_failed" if stubbed else "built",
+            "total": len(built),
+            "stubbed": sorted(str(r.get("ticket_id")) for r in stubbed),
+        }
     except Exception as exc:  # pragma: no cover
         logger.exception("Build failed for project %s", project_id)
         async with async_session() as db:

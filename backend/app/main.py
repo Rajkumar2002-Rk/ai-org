@@ -90,8 +90,13 @@ async def _run_build(project_id: int) -> None:
             await redis_client.set(_build_key(project_id), "error", ex=86400)
             return
         blueprint = json.loads(row[0])
-        await orchestrator.run(project_id, blueprint)
-        await redis_client.set(_build_key(project_id), "done", ex=86400)
+        summary = await orchestrator.run(project_id, blueprint)
+        # A build where any ticket produced only a placeholder stub is NOT done —
+        # reporting "done" would let a provider outage flow into the security
+        # review as if real code had been generated.
+        ok = (summary or {}).get("status") == "built"
+        await redis_client.set(_build_key(project_id), "done" if ok else "error",
+                               ex=86400)
     except Exception:  # pragma: no cover
         logger.exception("Developer build failed for project %s", project_id)
         await redis_client.set(_build_key(project_id), "error", ex=86400)

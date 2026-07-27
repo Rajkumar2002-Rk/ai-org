@@ -471,6 +471,27 @@ produces **no outcome whatsoever**, not even a skip notice. Here the directory
 existed so the failure was reported, but the `return []` is the same
 absence-of-evidence shape and should become an explicit "not applicable" outcome.
 
+**FIXES from the follow-up runs (projects 240/241), all with regression proof:**
+- **Root layout (`FND-4`).** The first *complete* build's real `next build`
+  failed: *"build_the_main_ui/page.tsx doesn't have a root layout"*. The Next.js
+  App Router requires `frontend/app/layout.tsx` (the `<html>`/`<body>` wrapper)
+  before ANY page can build, and no feature ticket owned it — the exact FND-3 /
+  APP-1 shape. New deterministic `_frontend_layout_ticket()` (FND-4, first wave)
+  commissions it. Proven in `test_architect_offline` (FND-4 exists, owns the
+  path, first wave, mandates `<html>`/`<body>`, server-only).
+- **Stub gate — a build with placeholder files must not be certified.** The
+  OpenAI quota outage on the first end-to-end attempt made all 8 backend tickets
+  fall back to `_stub()` (`// TODO ...` in a `.py` file), yet the build reported
+  `done`, Opus "certified" the TODO text, and only QA caught it via syntax
+  errors. Now `_stub` carries `STUB_STATUS` (distinct from `needs_review`, which
+  means a real-but-questionable file), `developers/orchestrator.run()` returns
+  `build_failed` if ANY ticket stubbed, and `_run_build` sets the build status to
+  `error` so the driver's `require_done` aborts before the security review.
+  Proven in `test_developers_offline` (real orchestrator, temp Postgres: one
+  stubbed ticket ⇒ `build_failed`, project never `built`, files still persisted).
+  This is the same rule as the driver abort — an empty/unknown state must never
+  read as success — now enforced at the build→review boundary.
+
 ### STEP 6 RESULT — measured cost: CLOSED (2026-07-22)
 
 **⭐ THE REFERENCE NUMBER — one real build, `CODEGEN_MODE=real`, project 201:**
@@ -819,15 +840,15 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    ```
    docker compose build backend && docker compose up -d backend
    for t in test_qa_offline test_architect_offline test_qa_retry_loop \
-            test_qa_teardown test_token_instrumentation; do
+            test_qa_teardown test_token_instrumentation test_developers_offline; do
      docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" \
          backend python tests/$t.py
    done
    ```
-   All five must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-22**, not estimated: **68 / 191 / 19 / 35 / 66 = 379 checks.** (An
+   All six must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
+   2026-07-22**, not estimated: **68 / 196 / 19 / 35 / 66 / 10 = 394 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
-   root-cause cases.) All five are free — every LLM seam is patched or mocked.
+   root-cause cases.) All six are free — every LLM seam is patched or mocked.
    NOTE: `test_qa_classification.py` is deliberately NOT in this list — it makes
    real Gemini Flash-Lite calls (fractions of a cent, but not free).
 2. **Steps 5 and 6 are the only work left, and they run TOGETHER as ONE paid

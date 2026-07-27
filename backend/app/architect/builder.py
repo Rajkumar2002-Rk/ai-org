@@ -477,6 +477,39 @@ def _assign_filepaths(tickets: list[dict]) -> list[dict]:
     return tickets
 
 
+def _frontend_layout_ticket() -> dict:
+    """The Next.js App Router root layout.
+
+    Step 5's first real `next build` failed with "doesn't have a root layout —
+    make sure every page has a root layout". The App Router REQUIRES
+    app/layout.tsx (it renders the <html>/<body> that wrap every page); without
+    it, no page can build. This is the same class as FND-3 and APP-1 — the
+    framework needs a specific file that no feature ticket owns, so the Architect
+    must commission it deterministically rather than hope a page ticket happens
+    to add it.
+
+    FND-* so it lands in the first wave with the manifest; no dependencies.
+    """
+    return {
+        "id": "FND-4",
+        "title": "Frontend root layout",
+        "assigned_to": "frontend",
+        "filepath": "frontend/app/layout.tsx",
+        "description": (
+            "Create frontend/app/layout.tsx — the Next.js App Router ROOT "
+            "LAYOUT, which the framework requires before any page can build. It "
+            "MUST export a default React component named RootLayout that takes "
+            "`{ children }: { children: React.ReactNode }` and returns "
+            "<html lang=\"en\"><body>{children}</body></html> — the <html> and "
+            "<body> tags are mandatory and must appear exactly once here. Keep "
+            "it minimal: no data fetching, no auth, no client-only hooks. You "
+            "may export `metadata`. This file is server-only — do NOT add "
+            "\"use client\"."
+        ),
+        "dependencies": [],
+    }
+
+
 def _security_ticket() -> dict:
     return {
         "id": "SEC-1",
@@ -772,9 +805,11 @@ async def build_blueprint(summary: dict) -> dict:
     api_endpoints = list(creative.get("api_endpoints", []))
 
     # Foundation first — the shared contract every other ticket builds against.
-    # FND-3 (the frontend manifest) joins it so the generated UI is a buildable
-    # project rather than loose pages; without it `next build` cannot start.
-    tickets = (_foundation_tickets() + [_frontend_foundation_ticket()]
+    # FND-3 (manifest) and FND-4 (root layout) join it so the generated UI is a
+    # buildable Next.js project rather than loose pages; without the manifest
+    # `next build` cannot start, and without the root layout no page can build.
+    tickets = (_foundation_tickets()
+               + [_frontend_foundation_ticket(), _frontend_layout_ticket()]
                + list(creative.get("sprint_tickets", [])))
 
     # Deterministic guarantees on top of the creative output:

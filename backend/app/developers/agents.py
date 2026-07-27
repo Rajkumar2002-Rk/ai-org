@@ -149,8 +149,16 @@ def _pin_path(file: dict, ticket: dict) -> dict:
     return {**file, "filepath": assigned, "filename": assigned.rpartition("/")[2]}
 
 
+STUB_STATUS = "stub"
+
+
 def _stub(agent_type: str, ticket: dict) -> dict:
-    """Deterministic placeholder when no LLM is available at all."""
+    """Placeholder when generation produced NOTHING usable — the LLM was
+    unavailable (e.g. a provider quota outage) or returned nothing on every
+    attempt. This is NOT the same as `needs_review`, where a real file was
+    generated but failed self-review; this file is pure TODO text and is not
+    even valid code. Carries STUB_STATUS so the build stage can refuse to call a
+    run 'built' when any ticket produced no code — see developers/orchestrator."""
     fn = f"{ticket.get('id', 'ticket').lower()}.txt"
     return {
         "filename": fn,
@@ -192,4 +200,4 @@ async def build_ticket(
                 "status": "needs_review"}
     stub = _pin_path(_stub(agent_type, ticket), ticket)
     return {**stub, "agent_type": agent_type, "ticket_id": ticket.get("id"),
-            "status": "needs_review"}
+            "status": STUB_STATUS}
