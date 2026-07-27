@@ -101,6 +101,40 @@ async def _self_review(model: str, ticket: dict, file: dict) -> tuple[bool, str]
     return bool(res.get("ok", True)), str(res.get("issues", ""))
 
 
+_ROUTER_RE = re.compile(r"^\s*(\w+)\s*=\s*APIRouter\b", re.M)
+
+
+def _module_path(filepath: str) -> str:
+    """backend/app/routes/menu.py -> backend.app.routes.menu"""
+    return filepath[:-3].replace("/", ".") if filepath.endswith(".py") else \
+        filepath.replace("/", ".")
+
+
+def _router_modules(existing: list[dict]) -> list[tuple[str, str]]:
+    """(module_path, router_var) for every already-generated file that actually
+    defines an APIRouter.
+
+    CONTENT-based, not path- or name-based. The entrypoint used to guess
+    conventional router names (`routes.menu`) that did not match the real
+    generated filenames (`routes.implement_menu_retrieval_endpoint`), and the app
+    failed to import. Detecting the router by its `= APIRouter(...)` assignment
+    means the exact, real module path is handed to the entrypoint — and files
+    that define no router (models, database, scaffolding, middleware) are
+    correctly left out, so the entrypoint never imports a `router` that isn't
+    there.
+    """
+    out: list[tuple[str, str]] = []
+    for f in existing:
+        content = f.get("content") or ""
+        fp = f.get("filepath") or f.get("filename") or ""
+        if not fp.endswith(".py"):
+            continue
+        m = _ROUTER_RE.search(content)
+        if m:
+            out.append((_module_path(fp), m.group(1)))
+    return out
+
+
 def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
     # Full paths, not bare filenames: the entrypoint ticket (APP-1) has to import
     # routers by module path, and paths also make duplicate-file collisions
@@ -133,6 +167,23 @@ def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
             f"{ticket['filepath']}\nReturn that same value as \"filepath\". Do "
             f"not choose a different location — another ticket may own it.\n"
         )
+
+    # The entrypoint must register the routers that were actually generated, by
+    # their REAL module paths. Enumerate them explicitly rather than trusting the
+    # model to reconstruct the names — that guessing is what broke a real build.
+    if ticket.get("is_entrypoint"):
+        routers = _router_modules(existing)
+        if routers:
+            lines = "\n".join(f"    from {mod} import {var} as {mod.split('.')[-1]}_router"
+                              for mod, var in routers)
+            parts.append(
+                "\nREGISTER EXACTLY THESE ROUTERS — they are the only modules that "
+                "define an APIRouter, and these module paths are EXACT (do not "
+                "shorten, rename, or invent conventional names like "
+                "`routes.menu`):\n" + lines + "\n"
+                "Import each as shown and register every one with "
+                "app.include_router(...). Import NO other router module.\n"
+            )
     return "\n".join(parts)
 
 

@@ -336,6 +336,21 @@ async def test_unique_filepaths():
     check("FND-4 keeps the layout server-only (no 'use client')",
           "use client" in fnd4)  # phrased as a prohibition
 
+    # The global stylesheet — the layout imports it by convention, so it must
+    # exist or `next build` fails on an unresolved module.
+    check("FND-5 global stylesheet ticket exists", "FND-5" in tk)
+    check("FND-5 owns frontend/app/globals.css",
+          tk.get("FND-5", {}).get("filepath") == "frontend/app/globals.css")
+    check("FND-5 runs in the FIRST wave (FND- prefix, no dependencies)",
+          tk.get("FND-5", {}).get("dependencies") == [])
+    check("FND-5 forbids @tailwind directives without a config (plain CSS)",
+          "@tailwind" in tk.get("FND-5", {}).get("description", ""))
+
+    # The entrypoint must be flagged so the Developer injects the real router
+    # module paths — guessing conventional names is what broke a real build.
+    check("APP-1 is flagged is_entrypoint",
+          tk.get("APP-1", {}).get("is_entrypoint") is True)
+
     # Direct test of the collision resolver, independent of any blueprint.
     collided = builder._assign_filepaths([
         {"id": "BE-1", "assigned_to": "backend",
@@ -356,6 +371,57 @@ async def test_unique_filepaths():
           out[3].endswith("/page.tsx") and out[3] != out[2],
           )
     check("all four resolved paths are unique", len(set(out)) == 4)
+
+
+def test_entrypoint_gets_real_router_paths():
+    """The entrypoint imports routers by their REAL module paths, not guesses.
+
+    A real baseline build booted-failed on `No module named
+    'backend.app.routes.menu'`: main.py imported the conventional name while the
+    generated file was `routes/implement_menu_retrieval_endpoint.py` (a
+    consequence of the unique-filepath slug naming). The Developer now injects
+    the exact module paths of the files that actually define an APIRouter.
+    """
+    print("\n=== TEST 7: entrypoint is handed the REAL router module paths ===")
+    from app.developers import agents
+
+    # Slug-named routers + non-routers, exactly the project-252 shape.
+    existing = [
+        {"filepath": "backend/app/models.py", "content": "class Order: pass"},
+        {"filepath": "backend/app/database.py", "content": "engine = None"},
+        {"filepath": "backend/app/routes/implement_menu_retrieval_endpoint.py",
+         "content": "from fastapi import APIRouter\nrouter = APIRouter()"},
+        {"filepath": "backend/app/routes/implement_order_creation_endpoint.py",
+         "content": "router = APIRouter(prefix='/orders')"},
+        {"filepath": "backend/app/routes/set_up_fastapi_project_structure.py",
+         "content": "SETTINGS = {}"},                         # no router
+        {"filepath": "backend/app/integrations/notify.py",
+         "content": "def send(): ..."},                       # no router
+    ]
+
+    mods = dict(agents._router_modules(existing))
+    check("only APIRouter files detected (2 of 6)", len(mods) == 2)
+    check("menu router detected at its REAL slug path",
+          "backend.app.routes.implement_menu_retrieval_endpoint" in mods)
+    check("orders router detected at its REAL slug path",
+          "backend.app.routes.implement_order_creation_endpoint" in mods)
+    check("models.py (no router) excluded",
+          "backend.app.models" not in mods)
+    check("scaffolding (no router) excluded",
+          "backend.app.routes.set_up_fastapi_project_structure" not in mods)
+
+    entry = {"id": "APP-1", "is_entrypoint": True, "title": "entrypoint",
+             "description": "build main.py", "filepath": "backend/app/main.py"}
+    prompt = agents._base_prompt(entry, existing, "")
+    block = prompt.split("REGISTER EXACTLY", 1)[-1] if "REGISTER EXACTLY" in prompt else ""
+    check("entrypoint prompt enumerates the routers", bool(block))
+    check("prompt carries the EXACT menu module path",
+          "backend.app.routes.implement_menu_retrieval_endpoint" in block)
+    check("prompt does NOT suggest a conventional 'routes.menu' name",
+          "routes.menu " not in block and "routes.menu\n" not in block)
+    check("a non-entrypoint ticket gets NO router block",
+          "REGISTER EXACTLY" not in agents._base_prompt(
+              {"id": "BE-1", "title": "x", "description": "y"}, existing, ""))
 
 
 def test_developer_pins_assigned_path():
@@ -385,6 +451,7 @@ async def main():
     await test_gating_suite()
     test_reviewer_flag()
     await test_unique_filepaths()
+    test_entrypoint_gets_real_router_paths()
     test_developer_pins_assigned_path()
 
     print("\n" + "=" * 60)

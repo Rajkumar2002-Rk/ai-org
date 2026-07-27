@@ -510,6 +510,37 @@ def _frontend_layout_ticket() -> dict:
     }
 
 
+def _frontend_globals_ticket() -> dict:
+    """The stylesheet the App Router root layout imports by convention.
+
+    Next.js `create-next-app` scaffolds `app/globals.css` and the root layout
+    imports it, so the model writes `import "./globals.css"` in layout.tsx
+    whether or not anything asked it to — a real baseline run failed with
+    `Module not found: Can't resolve './globals.css'` for exactly this reason.
+    Rather than fight that strong convention in the layout, guarantee the file
+    exists. Third foundation file the Architect had been failing to commission,
+    after the manifest (FND-3) and the root layout (FND-4).
+
+    FND-* so it lands in the first wave; no dependencies.
+    """
+    return {
+        "id": "FND-5",
+        "title": "Frontend global stylesheet",
+        "assigned_to": "frontend",
+        "filepath": "frontend/app/globals.css",
+        "is_boilerplate": True,
+        "description": (
+            "Create frontend/app/globals.css — the global stylesheet the App "
+            "Router root layout imports. Keep it minimal and plain CSS: a "
+            "box-sizing reset, `body { margin: 0 }`, and a system font stack. "
+            "Do NOT use @tailwind directives or any preprocessor syntax unless a "
+            "Tailwind/PostCSS config file also exists in this project — plain CSS "
+            "only, so `next build` cannot fail on an unresolved directive."
+        ),
+        "dependencies": [],
+    }
+
+
 def _security_ticket() -> dict:
     return {
         "id": "SEC-1",
@@ -541,6 +572,13 @@ def _entrypoint_ticket(other_ids: list[str]) -> dict:
         "id": "APP-1",
         "title": "Application entrypoint (FastAPI app + router registration)",
         "assigned_to": "backend",
+        # Signals the Developer layer to inject the EXACT list of router modules
+        # (derived from the routers actually generated) into this ticket's
+        # prompt, so the entrypoint imports them by their real paths instead of
+        # guessing conventional names. See developers/agents._router_modules —
+        # a real baseline run booted-failed because main.py imported
+        # `routes.menu` while the generated file was `routes/impl_menu_...py`.
+        "is_entrypoint": True,
         "description": (
             "Create backend/app/main.py — the file that starts the application. "
             "It MUST: (1) create the FastAPI instance as a module-level variable "
@@ -809,7 +847,8 @@ async def build_blueprint(summary: dict) -> dict:
     # buildable Next.js project rather than loose pages; without the manifest
     # `next build` cannot start, and without the root layout no page can build.
     tickets = (_foundation_tickets()
-               + [_frontend_foundation_ticket(), _frontend_layout_ticket()]
+               + [_frontend_foundation_ticket(), _frontend_layout_ticket(),
+                  _frontend_globals_ticket()]
                + list(creative.get("sprint_tickets", [])))
 
     # Deterministic guarantees on top of the creative output:
