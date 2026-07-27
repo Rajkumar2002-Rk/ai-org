@@ -351,6 +351,24 @@ async def test_unique_filepaths():
     check("APP-1 is flagged is_entrypoint",
           tk.get("APP-1", {}).get("is_entrypoint") is True)
 
+    # CONVENTIONAL names: modules sit where the model's imports point, instead of
+    # title-slugs it can't guess. A real build failed on `No module named
+    # 'backend.app.auth'` because auth had a slug name.
+    check("AUTH-1 is at the conventional backend/app/auth.py",
+          tk.get("AUTH-1", {}).get("filepath") == "backend/app/auth.py")
+    check("AUTH-1 exposes the standard get_current_admin_user dependency",
+          "get_current_admin_user" in tk.get("AUTH-1", {}).get("description", ""))
+    check("SEC-1 is at the conventional backend/app/security.py",
+          tk.get("SEC-1", {}).get("filepath") == "backend/app/security.py")
+    # Creative endpoint tickets get short conventional stems, not full-title slugs.
+    be_paths = [t.get("filepath", "") for t in bp["sprint_tickets"]
+                if str(t.get("id", "")).startswith(("BE-", "PAY-"))
+                and (t.get("filepath") or "").endswith(".py")]
+    if not all("implement_" not in p and "create_" not in p for p in be_paths):
+        print(f"      slug-prefixed paths: {be_paths}")
+    check("no backend route file keeps the 'implement_/create_' title-slug prefix",
+          all("implement_" not in p and "create_" not in p for p in be_paths))
+
     # Direct test of the collision resolver, independent of any blueprint.
     collided = builder._assign_filepaths([
         {"id": "BE-1", "assigned_to": "backend",
@@ -422,6 +440,22 @@ def test_entrypoint_gets_real_router_paths():
     check("a non-entrypoint ticket gets NO router block",
           "REGISTER EXACTLY" not in agents._base_prompt(
               {"id": "BE-1", "title": "x", "description": "y"}, existing, ""))
+
+
+def test_conventional_stem():
+    print("\n=== TEST 7b: title -> conventional module stem ===")
+    from app.architect import builder as b
+    cases = {
+        "Implement menu retrieval endpoint": "menu",
+        "Implement order creation endpoint": "order",
+        "Stripe Connect OAuth handler + encrypted tokens": "stripe",
+        "Build core API endpoints": "api",       # 'build','core' are filler
+    }
+    for title, expected in cases.items():
+        got = b._conventional_stem(title, "BE-9")
+        check(f"{title!r} -> {expected!r}", got == expected)
+    check("empty title falls back to a slug of the ticket id",
+          b._conventional_stem("", "BE-9") == "be_9")
 
 
 def test_contract_declares_exact_module_paths():
@@ -496,6 +530,7 @@ async def main():
     test_reviewer_flag()
     await test_unique_filepaths()
     test_entrypoint_gets_real_router_paths()
+    test_conventional_stem()
     test_contract_declares_exact_module_paths()
     test_developer_pins_assigned_path()
 

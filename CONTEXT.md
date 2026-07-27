@@ -5,6 +5,55 @@ fully before doing anything else in this project.
 
 ---
 
+# ⏭️ RESUME HERE — session hand-off (2026-07-27, end of day)
+
+**Where we are:** chasing the first fully-green end-to-end baseline build (Steps
+5+6 verification). Steps 1–4 are CLOSED; the QA/pipeline MECHANISMS are proven.
+What keeps blocking green is generated-code quality — specifically the model
+importing sibling modules by conventional names that the Architect's filenames
+didn't match. Five paid baseline attempts so far; **$12.38 total measured spend,
+0 capture failures.**
+
+**Last action, DONE and committed (not yet run):** the conventional-naming root
+fix. `architect/builder._assign_filepaths` now derives SHORT conventional module
+stems (`menu.py`, `stripe.py`) via `_conventional_stem` instead of full-title
+slugs, and AUTH-1 / SEC-1 are pinned to the exact conventional paths the model
+imports (`backend/app/auth.py`, `backend/app/security.py`); AUTH-1 also exports
+the standard `get_current_user` / `get_current_admin_user` deps. This targets the
+run-283 failure (`No module named 'backend.app.auth'`).
+
+**NEXT STEP (what to do tomorrow):**
+1. Decide whether to spend on baseline attempt #6. The user held the run at end
+   of 2026-07-27 to review the naming change first.
+2. If running: `caffeinate` + machine plugged in (a suspend already cost one
+   run), then `docker compose build backend` (the service image has NO volume
+   mount — it MUST be rebuilt to pick up code changes), `up -d` with
+   `CODEGEN_MODE=real QA_FRONTEND_FULL_BUILD=true`, verify guards live in the
+   container + OpenAI probe, record the max `llm_usage.id` as the boundary, then
+   `docker compose run ... python tests/verify_pipeline.py`.
+3. Report split by model, row counts per figure, path coverage, Step-5 build.
+
+**Open defects (both generated-code QUALITY, not QA):**
+- **D3 residual — wrong SYMBOL from a correctly-pathed module.** The module-path
+  family is closed by construction (module map + conventional names); a file can
+  still import a wrong *name* from the right module. Surfaces as a clear
+  ImportError caught by QA retry, not a silent failure. Not fixed.
+- **D4 — flaky SSG prerender.** Run 274's `next build` failed prerendering a
+  page; run 283 it PASSED with no change. Non-deterministic generated-page
+  quality. If it recurs, the fix is likely a rendering-strategy decision
+  (force-dynamic) rather than per-page patching. Not fixed.
+
+**Honest open question the user is weighing:** is a fully-green synthetic build a
+verification goal, or a codegen-quality goal that belongs to a later phase? The
+mechanisms are already proven; each green-chase run is ~$3.
+
+**Working tree:** clean, all pushed. HEAD after this session ends at the
+conventional-naming commit. Regression: **68 / 226 / 19 / 35 / 66 / 10 = 424
+checks, 0 failures** (verify by exit code + RESULT line, NOT the [PASS] count —
+a crashed suite still prints its earlier PASS lines).
+
+---
+
 # WEEK 6 VERIFICATION SESSION (2026-07-21) — six defects found and fixed
 
 ## STATUS: COMMITTED AND PUSHED ✓
@@ -906,7 +955,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All six must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-27**, not estimated: **68 / 217 / 19 / 35 / 66 / 10 = 415 checks.** (An
+   2026-07-27**, not estimated: **68 / 226 / 19 / 35 / 66 / 10 = 424 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All six are free — every LLM seam is patched or mocked.
    **Check the RESULT line AND the exit code, not the `[PASS]` count** — a suite

@@ -422,6 +422,31 @@ def _slug(text: str) -> str:
             or "module")
 
 
+# Filler verbs/words a ticket title opens with — dropped so the CONVENTIONAL
+# stem is the domain noun the generated code will actually import by.
+_TITLE_FILLER = {
+    "implement", "create", "build", "design", "set", "up", "setup", "add",
+    "develop", "make", "the", "a", "an", "and", "for", "of", "to", "core",
+    "backend", "frontend", "with", "page", "screen", "endpoint", "endpoints",
+}
+
+
+def _conventional_stem(title: str, ticket_id: str) -> str:
+    """A SHORT, conventional module stem from an unpredictable ticket title.
+
+    Title-slug filenames (`implement_menu_retrieval_endpoint`) are what the model
+    cannot guess when it wants to import a sibling — it writes `from
+    backend.app.routes.menu import ...` by convention, and the slug never matches.
+    Dropping leading filler verbs and keeping the first real noun yields the name
+    the model already reaches for: "Implement menu retrieval endpoint" -> `menu`,
+    "Stripe Connect OAuth handler" -> `stripe`. Uniqueness is still enforced by
+    the collision pass in _assign_filepaths, so a clash just gets a suffix.
+    """
+    words = [w for w in re.findall(r"[a-z0-9]+", (title or "").lower())
+             if w not in _TITLE_FILLER]
+    return (words[0] if words else _slug(ticket_id))[:40]
+
+
 def _assign_filepaths(tickets: list[dict]) -> list[dict]:
     """Give every ticket ONE explicit, UNIQUE output path.
 
@@ -450,7 +475,9 @@ def _assign_filepaths(tickets: list[dict]) -> list[dict]:
         if not path:
             directory, ext = _DEFAULT_DIR.get(
                 t.get("assigned_to") or "backend", _DEFAULT_DIR["backend"])
-            stem = _slug(t.get("title") or t.get("id"))
+            # CONVENTIONAL stem (menu, orders, stripe), not the full-title slug,
+            # so a sibling's `from backend.app.routes.menu import ...` resolves.
+            stem = _conventional_stem(t.get("title") or "", t.get("id") or "")
             path = (f"{directory}/{stem}/page.{ext}"
                     if t.get("assigned_to") in ("frontend", "mobile")
                     else f"{directory}/{stem}.{ext}")
@@ -546,6 +573,9 @@ def _security_ticket() -> dict:
         "id": "SEC-1",
         "title": "Security hardening",
         "assigned_to": "backend",
+        # Conventional path — code imports middleware/helpers from
+        # `backend.app.security`, not a title-slug.
+        "filepath": "backend/app/security.py",
         "description": "Enforce AUTHORIZATION on every protected endpoint "
         "(authentication itself is delegated to the identity provider in AUTH-1 — "
         "do NOT build custom auth here), input validation/sanitization, rate "
@@ -615,7 +645,9 @@ def _auth_ticket(auth: dict) -> dict:
         f"password reset to {provider}. Validate provider-issued tokens (verify "
         f"the signature via the provider's JWKS, plus issuer and audience) on "
         f"every protected endpoint. Read all provider keys from environment "
-        f"variables. "
+        f"variables. Expose FastAPI dependencies named EXACTLY `get_current_user` "
+        f"and `get_current_admin_user` from this module, so other routers import "
+        f"authorization from `backend.app.auth` — the conventional path. "
     )
     if auth["mfa_required"]:
         reasons = [k.replace("_", " ") for k, v in auth["triggers"].items() if v]
@@ -632,6 +664,11 @@ def _auth_ticket(auth: dict) -> dict:
         "id": "AUTH-1",
         "title": f"Delegated authentication via {provider} ({auth['tier']})",
         "assigned_to": "backend",
+        # Conventional path: protected routers import `from backend.app.auth
+        # import get_current_admin_user` by strong FastAPI convention. A real
+        # build failed on `No module named 'backend.app.auth'` because this had a
+        # title-slug name; pin it where the imports actually point.
+        "filepath": "backend/app/auth.py",
         "description": desc.strip(),
         "dependencies": ["FND-1", "FND-2"],
         # Flagged for the Opus security pass.
