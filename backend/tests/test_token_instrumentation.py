@@ -100,12 +100,25 @@ def patch_openai(resp):
 def patch_anthropic(resp):
     import anthropic
 
+    # _via_anthropic now STREAMS: `async with client.messages.stream(...) as s:
+    # await s.get_final_message()`. The fake mirrors that async-context-manager
+    # shape rather than a bare `.create()`.
+    class _FakeStream:
+        def __init__(self, resp):
+            self._resp = resp
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get_final_message(self):
+            return self._resp
+
     class _FakeClient:
         def __init__(self, **kw):
-            self.messages = _Obj(create=self._create)
-
-        async def _create(self, **kw):
-            return resp
+            self.messages = _Obj(stream=lambda **kw: _FakeStream(resp))
 
     anthropic.AsyncAnthropic = _FakeClient
     settings.anthropic_api_key = "test-key-not-real"
@@ -216,6 +229,31 @@ async def prove_capture_failure_is_visible():
         check(f"{label}: cost is NULL when tokens are unknown", row.cost_usd is None)
 
 
+# ==================================== truncation must be detected, not silent
+async def prove_truncation_is_not_silent():
+    print("\n=== T: a max_tokens-truncated response is DETECTED, not silently stubbed ===")
+    import app.codegen as codegen
+
+    # Hit the ceiling: stop_reason == 'max_tokens', content cut off mid-JSON.
+    truncated = _Obj(
+        content=[_Obj(type="text", text='{"filename": "page.tsx", "content": "export def')],
+        usage=_Obj(input_tokens=100, output_tokens=64000),
+        stop_reason="max_tokens")
+    normal = _Obj(content=[_Obj(type="text", text="ok")],
+                  usage=_Obj(input_tokens=1, output_tokens=1), stop_reason="end_turn")
+    no_reason = _Obj(content=[_Obj(type="text", text="ok")],
+                     usage=_Obj(input_tokens=1, output_tokens=1))  # older shape, no attr
+
+    check("a max_tokens stop_reason is flagged as truncated",
+          codegen._hit_token_ceiling(truncated) is True)
+    check("a normal end_turn is NOT flagged", codegen._hit_token_ceiling(normal) is False)
+    check("a missing stop_reason is NOT flagged (defaults safe)",
+          codegen._hit_token_ceiling(no_reason) is False)
+    check("the ceiling was raised far above the old 8192 (>= 32000)",
+          settings.codegen_max_tokens >= 32000,
+          f"codegen_max_tokens={settings.codegen_max_tokens}")
+
+
 # ============================== every model the router can pick must price
 async def prove_every_routed_model_prices():
     print("\n=== P: every model routing can choose has a confirmed rate ===")
@@ -322,6 +360,7 @@ async def main():
                     3456, 789, expect_model="gemini-flash-lite-latest",
                     expect_priced=True)
         await prove_capture_failure_is_visible()
+        await prove_truncation_is_not_silent()
         await prove_every_routed_model_prices()
         await prove_totals_flag_incompleteness()
     finally:

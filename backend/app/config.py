@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # model — same pipeline, pennies instead of dollars, for testing.
     codegen_mode: str = "real"
     codegen_cheap_model: str = "gemini-2.5-flash-lite"
+    # Output-token ceiling for a single generated file. The old hardcoded 8192
+    # truncated large files (the Stripe-payment page repeatedly), producing
+    # unparseable JSON that was silently converted to a placeholder stub.
+    # claude-sonnet-5 / claude-opus-4-8 both support up to 128K output tokens;
+    # this is a generous headroom well under that ceiling. A cap is free — you
+    # are billed for tokens actually produced, not the ceiling.
+    codegen_max_tokens: int = 64000
 
     # Product Intelligence: analytical but insightful (locked per CONTEXT.md).
     pi_model: str = "gpt-4o"

@@ -58,19 +58,43 @@ async def _via_openai(model: str, system: str, user: str, temperature: float) ->
     return text, usage.extract_openai(resp), model
 
 
+def _hit_token_ceiling(resp) -> bool:
+    """A response truncated at max_tokens is INCOMPLETE, not empty.
+
+    The generated file is cut off mid-content and won't parse — and without this
+    check that is silently converted to a placeholder stub, indistinguishable
+    from "the model returned nothing". A real baseline run stubbed the
+    Stripe-payment page exactly this way, capped at 8192 tokens. `stop_reason ==
+    "max_tokens"` is the signal (it does not populate `stop_details`, which is
+    refusals only)."""
+    return getattr(resp, "stop_reason", None) == "max_tokens"
+
+
 async def _via_anthropic(model: str, system: str, user: str, temperature: float) -> _Result | None:
     if not settings.anthropic_api_key:
         return None
     import anthropic  # imported lazily so the app runs without the extra dep
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     concrete = _ANTHROPIC_IDS.get(model, "claude-sonnet-5")
-    # Newer Claude models reject `temperature`, so we omit it.
-    resp = await client.messages.create(
+    # STREAM: a high max_tokens ceiling requires streaming — the SDK refuses
+    # large non-streaming requests to avoid HTTP timeouts. Streaming lets a big
+    # generated file complete instead of truncating at a low cap. Newer Claude
+    # models reject `temperature`, so we omit it.
+    async with client.messages.stream(
         model=concrete,
-        max_tokens=8192,
+        max_tokens=settings.codegen_max_tokens,
         system=system,
         messages=[{"role": "user", "content": user}],
-    )
+    ) as stream:
+        resp = await stream.get_final_message()
+    if _hit_token_ceiling(resp):
+        # Loud on purpose: truncation must never masquerade as an empty result.
+        logger.warning(
+            "Anthropic %s hit the max_tokens ceiling (%d) and was TRUNCATED — "
+            "the generated file is incomplete. Raise codegen_max_tokens or split "
+            "the ticket; this is not a normal empty response.",
+            concrete, settings.codegen_max_tokens,
+        )
     text = "".join(b.text for b in resp.content
                    if getattr(b, "type", "") == "text").strip()
     return text, usage.extract_anthropic(resp), concrete

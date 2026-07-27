@@ -27,15 +27,22 @@ usable on all 3 attempts, pure nondeterminism (the other frontend tickets
 succeeded). The stub gate caught it and aborted for **$0.9658** (build only; no
 Opus/QA waste). This is residual generation VARIANCE, structurally like flaky D4.
 
-**Last action, DONE and committed (not yet run):** hardened the stub gate with a
-targeted RETRY pass — `developers/orchestrator.run` now regenerates ONLY the
-stubbed ticket(s) once more before aborting (overwrites the stub row on success;
-a stub that survives the retry still fails the build). So a transient single-
-ticket flake self-heals instead of discarding ~19 good files. Proven by
-`test_developers_offline` S3 (stub-then-recover → built) and S2 (persistent stub
-→ build_failed).
+**Stub gate hardened with a targeted RETRY pass** (`developers/orchestrator.run`
+regenerates ONLY stubbed tickets once more before aborting; a stub surviving the
+retry still fails the build). Proven by `test_developers_offline` S3/S2.
 
-**NEXT STEP:** run baseline attempt #7 to try for green.
+**⭐ The "flake" was a TRUNCATION BUG, root-caused (attempts #6/#7).** The stubbing
+Stripe-payment frontend ticket was NOT random: `codegen._via_anthropic` hardcoded
+`max_tokens=8192`, so large files hit the ceiling, returned truncated (invalid)
+JSON, failed to parse, and were silently converted to a stub — the
+absence-of-evidence pattern (too much output ≡ no output). Confirmed: 5 Sonnet
+calls at exactly 8192. **FIXED (committed):** `_via_anthropic` now STREAMS (needed
+for a high ceiling) with `settings.codegen_max_tokens` (64000; sonnet-5 & opus-4-8
+both allow 128K), and `_hit_token_ceiling()` detects `stop_reason=="max_tokens"`
+and logs it LOUD instead of letting it stub silently. Proven in
+`test_token_instrumentation` (streaming fake + truncation-detection checks).
+
+**NEXT STEP:** run baseline attempt #8 to try for green (truncation fix in place).
 1. `caffeinate` + plugged in (a suspend already cost one run).
 2. `docker compose build backend` (service image has NO volume mount — MUST
    rebuild to pick up code), `up -d` with
@@ -969,7 +976,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All six must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-27**, not estimated: **68 / 226 / 19 / 35 / 66 / 16 = 430 checks.** (An
+   2026-07-27**, not estimated: **68 / 226 / 19 / 35 / 70 / 16 = 434 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All six are free — every LLM seam is patched or mocked.
    **Check the RESULT line AND the exit code, not the `[PASS]` count** — a suite
