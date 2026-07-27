@@ -424,6 +424,50 @@ def test_entrypoint_gets_real_router_paths():
               {"id": "BE-1", "title": "x", "description": "y"}, existing, ""))
 
 
+def test_contract_declares_exact_module_paths():
+    """The binding contract lists every module at its EXACT import path.
+
+    A real build booted-failed on `No module named
+    'backend.app.integrations.stripe'`: a router imported that conventional path
+    while the generated file was the slug
+    `integrations/integrate_stripe_connect_for_payments.py`. The old contract
+    only described the layout generically ("integrations/ -> wrappers"), leaving
+    the path to a guess. It now declares each generated module's exact dotted
+    path, closing the whole cross-file import-mismatch family at the root.
+    """
+    print("\n=== TEST 8: contract declares every module's EXACT path ===")
+    from app.developers.orchestrator import _contract_text
+
+    # A slug-named integration + router, exactly the shape that failed.
+    bp = {
+        "database_schema": [], "api_endpoints": [],
+        "sprint_tickets": [
+            {"id": "FND-1", "assigned_to": "backend", "title": "models",
+             "filepath": "backend/app/models.py"},
+            {"id": "INT-1", "assigned_to": "integration", "title": "Stripe wrapper",
+             "filepath": "backend/app/integrations/integrate_stripe_connect_for_payments.py"},
+            {"id": "PAY-1", "assigned_to": "backend", "title": "Stripe router",
+             "filepath": "backend/app/routes/stripe_connect_oauth_handler.py"},
+            {"id": "FE-1", "assigned_to": "frontend", "title": "menu page",
+             "filepath": "frontend/app/menu/page.tsx"},
+        ],
+    }
+    c = _contract_text(bp)
+    check("declares the EXACT slug integration module path",
+          "backend.app.integrations.integrate_stripe_connect_for_payments" in c)
+    check("declares the router module by its dotted path",
+          "backend.app.routes.stripe_connect_oauth_handler" in c)
+    check("lists frontend files too", "frontend/app/menu/page.tsx" in c)
+    check("explicitly forbids inventing a path not in the map",
+          "NEVER import a module path that is not in the map" in c)
+    check("names the exact wrong-guess it must avoid",
+          "backend.app.integrations.stripe" in c)  # cited as a DON'T
+    check("tells the agent to inline rather than import a missing module",
+          "implement it INLINE" in c)
+    check("dropped the old generic 'wrappers' layout line",
+          "third-party service wrappers" not in c)
+
+
 def test_developer_pins_assigned_path():
     print("\n=== TEST 6: the Developer is PINNED to the assigned filepath ===")
     from app.developers import agents
@@ -452,6 +496,7 @@ async def main():
     test_reviewer_flag()
     await test_unique_filepaths()
     test_entrypoint_gets_real_router_paths()
+    test_contract_declares_exact_module_paths()
     test_developer_pins_assigned_path()
 
     print("\n" + "=" * 60)

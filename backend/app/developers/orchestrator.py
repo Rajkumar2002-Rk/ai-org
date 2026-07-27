@@ -43,16 +43,53 @@ def _contract_text(blueprint: dict) -> str:
     for e in blueprint.get("api_endpoints", []):
         lines.append(f"  - {e.get('method')} {e.get('path')} — {e.get('purpose')}")
 
+    # A CONCRETE map of every module that will exist in this project, at its
+    # EXACT assigned path. The old contract described the layout generically
+    # ("integrations/ -> third-party wrappers"), so a router guessed
+    # `backend.app.integrations.stripe` while the real file was the slug
+    # `integrations/integrate_stripe_connect_for_payments.py` — the app failed to
+    # boot on ModuleNotFoundError. Filepaths are assigned deterministically by
+    # architect.builder._assign_filepaths BEFORE this runs, so the exact path of
+    # every module is known and can be declared. This closes the whole family of
+    # cross-file import mismatches: no agent has to guess another module's path.
+    backend_mods, frontend_mods = [], []
+    for t in blueprint.get("sprint_tickets", []):
+        fp = (t.get("filepath") or "").strip()
+        if not fp:
+            continue
+        purpose = (t.get("title") or t.get("id") or "").strip()
+        if fp.endswith(".py"):
+            dotted = fp[:-3].replace("/", ".")
+            backend_mods.append(f"  - {dotted}  ->  {purpose}")
+        else:
+            frontend_mods.append(f"  - {fp}  ->  {purpose}")
+
     lines.append(
-        "\nMODULE LAYOUT (import from these — never redefine):\n"
-        "  - backend/app/models.py     -> ALL SQLAlchemy models (import them)\n"
-        "  - backend/app/database.py   -> Base, async_session, get_db (import them)\n"
-        "  - backend/app/integrations/ -> third-party service wrappers\n"
-        "  - frontend/app/<route>/page.tsx -> Next.js App Router pages\n"
-        "  - mobile/src/screens/       -> React Native screens\n"
-        "RULES: backend is FastAPI + async SQLAlchemy (never Flask). Read all "
-        "secrets from environment variables. Only import packages that really "
-        "exist. Do NOT redefine models or the DB session — import them."
+        "\nGENERATED MODULE MAP — these are the ONLY modules this project has, "
+        "each at its EXACT import path. To use another part of the project, "
+        "import it from the EXACT path listed here.")
+    if backend_mods:
+        lines.append("Backend (import as e.g. `from <dotted.path> import ...`):")
+        lines.extend(backend_mods)
+    if frontend_mods:
+        lines.append("Frontend/mobile files:")
+        lines.extend(frontend_mods)
+
+    lines.append(
+        "\nIMPORT RULES — the app fails to boot if these are broken:\n"
+        "  - NEVER import a module path that is not in the map above. In "
+        "particular do NOT assume conventional names like "
+        "`backend.app.integrations.stripe` or `backend.app.routes.menu` — use "
+        "the EXACT paths listed, which are longer/less obvious.\n"
+        "  - If functionality you need is not covered by any module in the map, "
+        "implement it INLINE in your own file. Never import a module that is not "
+        "in the map.\n"
+        "  - backend/app/models.py has ALL SQLAlchemy models and "
+        "backend/app/database.py has Base, async_session and get_db — import "
+        "them, never redefine them.\n"
+        "  - backend is FastAPI + async SQLAlchemy (never Flask). Read all "
+        "secrets from environment variables. Only import third-party packages "
+        "that really exist on PyPI/npm."
     )
     return "\n".join(lines)
 

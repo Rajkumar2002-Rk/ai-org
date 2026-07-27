@@ -525,6 +525,33 @@ still not green; two more of the same defect family, and an audit for the rest:*
   Conclusion: globals.css was the only remaining build-blocking omission; the
   other conventional files are either auto-created or genuinely optional.
 
+**THIRD baseline attempt (project 274, 2026-07-27) — both prior fixes CONFIRMED
+working (main.py imported the real slug router paths; globals.css resolved), two
+NEW defects, and the root fix for the whole family:**
+- **D3 — the cross-file import mismatch, generalized.** With the entrypoint now
+  importing routers correctly, the next layer surfaced: the Stripe *router* did
+  `from backend.app.integrations.stripe import StripeOAuth`, but the real file
+  was the slug `integrations/integrate_stripe_connect_for_payments.py`. Same root
+  as D1 (the title-slug names from `_assign_filepaths` are unguessable), but a
+  *router→helper* edge rather than *entrypoint→router*. Per-edge patching is
+  unbounded, so this was fixed at the ROOT: `developers/orchestrator._contract_text`
+  now emits a **GENERATED MODULE MAP** — every ticket's exact dotted import path,
+  built from the filepaths the Architect already assigned — with the rule "NEVER
+  import a path not in this map; if what you need isn't here, implement it inline."
+  The old contract only said "integrations/ -> wrappers" generically, which is
+  what left the path to a guess. This closes the D1/D3 family by construction:
+  no agent has to guess another module's path. (Residual, smaller risk: a file
+  can still guess the wrong SYMBOL from a correctly-pathed module; that surfaces
+  as a clearer ImportError and is caught by QA retry. Not yet closed.)
+  Proven in `test_architect_offline` TEST 8 (`_contract_text` declares the exact
+  slug integration path, forbids the wrong guess by name, drops the generic line).
+- **D4 — frontend prerender runtime error (SEPARATE family, still open).** With
+  globals.css fixed, `next build` compiled and static-generated, but prerendering
+  one page threw a runtime error during SSG export. This is a *code-quality* bug
+  in a generated page, not a missing file — handled separately based on what the
+  next run shows (likely a rendering-strategy decision, e.g. force-dynamic, rather
+  than per-page fixes). NOT fixed yet.
+
 ### STEP 6 RESULT — measured cost: CLOSED (2026-07-22)
 
 **⭐ THE REFERENCE NUMBER — one real build, `CODEGEN_MODE=real`, project 201:**
@@ -879,7 +906,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All six must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-27**, not estimated: **68 / 210 / 19 / 35 / 66 / 10 = 408 checks.** (An
+   2026-07-27**, not estimated: **68 / 217 / 19 / 35 / 66 / 10 = 415 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All six are free — every LLM seam is patched or mocked.
    **Check the RESULT line AND the exit code, not the `[PASS]` count** — a suite
