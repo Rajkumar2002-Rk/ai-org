@@ -9,6 +9,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app import usage
 from app.database import async_session
 from app.developers import agents
@@ -195,6 +197,44 @@ async def run(project_id: int, blueprint: dict) -> dict:
         # into the security review as if it had. Same rule as the driver's
         # require_done: an unknown/empty state must never read as success.
         stubbed = [r for r in built if r.get("status") == agents.STUB_STATUS]
+
+        # ONE targeted retry before giving up. A stub is usually a TRANSIENT
+        # single-ticket generation flake — the model returned nothing usable on
+        # every attempt for that one ticket — not a systemic outage. Aborting the
+        # whole build on it discards ~19 good files to one ticket's bad luck
+        # (real: a baseline run stubbed 1 of 20 and lost the run). Regenerate
+        # ONLY the stubbed tickets once more, against the now-complete set of
+        # sibling files. A stub that SURVIVES the retry still fails the build —
+        # placeholder text is never certified.
+        if stubbed:
+            by_ticket = {t.get("id"): t for t in tickets}
+            retry_ids = [str(r.get("ticket_id")) for r in stubbed]
+            logger.warning("Build %s: %d stubbed ticket(s) %s — one retry pass "
+                           "before aborting", project_id, len(stubbed), retry_ids)
+            retry_tickets = [by_ticket[i] for i in retry_ids if i in by_ticket]
+            retry_results = await asyncio.gather(*[
+                agents.build_ticket(t, _model_for(t, routing), built, contract)
+                for t in retry_tickets
+            ])
+            async with async_session() as db:
+                for r in retry_results:
+                    if r.get("status") == agents.STUB_STATUS:
+                        continue  # still nothing — leave the stub in place
+                    tid = r.get("ticket_id") or ""
+                    row = (await db.execute(select(GeneratedFile).where(
+                        GeneratedFile.project_id == project_id,
+                        GeneratedFile.ticket_id == tid))).scalars().first()
+                    if row is not None:      # overwrite the stub with real code
+                        row.content = r["content"]
+                        row.status = r.get("status", "generated")
+                    for b in built:          # reflect it in the in-memory set
+                        if b.get("ticket_id") == tid:
+                            b["content"] = r["content"]
+                            b["status"] = r.get("status", "generated")
+                    logger.info("Build %s: ticket %s recovered on retry", project_id, tid)
+                await db.commit()
+            stubbed = [r for r in built if r.get("status") == agents.STUB_STATUS]
+
         async with async_session() as db:
             st = await db.get(PipelineStatus, stage_id)
             project = await db.get(Project, project_id)

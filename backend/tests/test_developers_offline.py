@@ -132,6 +132,42 @@ async def scenario_one_stub():
           any(s == agents.STUB_STATUS for _, s in rows), str(rows))
 
 
+async def scenario_stub_recovers_on_retry():
+    print("\n=== S3: a stub that succeeds on the RETRY pass -> built ===")
+    pid = await _make_project()
+
+    calls: dict[str, int] = {}
+
+    async def _bt(ticket, model, existing, contract=""):
+        # BE-1 flakes on the FIRST attempt (transient), succeeds on the retry.
+        if ticket["id"] == "BE-1":
+            calls["BE-1"] = calls.get("BE-1", 0) + 1
+            if calls["BE-1"] == 1:
+                stub = agents._pin_path(agents._stub(ticket["assigned_to"], ticket), ticket)
+                return {**stub, "agent_type": ticket["assigned_to"],
+                        "ticket_id": ticket["id"], "status": agents.STUB_STATUS}
+        return _good(ticket)
+
+    agents.build_ticket = _bt
+    summary = await orch.run(pid, BP)
+    print(f"    summary={summary}   build_ticket(BE-1) calls={calls.get('BE-1')}")
+    check("BE-1 was retried (called twice)", calls.get("BE-1") == 2, str(calls))
+    check("a transient stub self-heals -> status 'built'",
+          summary["status"] == "built", str(summary))
+    check("no surviving stubs in the summary", summary["stubbed"] == [], str(summary))
+    check("build stage marked done", await _build_stage_status(pid) == "done")
+    check("project marked built", await _project_status(pid) == "built")
+
+    # The stub row was OVERWRITTEN with real code, not left as placeholder.
+    async with async_session() as db:
+        row = (await db.execute(select(GeneratedFile.status, GeneratedFile.content)
+               .where(GeneratedFile.project_id == pid,
+                      GeneratedFile.ticket_id == "BE-1"))).first()
+    check("BE-1's stub row was replaced with generated code",
+          row is not None and row[0] == "generated" and "TODO" not in (row[1] or ""),
+          str(row))
+
+
 async def cleanup():
     async with async_session() as db:
         ids = [r[0] for r in (await db.execute(
@@ -152,6 +188,7 @@ async def main():
     try:
         await scenario_all_good()
         await scenario_one_stub()
+        await scenario_stub_recovers_on_retry()
     finally:
         agents.build_ticket = original
         await cleanup()

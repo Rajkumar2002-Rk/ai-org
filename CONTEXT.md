@@ -14,24 +14,38 @@ importing sibling modules by conventional names that the Architect's filenames
 didn't match. Five paid baseline attempts so far; **$12.38 total measured spend,
 0 capture failures.**
 
-**Last action, DONE and committed (not yet run):** the conventional-naming root
-fix. `architect/builder._assign_filepaths` now derives SHORT conventional module
-stems (`menu.py`, `stripe.py`) via `_conventional_stem` instead of full-title
-slugs, and AUTH-1 / SEC-1 are pinned to the exact conventional paths the model
-imports (`backend/app/auth.py`, `backend/app/security.py`); AUTH-1 also exports
-the standard `get_current_user` / `get_current_admin_user` deps. This targets the
-run-283 failure (`No module named 'backend.app.auth'`).
+**Naming fix — CONFIRMED WORKING (baseline attempt #6, project 308).** Every
+backend module landed at its conventional path (`backend/app/auth.py`,
+`security.py`, `routes/menu.py`, `routes/order.py`, `routes/stripe.py`,
+`integrations/email.py`); the collision resolver handled `order.py` vs
+`order_be_3.py`. The run-283 `No module named 'backend.app.auth'` blocker is gone
+by construction. **All structural defects are now fixed.**
 
-**NEXT STEP (what to do tomorrow):**
-1. Decide whether to spend on baseline attempt #6. The user held the run at end
-   of 2026-07-27 to review the naming change first.
-2. If running: `caffeinate` + machine plugged in (a suspend already cost one
-   run), then `docker compose build backend` (the service image has NO volume
-   mount — it MUST be rebuilt to pick up code changes), `up -d` with
-   `CODEGEN_MODE=real QA_FRONTEND_FULL_BUILD=true`, verify guards live in the
-   container + OpenAI probe, record the max `llm_usage.id` as the boundary, then
+**Attempt #6 did NOT reach green — a TRANSIENT flake, not a defect.** 1 of 20
+tickets (FE-4, a normal Stripe-payment-UI page) stubbed — Sonnet returned nothing
+usable on all 3 attempts, pure nondeterminism (the other frontend tickets
+succeeded). The stub gate caught it and aborted for **$0.9658** (build only; no
+Opus/QA waste). This is residual generation VARIANCE, structurally like flaky D4.
+
+**Last action, DONE and committed (not yet run):** hardened the stub gate with a
+targeted RETRY pass — `developers/orchestrator.run` now regenerates ONLY the
+stubbed ticket(s) once more before aborting (overwrites the stub row on success;
+a stub that survives the retry still fails the build). So a transient single-
+ticket flake self-heals instead of discarding ~19 good files. Proven by
+`test_developers_offline` S3 (stub-then-recover → built) and S2 (persistent stub
+→ build_failed).
+
+**NEXT STEP:** run baseline attempt #7 to try for green.
+1. `caffeinate` + plugged in (a suspend already cost one run).
+2. `docker compose build backend` (service image has NO volume mount — MUST
+   rebuild to pick up code), `up -d` with
+   `CODEGEN_MODE=real QA_FRONTEND_FULL_BUILD=true`.
+3. Verify guards live in the container (`grep` for the new code) + OpenAI probe,
+   record max `llm_usage.id` as the boundary, then
    `docker compose run ... python tests/verify_pipeline.py`.
-3. Report split by model, row counts per figure, path coverage, Step-5 build.
+4. Report the 7 QA checks, backend-boot, model-split cost, green-or-not. If green
+   → this is the OFFICIAL reference baseline, replace all partial numbers. Total
+   spend so far ~$13.3.
 
 **Open defects (both generated-code QUALITY, not QA):**
 - **D3 residual — wrong SYMBOL from a correctly-pathed module.** The module-path
@@ -955,7 +969,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All six must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-27**, not estimated: **68 / 226 / 19 / 35 / 66 / 10 = 424 checks.** (An
+   2026-07-27**, not estimated: **68 / 226 / 19 / 35 / 66 / 16 = 430 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All six are free — every LLM seam is patched or mocked.
    **Check the RESULT line AND the exit code, not the `[PASS]` count** — a suite
