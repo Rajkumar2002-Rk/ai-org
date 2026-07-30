@@ -42,7 +42,24 @@ both allow 128K), and `_hit_token_ceiling()` detects `stop_reason=="max_tokens"`
 and logs it LOUD instead of letting it stub silently. Proven in
 `test_token_instrumentation` (streaming fake + truncation-detection checks).
 
-**NEXT STEP:** run baseline attempt #8 to try for green (truncation fix in place).
+**Attempt #8 (project 332): truncation fix WORKED** — no stubs, frontend built
+green, Opus 92/92. Backend booted-failed with `RuntimeError: STRIPE_STATE_SECRET
+environment variable is not set` — the generated code CORRECTLY fail-fast requires
+5 Stripe secrets but QA's fixed `_TEST_ENV` supplied only 3. QA classified it
+`environment_fault` (didn't blame the Developer, didn't hardcode fakes — Step 3
+working). Not a code defect: a QA test-harness completeness gap. Cost $1.5902.
+
+**Env auto-discovery FIXED (committed).** `assembly._discover_required_env()` scans
+generated Python for NO-DEFAULT env reads (`os.environ["X"]`, `os.getenv("X")`,
+`os.environ.get("X")`) and supplies a throwaway loopback value for each one
+`_TEST_ENV` doesn't already curate — merged into both the boot and table-create
+child envs (curated values win; defaults never clobbered). Closes the family: a
+correct fail-fast app boots under QA regardless of what secret names the model
+invents, without weakening security (app code unchanged; real deploy supplies real
+secrets — that's Week-7 DevOps). Proven end-to-end: `test_qa_teardown` S5 REAL-BOOTS
+an app requiring an uncurated secret; `test_qa_offline` covers the discovery logic.
+
+**NEXT STEP:** run baseline attempt #9 to try for green (all known blockers closed).
 1. `caffeinate` + plugged in (a suspend already cost one run).
 2. `docker compose build backend` (service image has NO volume mount — MUST
    rebuild to pick up code), `up -d` with
@@ -976,7 +993,7 @@ Review, regression, and commit are **done** (see STATUS at the top). What remain
    done
    ```
    All six must print `RESULT: ALL CHECKS PASSED ✓`. Counts **measured
-   2026-07-27**, not estimated: **68 / 226 / 19 / 35 / 70 / 16 = 434 checks.** (An
+   2026-07-30**, not estimated: **75 / 226 / 19 / 35 / 70 / 16 = 443 checks.** (An
    older note here said 52 for `test_qa_offline`; that predated the Step 3
    root-cause cases.) All six are free — every LLM seam is patched or mocked.
    **Check the RESULT line AND the exit code, not the `[PASS]` count** — a suite

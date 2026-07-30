@@ -69,6 +69,46 @@ _TEST_ENV = {
     "APP_ENV": "test",
 }
 
+# Generated code fail-fast requires provider secrets by env-var name, and the
+# model invents those names freely (STRIPE_STATE_SECRET, STRIPE_REDIRECT_URI, …).
+# A fixed _TEST_ENV allowlist can't keep up: a real baseline run refused to boot
+# on STRIPE_STATE_SECRET, which the code correctly required but _TEST_ENV didn't
+# supply. So QA also SCANS the generated code for the env vars it requires and
+# supplies a throwaway value for each one _TEST_ENV doesn't already cover — the
+# app code is UNCHANGED and still fail-fast in production; only QA's throwaway
+# child-process env is filled, so this never weakens security (it is the same
+# mechanism _TEST_ENV already uses, just complete instead of hardcoded).
+#
+# Only NO-DEFAULT reads are matched. A var with an explicit default
+# (os.getenv("X", "d")) is left alone, so an intentional default is never
+# clobbered — we fill only the vars whose absence would fail-fast the boot.
+_ENV_REQUIRED_RES = (
+    re.compile(r"os\.environ\[\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*\]"),
+    re.compile(r"os\.getenv\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*\)"),
+    re.compile(r"os\.environ\.get\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*\)"),
+)
+
+
+def _fake_env_value(name: str) -> str:
+    """An obviously-fake, loopback-only value — never a plausible real secret."""
+    if name.endswith(("_URI", "_URL")):
+        return "http://127.0.0.1/qa-test"
+    return f"qa-test-{name.lower()}"
+
+
+def _discover_required_env(files: list[dict]) -> dict[str, str]:
+    """Env vars the generated Python fail-fast requires, minus what _TEST_ENV
+    already curates (curated values win — see child-env construction)."""
+    names: set[str] = set()
+    for f in files:
+        path = f.get("filepath") or f.get("filename") or ""
+        if not path.endswith(".py"):
+            continue
+        content = f.get("content") or ""
+        for rx in _ENV_REQUIRED_RES:
+            names.update(rx.findall(content))
+    return {n: _fake_env_value(n) for n in names if n not in _TEST_ENV}
+
 # import-name -> pip package, where they differ.
 _PACKAGE_ALIASES = {
     "sqlalchemy": "SQLAlchemy",
@@ -401,7 +441,8 @@ async def _drop_db(db_name: str) -> None:
         logger.warning("Could not drop QA test database %s", db_name)
 
 
-def _create_tables(venv_dir: str, root: str, module: str, db_url: str) -> None:
+def _create_tables(venv_dir: str, root: str, module: str, db_url: str,
+                   extra_env: dict | None = None) -> None:
     """Best effort: import the generated models and create their tables.
 
     Tries both import styles, since generated code uses either.
@@ -429,7 +470,7 @@ def _create_tables(venv_dir: str, root: str, module: str, db_url: str) -> None:
         "        await c.run_sync(Base.metadata.create_all)\n"
         "asyncio.run(go())\n"
     )
-    env = {**os.environ, **_TEST_ENV, "DATABASE_URL": db_url,
+    env = {**os.environ, **(extra_env or {}), **_TEST_ENV, "DATABASE_URL": db_url,
            "PYTHONPATH": _python_path(root)}
     _run([_venv_python(venv_dir), "-c", boot], cwd=root, timeout=60, env=env)
 
@@ -508,6 +549,10 @@ async def assemble(files: list[dict],
         env.files, env.ticket_of = written, ticket_of
         env.failures.extend(fails)
 
+        # Throwaway values for any env vars the generated code fail-fast requires
+        # but _TEST_ENV doesn't cover — so a CORRECT fail-fast app can boot here.
+        auto_env = _discover_required_env(files)
+
         env.failures.extend(_syntax_check(env.root, written))
 
         module = _find_app_module(written)
@@ -536,7 +581,7 @@ async def assemble(files: list[dict],
             env.db_name = None
             db_url = settings.database_url
         else:
-            _create_tables(venv_dir, env.root, module, db_url)
+            _create_tables(venv_dir, env.root, module, db_url, extra_env=auto_env)
 
         # Launch on a random free port, bound to loopback only.
         env.port = _free_port()
@@ -544,7 +589,8 @@ async def assemble(files: list[dict],
         workdir = env.root
         child_env = {
             **os.environ,
-            **_TEST_ENV,          # provider config the app legitimately needs
+            **auto_env,           # scanned fail-fast-required secrets (gap-fill)
+            **_TEST_ENV,          # curated provider config (wins over auto_env)
             "DATABASE_URL": db_url,
             "PYTHONPATH": _python_path(env.root),
         }

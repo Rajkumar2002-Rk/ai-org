@@ -461,6 +461,48 @@ async def test_missing_certificate_fails_closed():
         qo.reviewer_orchestrator.review_subset = real_review
 
 
+def test_env_autodiscovery():
+    """QA supplies throwaway values for env vars the generated code fail-fast
+    requires — a real baseline booted-failed on STRIPE_STATE_SECRET, which the
+    code correctly required but _TEST_ENV didn't supply. Only NO-DEFAULT reads
+    are filled, and never a var _TEST_ENV already curates."""
+    print("\n=== F: QA auto-discovers required env vars from generated code ===")
+    from app.qa import assembly
+
+    files = [{
+        "filepath": "backend/app/routes/stripe.py",
+        "content": (
+            "import os\n"
+            "STATE = os.environ.get('STRIPE_STATE_SECRET')\n"
+            "if not STATE: raise RuntimeError('STRIPE_STATE_SECRET not set')\n"
+            "REDIRECT = os.getenv('STRIPE_REDIRECT_URI')\n"
+            "KEY = os.environ['STRIPE_SECRET_KEY']\n"           # curated in _TEST_ENV
+            "MODE = os.getenv('APP_MODE', 'prod')\n"            # HAS a default
+        ),
+    }, {
+        "filepath": "frontend/app/page.tsx",              # non-python: ignored
+        "content": "const x = process.env.SHOULD_BE_IGNORED",
+    }]
+    found = assembly._discover_required_env(files)
+
+    check("the exact var that broke project 332 is discovered",
+          "STRIPE_STATE_SECRET" in found)
+    check("a bare os.getenv (no default) is discovered",
+          "STRIPE_REDIRECT_URI" in found)
+    check("a var _TEST_ENV already curates is NOT overridden",
+          "STRIPE_SECRET_KEY" not in found)
+    check("a var WITH an explicit default is left alone (not clobbered)",
+          "APP_MODE" not in found, str(found))
+    check("non-Python files are not scanned for env vars",
+          "SHOULD_BE_IGNORED" not in found)
+    check("URL-shaped vars get a loopback URL, others a placeholder",
+          found.get("STRIPE_REDIRECT_URI", "").startswith("http://127.0.0.1")
+          and found.get("STRIPE_STATE_SECRET") == "qa-test-stripe_state_secret",
+          str(found))
+    check("every supplied value is obviously fake (loopback/placeholder only)",
+          all(v.startswith(("qa-test-", "http://127.0.0.1")) for v in found.values()))
+
+
 async def test_frontend_checks_not_gated_on_backend_boot():
     """Frontend buildability has nothing to do with whether the backend starts.
 
@@ -536,6 +578,7 @@ async def main():
     test_mixed_import_styles_single_module()
     await test_certificate_drift_detection()
     await test_missing_certificate_fails_closed()
+    test_env_autodiscovery()
     await test_frontend_checks_not_gated_on_backend_boot()
     test_env_provides_provider_config()
     test_entrypoint_ticket_forbids_workarounds()

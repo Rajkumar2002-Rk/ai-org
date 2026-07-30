@@ -116,6 +116,28 @@ def items():
     return []
 '''
 
+# Fail-fast requires a secret _TEST_ENV does NOT curate — the exact shape that
+# booted-failed a real baseline (STRIPE_STATE_SECRET). It must boot here because
+# QA scans the code and auto-supplies the required env var.
+ENV_GATED_MAIN = '''
+import os
+from fastapi import FastAPI
+
+_SECRET = os.environ.get("MY_QA_ONLY_SECRET")
+if not _SECRET:
+    raise RuntimeError("MY_QA_ONLY_SECRET environment variable is not set.")
+
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/api/items")
+def items():
+    return []
+'''
+
 NEVER_BOOTS = '''
 from fastapi import FastAPI
 app = FastAPI()
@@ -362,6 +384,25 @@ async def cleanup():
     return len(ids)
 
 
+async def s5_env_autodiscovery():
+    print("\n=== S5: a fail-fast app requiring an UNCURATED secret still boots ===")
+    disc = assembly._discover_required_env(
+        [gf("APP-1", "backend/app/main.py", ENV_GATED_MAIN)])
+    check("QA discovered the uncurated required secret and faked it",
+          disc.get("MY_QA_ONLY_SECRET", "").startswith("qa-test-"), str(disc))
+
+    env = await assembly.assemble(
+        [gf("APP-1", "backend/app/main.py", ENV_GATED_MAIN)], ["/api/items"])
+    try:
+        # This is the whole point: the app fail-fast requires a secret _TEST_ENV
+        # never heard of, yet it boots because QA scanned the code and supplied a
+        # throwaway value. Pre-fix this raised at import and env.ok was False.
+        check("the app BOOTED (auto-supplied secret let a correct fail-fast app run)",
+              env.ok, "; ".join(f.reason[:120] for f in env.failures))
+    finally:
+        await assembly.teardown(env)
+
+
 async def main():
     removed = await cleanup()
     if removed:
@@ -370,6 +411,7 @@ async def main():
     await s2_failed_assembly()
     await s3_crash_during_testing()
     await s4_full_run()
+    await s5_env_autodiscovery()
     await cleanup()
 
     print("\n" + "=" * 64)
