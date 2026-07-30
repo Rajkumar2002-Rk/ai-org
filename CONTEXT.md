@@ -5,90 +5,79 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — session hand-off (2026-07-27, end of day)
+# ⏭️ RESUME HERE — Week 6 VERIFICATION IS COMPLETE (2026-07-30)
 
-**Where we are:** chasing the first fully-green end-to-end baseline build (Steps
-5+6 verification). Steps 1–4 are CLOSED; the QA/pipeline MECHANISMS are proven.
-What keeps blocking green is generated-code quality — specifically the model
-importing sibling modules by conventional names that the Architect's filenames
-didn't match. Five paid baseline attempts so far; **$12.38 total measured spend,
-0 capture failures.**
+**Start the next session with:** "Read CONTEXT.md. Verification complete. Today
+building Week 7 — DevOps — only." Do NOT reopen verification or resume the
+green-baseline chase; that decision is made (see below). Week 7 is DevOps (#11):
+real deploy, SSL, domain, Safe Mode snapshots, version timeline.
 
-**Naming fix — CONFIRMED WORKING (baseline attempt #6, project 308).** Every
-backend module landed at its conventional path (`backend/app/auth.py`,
-`security.py`, `routes/menu.py`, `routes/order.py`, `routes/stripe.py`,
-`integrations/email.py`); the collision resolver handled `order.py` vs
-`order_be_3.py`. The run-283 `No module named 'backend.app.auth'` blocker is gone
-by construction. **All structural defects are now fixed.**
+## VERDICT: every pipeline MECHANISM is proven with hard evidence
 
-**Attempt #6 did NOT reach green — a TRANSIENT flake, not a defect.** 1 of 20
-tickets (FE-4, a normal Stripe-payment-UI page) stubbed — Sonnet returned nothing
-usable on all 3 attempts, pure nondeterminism (the other frontend tickets
-succeeded). The stub gate caught it and aborted for **$0.9658** (build only; no
-Opus/QA waste). This is residual generation VARIANCE, structurally like flaky D4.
+Across **9 real paid baseline runs** and the offline suites, every QA/pipeline
+mechanism has been exercised on real generated code and shown to work:
 
-**Stub gate hardened with a targeted RETRY pass** (`developers/orchestrator.run`
-regenerates ONLY stubbed tickets once more before aborting; a stub surviving the
-retry still fails the build). Proven by `test_developers_offline` S3/S2.
+| Mechanism | Proven by |
+| --- | --- |
+| Retry-and-escalate loop (cap 3, then escalate) | Step 2; real rows 145–148; run 342 hit cap 3 and escalated |
+| Root-cause classification (5 tiers) + reasoning | Step 3; `environment_fault` correctly fired on run 332's fail-fast |
+| Teardown (temp dir / DB / uvicorn, incl. crash path) | Step 4; `test_qa_teardown` 37 checks, before→during→after |
+| Cost instrumentation (per-call tokens, run_id join) | Step 6; 9 runs, **0 capture failures** ever |
+| Fail-closed recertification (defect #6) | Project 142 + run-time recerts; missing-cert blocks |
+| Naming + collision resolution | Runs 308/342: conventional paths, `order_be_3.py` handled |
+| Truncation handling (stream + stop_reason) | `codegen._via_anthropic`; ended the 8192 stub |
+| Environment-fault detection + env auto-discovery | `assembly._discover_required_env`; S5 real-boots a fail-fast app |
+| Stub gate + targeted retry | `test_developers_offline` S2/S3 |
+| Suspend-aware driver + abort-on-unfinished-stage | `verify_pipeline.py`; simulated 3h-jump test |
 
-**⭐ The "flake" was a TRUNCATION BUG, root-caused (attempts #6/#7).** The stubbing
-Stripe-payment frontend ticket was NOT random: `codegen._via_anthropic` hardcoded
-`max_tokens=8192`, so large files hit the ceiling, returned truncated (invalid)
-JSON, failed to parse, and were silently converted to a stub — the
-absence-of-evidence pattern (too much output ≡ no output). Confirmed: 5 Sonnet
-calls at exactly 8192. **FIXED (committed):** `_via_anthropic` now STREAMS (needed
-for a high ceiling) with `settings.codegen_max_tokens` (64000; sonnet-5 & opus-4-8
-both allow 128K), and `_hit_token_ceiling()` detects `stop_reason=="max_tokens"`
-and logs it LOUD instead of letting it stub silently. Proven in
-`test_token_instrumentation` (streaming fake + truncation-detection checks).
+**Total spend: $18.2252** measured across all instrumented runs (id > 40),
+0 capture failures. **The verification goal — proving the pipeline works — is
+fully met.** All six verification steps (1–6) are CLOSED.
 
-**Attempt #8 (project 332): truncation fix WORKED** — no stubs, frontend built
-green, Opus 92/92. Backend booted-failed with `RuntimeError: STRIPE_STATE_SECRET
-environment variable is not set` — the generated code CORRECTLY fail-fast requires
-5 Stripe secrets but QA's fixed `_TEST_ENV` supplied only 3. QA classified it
-`environment_fault` (didn't blame the Developer, didn't hardcode fakes — Step 3
-working). Not a code defect: a QA test-harness completeness gap. Cost $1.5902.
+## Why we stopped chasing a fully-green synthetic build (deliberate)
 
-**Env auto-discovery FIXED (committed).** `assembly._discover_required_env()` scans
-generated Python for NO-DEFAULT env reads (`os.environ["X"]`, `os.getenv("X")`,
-`os.environ.get("X")`) and supplies a throwaway loopback value for each one
-`_TEST_ENV` doesn't already curate — merged into both the boot and table-create
-child envs (curated values win; defaults never clobbered). Closes the family: a
-correct fail-fast app boots under QA regardless of what secret names the model
-invents, without weakening security (app code unchanged; real deploy supplies real
-secrets — that's Week-7 DevOps). Proven end-to-end: `test_qa_teardown` S5 REAL-BOOTS
-an app requiring an uncurated secret; `test_qa_offline` covers the discovery logic.
+Every STRUCTURAL and HARNESS defect is fixed and genuinely exhausted. What blocked
+a green *boot* by attempt #9 was the **generated-code-QUALITY tail** — the LLM
+occasionally writing imperfect application code, which QA correctly catches (that
+IS QA working). Chasing green from here is a codegen-quality pursuit, open-ended
+and separate from verification. The user's call (2026-07-30): declare verification
+complete, log the residual quality defects, move to Week 7.
 
-**NEXT STEP:** run baseline attempt #9 to try for green (all known blockers closed).
-1. `caffeinate` + plugged in (a suspend already cost one run).
-2. `docker compose build backend` (service image has NO volume mount — MUST
-   rebuild to pick up code), `up -d` with
-   `CODEGEN_MODE=real QA_FRONTEND_FULL_BUILD=true`.
-3. Verify guards live in the container (`grep` for the new code) + OpenAI probe,
-   record max `llm_usage.id` as the boundary, then
-   `docker compose run ... python tests/verify_pipeline.py`.
-4. Report the 7 QA checks, backend-boot, model-split cost, green-or-not. If green
-   → this is the OFFICIAL reference baseline, replace all partial numbers. Total
-   spend so far ~$13.3.
+## KNOWN-OPEN — generated-code QUALITY defects (for a later dedicated pass; NOT QA/structural)
 
-**Open defects (both generated-code QUALITY, not QA):**
-- **D3 residual — wrong SYMBOL from a correctly-pathed module.** The module-path
-  family is closed by construction (module map + conventional names); a file can
-  still import a wrong *name* from the right module. Surfaces as a clear
-  ImportError caught by QA retry, not a silent failure. Not fixed.
-- **D4 — flaky SSG prerender.** Run 274's `next build` failed prerendering a
-  page; run 283 it PASSED with no change. Non-deterministic generated-page
-  quality. If it recurs, the fix is likely a rendering-strategy decision
-  (force-dynamic) rather than per-page patching. Not fixed.
+- **FastAPI `response_model` set to a SQLAlchemy ORM model** (run 342, backend
+  did-not-start). A router used `response_model=List[MenuItem]` (an ORM model),
+  which FastAPI rejects at app construction: *"Invalid args for response field …
+  is [not] a valid Pydantic field type."* Fix (later): a Backend-Developer prompt
+  rule — response_model must be a Pydantic schema, never an ORM model (omit it, or
+  define a response schema). Same shape as the existing anti-workaround prompts.
+- **Flaky SSG prerender (D4)** (runs 274 fail / 283 pass / 342 fail on `/integrate`).
+  `next build` compiles and static-generates, but prerendering one page throws at
+  SSG export — nondeterministic. Fix (later): opt generated pages into dynamic
+  rendering (`export const dynamic = "force-dynamic"`) so `next build` stops
+  prerendering, rather than per-page patching.
+- **D3 residual — wrong SYMBOL from a correctly-pathed module.** The module-PATH
+  family is closed (module map + conventional names); a file can still import a
+  wrong *name* from the right module. Surfaces as a clear ImportError caught by QA
+  retry, never a silent failure.
 
-**Honest open question the user is weighing:** is a fully-green synthetic build a
-verification goal, or a codegen-quality goal that belongs to a later phase? The
-mechanisms are already proven; each green-chase run is ~$3.
+All three are the LLM writing imperfect app code. None is a QA/pipeline mechanism
+bug. A dedicated code-quality pass (prompt tuning + a rendering-strategy decision)
+is the right venue, not verification.
 
-**Working tree:** clean, all pushed. HEAD after this session ends at the
-conventional-naming commit. Regression: **68 / 226 / 19 / 35 / 66 / 10 = 424
-checks, 0 failures** (verify by exit code + RESULT line, NOT the [PASS] count —
-a crashed suite still prints its earlier PASS lines).
+## Also carried forward into Week 7
+- **`requirements.txt` is not generated.** QA boots fine (assembly import-scans and
+  pip-installs), but a REAL deploy can't import-scan itself — DevOps must generate
+  a manifest. Logged during the Step-5 audit.
+- Do NOT start Week 7 on top of unverified mechanisms — they ARE verified now.
+
+**Working tree:** clean, all pushed (HEAD `34daa9b` before this final doc commit).
+Regression, measured 2026-07-30 (verify by exit code + RESULT line, NOT the [PASS]
+count — a crashed suite still prints its earlier PASS lines):
+**75 / 226 / 19 / 35 / 70 / 16 = 443 checks, 0 failures** across `test_qa_offline`,
+`test_architect_offline`, `test_qa_retry_loop`, `test_qa_teardown`,
+`test_token_instrumentation`, `test_developers_offline`. (`test_qa_classification`
+is excluded from the free set — it makes real Gemini calls.)
 
 ---
 
@@ -1677,11 +1666,16 @@ Not a gap to silently fix later — if the remaining two levels are still wanted
 they are NEW scope and need their own spec. Do not assume they exist.
 
 ### Current phase
-**Week 7 — DevOps agent (#11).** Real deployment: AWS, SSL, domain, Safe Mode
-snapshots, version timeline — the thing that turns generated files into a hosted
-app with a live URL. Note Week 6 deliberately built only a throwaway LOCAL test
-instance; none of that assembly logic is a deployment pipeline. Also still
-pending: Design Review (#8), Qdrant vector store, code export to disk.
+**Week 7 — DevOps agent (#11) — UNBLOCKED. Week 6 verification is COMPLETE
+(2026-07-30); see the RESUME HERE block at the top.** Real deployment: AWS, SSL,
+domain, Safe Mode snapshots, version timeline — the thing that turns generated
+files into a hosted app with a live URL. Note Week 6 deliberately built only a
+throwaway LOCAL test instance; none of that assembly logic is a deployment
+pipeline. **Week 7 must generate a `requirements.txt`** (QA import-scans, but a
+real deploy can't). Also still pending: Design Review (#8), Qdrant vector store,
+code export to disk. Residual generated-code-QUALITY defects (FastAPI
+response_model, flaky SSG prerender, wrong-symbol imports) are logged known-open
+for a later dedicated code-quality pass — NOT Week 7's job.
 
 ### What NOT to touch next session
 - Do NOT modify the BA, Product Intelligence, Architect, Developer, Code
