@@ -65,3 +65,26 @@ class QAStatusResponse(BaseModel):
     total: int = 0
     passed: int = 0
     failed: int = 0
+
+
+class DeployStatusResponse(BaseModel):
+    """The climax screen's data. No code, agent, or model names — only what a
+    non-technical user should see. Secret VALUES are never included (only the
+    live URL, badges, and the honest cost)."""
+
+    status: str  # not_started | running | live | failed | blocked | error
+    live_url: str | None = None
+    ssl_enabled: bool = False
+    # lets_encrypt | self_signed_local | none — the ISSUER, recorded honestly.
+    ssl_type: str | None = None
+    security_certified: bool = False
+    tests_passed: int = 0
+    monthly_cost_estimate: float | None = None
+    # projected_aws_<tier> | billed_aws_<server> | local_zero
+    cost_basis: str | None = None
+    server_type: str | None = None
+    # A deployment that only came up after an automatic fix is shown as such,
+    # never laundered into looking like a clean first-pass success.
+    auto_fixed: bool = False
+    # Present on a blocked/failed deploy so the reason travels with the status.
+    reason: str | None = None

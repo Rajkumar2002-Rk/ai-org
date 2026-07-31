@@ -58,6 +58,52 @@ class Settings(BaseSettings):
     # check still validates imports, hallucinated deps and structure.
     qa_frontend_full_build: bool = False
 
+    # ---------------------------------------------------------------- DevOps (Week 7)
+    # DevOps runs on GPT-4o mini per the locked routing, but it is deliberately
+    # deterministic-first (like QA's root_cause): the model is only consulted to
+    # phrase a human-readable summary, never to decide isolation, cost, or whether
+    # a health-check failure is auto-fixable.
+    devops_model: str = "gpt-4o-mini"
+    devops_temperature: float = 0.1
+
+    # WHERE a deployment runs. "local" (default) builds and runs REAL Docker
+    # containers on this machine — fully provable, $0, no teardown-of-paid-infra
+    # risk. "aws" is the real EC2 path (ECR + t3.micro + Caddy/Let's Encrypt +
+    # Route53); it costs money and is never touched by the offline test suite.
+    deploy_target: str = "local"
+
+    # Real domain for generated apps. DNS for `apps.rajkumarai.dev` is delegated
+    # to the Route53 hosted zone below; per-app subdomains live under it as
+    # <slug>-<suffix>.apps.rajkumarai.dev.
+    platform_domain: str = "rajkumarai.dev"
+    apps_subdomain: str = "apps.rajkumarai.dev"
+    route53_zone_id: str | None = "Z02777111O69NKZ136VS"
+    aws_region: str = "us-east-2"
+    aws_account_id: str | None = None            # discovered via STS when needed
+    # Email Let's Encrypt uses for expiry notices (Caddy ACME account).
+    letsencrypt_email: str = "rajkumarn2002@gmail.com"
+
+    # AWS sizing: tier -> concrete EC2 instance type. "large" uses ECS in the
+    # driver; small/medium run on a single EC2 instance (see devops/sizing.py).
+    ec2_instance_small: str = "t3.micro"
+    ec2_instance_medium: str = "t3.small"
+
+    # Symmetric key (Fernet, urlsafe-base64, 32 bytes) that encrypts secret VALUES
+    # at rest in the `secrets` table. Absent -> the secrets store refuses to
+    # store/read (it will not silently hold plaintext). Tests supply an ephemeral
+    # key; production sets SECRETS_ENC_KEY.
+    secrets_enc_key: str | None = None
+
+    # Health check (STEP 7): ping the live URL every N seconds for up to M seconds.
+    devops_health_interval: int = 10
+    devops_health_timeout: int = 120
+    # Auto-fix is attempted at most this many times, and only for INFRASTRUCTURE
+    # faults — never generated app code or security config.
+    devops_autofix_max: int = 1
+    # Bounded build/deploy steps so a deploy can never hang the pipeline.
+    devops_build_timeout: int = 900
+    devops_deploy_timeout: int = 600
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

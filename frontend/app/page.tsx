@@ -27,7 +27,8 @@ export default function Home() {
   const [showSources, setShowSources] = useState(false);
   const [pipeline, setPipeline] = useState<
     | "idle" | "reviewing" | "review" | "designing" | "building"
-    | "securing" | "secured" | "testing" | "tested" | "error"
+    | "securing" | "secured" | "testing" | "tested"
+    | "deploying" | "live" | "deploy_failed" | "error"
   >("idle");
   const [review, setReview] = useState<any>(null);
   const [designExplain, setDesignExplain] = useState<any>(null);
@@ -35,6 +36,7 @@ export default function Home() {
   const [build, setBuild] = useState<any>(null);
   const [security, setSecurity] = useState<any>(null);
   const [qa, setQa] = useState<any>(null);
+  const [deploy, setDeploy] = useState<any>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -255,15 +257,57 @@ export default function Home() {
       try {
         const res = await fetch(`${API_URL}/pipeline/${projectId}/qa-status`);
         const data = await res.json();
-        if (data.status === "done" || data.status === "error") {
+        if (data.status === "done") {
           setQa(data);
-          setPipeline("tested");
+          clearInterval(t);
+          // Everything passed — take it live.
+          startDeploy();
+        } else if (data.status === "error") {
+          setQa(data);
+          setPipeline("tested");     // failures shown; nothing goes live
           clearInterval(t);
         }
       } catch {
         /* keep polling */
       }
     }, 2500);
+    return () => clearInterval(t);
+  }, [pipeline, projectId]);
+
+  async function startDeploy() {
+    if (projectId == null) return;
+    setPipeline("deploying");
+    try {
+      await fetch(`${API_URL}/pipeline/deploy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+    } catch {
+      setPipeline("error");
+    }
+  }
+
+  // Poll the DevOps agent. The climax: a live URL, or an honest snag.
+  useEffect(() => {
+    if (pipeline !== "deploying" || projectId == null) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/pipeline/${projectId}/deploy-status`);
+        const data = await res.json();
+        if (data.status === "live") {
+          setDeploy(data);
+          setPipeline("live");
+          clearInterval(t);
+        } else if (data.status === "failed" || data.status === "blocked") {
+          setDeploy(data);
+          setPipeline("deploy_failed");
+          clearInterval(t);
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 3000);
     return () => clearInterval(t);
   }, [pipeline, projectId]);
 
@@ -278,6 +322,8 @@ export default function Home() {
     setShowDesign(false);
     setBuild(null);
     setSecurity(null);
+    setQa(null);
+    setDeploy(null);
     await start();
   }
 
@@ -628,7 +674,9 @@ export default function Home() {
             </div>
           )}
           {security &&
-            (pipeline === "secured" || pipeline === "testing" || pipeline === "tested") && (
+            (pipeline === "secured" || pipeline === "testing" ||
+              pipeline === "tested" || pipeline === "deploying" ||
+              pipeline === "live" || pipeline === "deploy_failed") && (
               <div style={s.reviewCard}>
                 <div style={s.reviewTitle}>Security check passed ✓</div>
                 <div style={s.designBody}>
@@ -645,20 +693,81 @@ export default function Home() {
               <span>Testing every button and screen…</span>
             </div>
           )}
-          {pipeline === "tested" && qa && (
-            <div style={s.reviewCard}>
-              <div style={s.reviewTitle}>
-                {qa.failed === 0
-                  ? `${qa.total} tests run. Everything passed. ✓`
-                  : `${qa.total} tests run.`}
+          {qa &&
+            (pipeline === "tested" || pipeline === "deploying" ||
+              pipeline === "live" || pipeline === "deploy_failed") && (
+              <div style={s.reviewCard}>
+                <div style={s.reviewTitle}>
+                  {qa.failed === 0
+                    ? `${qa.total} tests run. Everything passed. ✓`
+                    : `${qa.total} tests run.`}
+                </div>
+                <div style={s.designBody}>
+                  {qa.failed === 0
+                    ? "We tried every button, form and screen — including the ways people accidentally break things. It all held up."
+                    : "We tried every button, form and screen. A few things need another pass, and they've been sent back to be sorted out."}
+                </div>
               </div>
-              <div style={s.designBody}>
-                {qa.failed === 0
-                  ? "We tried every button, form and screen — including the ways people accidentally break things. It all held up."
-                  : "We tried every button, form and screen. A few things need another pass, and they've been sent back to be sorted out."}
+            )}
+
+          {/* DevOps: deploying — the friendly wait before the climax */}
+          {pipeline === "deploying" && (
+            <div style={s.deployWait}>
+              <div style={s.rocket}>🚀</div>
+              <div style={s.deployWaitText}>Getting your app ready for the world…</div>
+              <div style={s.deployWaitSub}>
+                Setting up your own private space, turning on security, and giving
+                it a web address.
               </div>
             </div>
           )}
+
+          {/* DevOps: THE CLIMAX — your app is live */}
+          {pipeline === "live" && deploy && (
+            <div style={s.climax}>
+              <div style={s.confetti}>🎉</div>
+              <div style={s.climaxTitle}>Your app is ready!</div>
+              <a
+                href={deploy.live_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={s.liveLink}
+              >
+                {deploy.live_url}
+              </a>
+              <div style={s.badgeRow}>
+                {deploy.security_certified && (
+                  <span style={s.badge}>Security verified ✓</span>
+                )}
+                <span style={s.badge}>
+                  {(deploy.tests_passed ?? 0)} tests passed ✓
+                </span>
+              </div>
+              {deploy.monthly_cost_estimate != null && (
+                <div style={s.cost}>
+                  Running cost: <strong>${Number(deploy.monthly_cost_estimate).toFixed(2)}/month</strong>
+                </div>
+              )}
+              {deploy.auto_fixed && (
+                <div style={s.honestNote}>
+                  Recovered automatically after one hiccup during setup.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* DevOps: honest snag (blocked/failed) — never a fake success */}
+          {pipeline === "deploy_failed" && (
+            <div style={s.reviewCard}>
+              <div style={s.reviewTitle}>Not live yet</div>
+              <div style={s.designBody}>
+                Your app passed its tests, but we hit a snag putting it online and
+                stopped rather than launch something that isn&apos;t right. It&apos;s
+                been flagged for a final pass.
+              </div>
+            </div>
+          )}
+
           {pipeline === "error" && (
             <div style={s.pipeline}>
               <span>Something went wrong. Please try again.</span>
@@ -776,6 +885,66 @@ const s: Record<string, React.CSSProperties> = {
     whiteSpace: "pre-wrap",
     marginTop: "4px",
   },
+  // ---- DevOps: deploying wait ----
+  deployWait: {
+    alignSelf: "stretch",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "8px",
+    padding: "28px 16px",
+    background: "#f3f0ff",
+    borderRadius: "16px",
+    textAlign: "center",
+  },
+  rocket: { fontSize: "40px", animation: "float 1.6s ease-in-out infinite" },
+  deployWaitText: { fontSize: "16px", fontWeight: 700, color: "#1f2937" },
+  deployWaitSub: {
+    fontSize: "13px", color: "#6b7280", lineHeight: 1.5, maxWidth: "360px",
+  },
+  // ---- DevOps: the climax ----
+  climax: {
+    alignSelf: "stretch",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: "14px",
+    padding: "32px 20px",
+    background: "linear-gradient(160deg, #faf5ff 0%, #eef2ff 100%)",
+    border: "1px solid #e5e0f7",
+    borderRadius: "20px",
+    textAlign: "center",
+  },
+  confetti: { fontSize: "48px", animation: "pop 0.5s ease-out" },
+  climaxTitle: { fontSize: "26px", fontWeight: 800, color: "#4c1d95" },
+  liveLink: {
+    fontSize: "18px",
+    fontWeight: 700,
+    color: PURPLE,
+    wordBreak: "break-all",
+    textDecoration: "none",
+    padding: "12px 18px",
+    background: "#ffffff",
+    border: `2px solid ${PURPLE}`,
+    borderRadius: "12px",
+    maxWidth: "100%",
+  },
+  badgeRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "8px",
+    justifyContent: "center",
+  },
+  badge: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "#166534",
+    background: "#dcfce7",
+    padding: "6px 12px",
+    borderRadius: "999px",
+  },
+  cost: { fontSize: "15px", color: "#374151" },
+  honestNote: { fontSize: "12px", color: "#92400e", fontStyle: "italic" },
   buildCount: { fontSize: "13px", fontWeight: 600, color: PURPLE, marginTop: "4px" },
   fileList: {
     display: "flex",

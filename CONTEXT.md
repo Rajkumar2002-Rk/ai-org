@@ -5,12 +5,118 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Week 6 VERIFICATION IS COMPLETE (2026-07-30)
+# ⏭️ RESUME HERE — Week 7 DevOps built & LOCAL path PROVEN (2026-07-30)
 
-**Start the next session with:** "Read CONTEXT.md. Verification complete. Today
-building Week 7 — DevOps — only." Do NOT reopen verification or resume the
-green-baseline chase; that decision is made (see below). Week 7 is DevOps (#11):
-real deploy, SSL, domain, Safe Mode snapshots, version timeline.
+**Start the next session with:** "Read CONTEXT.md. Week 7 DevOps is built; the
+LOCAL deploy path is proven end-to-end. The AWS path is real code but NOT yet run
+live." Next real work is EITHER the first live AWS deploy (once DNS is delegated
+and the paid run is greenlit) OR Week 8.
+
+## WEEK 7 — DevOps Agent (#11) — DONE (local proven; AWS pending live shakeout)
+
+The DevOps agent deploys a tested, security-certified project silently: read
+cloud_config → size the server → assemble the generated code into real Docker
+images → deploy an ISOLATED per-project stack → create the DB schema → inject
+secrets → stand up HTTPS → health-check the live URL (10s × 2min, one infra-only
+auto-fix). It never talks to the user; the API exposes a live URL + counts only.
+
+### The five design questions, answered structurally (not by intention)
+- **Per-user isolation** is a pure function of `project_id` (`devops/naming.py`):
+  every container/network/database/subdomain name is derived from the id, no code
+  path takes a caller-supplied name, each app runs on its OWN docker network with
+  its OWN DB credentials. Proven by CROSSING it: the live test shows A's network
+  cannot reach B's database container, and the offline test shows the two name
+  sets are disjoint.
+- **Secrets out of logs, structurally**: Fernet-encrypted at rest (`secrets`
+  table); injected only via a `0600 --env-file` deleted after `up` (never CLI
+  args, never image layers); a `SecretRedactingFilter` on the log sink replaces
+  live values. Proven BOTH ways (redacted with the filter on; reappears with it
+  off). Secret VALUES never enter the deployments row or any API payload — proven
+  live with a sentinel value.
+- **Cost estimate** is computed from the CONCRETE resources chosen
+  (`devops/cost.py`), not parroted from the blueprint; `cost_basis` records
+  `projected_aws_<tier>` (local) vs `billed_aws_<server>` (aws); a dated rate
+  table has a staleness tripwire the suite asserts.
+- **Auto-fix is infra-only and fail-closed**: the ONE remedy is
+  `driver.restart()` (cycle processes); it has NO path to edit generated code or
+  security config (the defect-#6 lesson). App 5xx / missing-secret / security
+  refusals ESCALATE, never get "fixed". A recovered deploy is a DISTINCT dashboard
+  state (`auto_fixed=true` + `fix_description`), never laundered as pristine. And
+  DevOps refuses to deploy unless the Opus certificate covers EXACTLY the files
+  shipping (drift re-checked at deploy time, `reviewer.drifted_files`), extending
+  the defect-#6 guarantee to the deploy edge.
+- **Teardown**: local resources are `docker rm/network rm/volume rm` by name (the
+  isolation names are the only handle needed), proven before→during→after. Every
+  AWS resource is TAGGED (`Project=ai-org`, `project_id`, `ephemeral`,
+  `created_by`); `devops/teardown_aws.py` reclaims by tag and LISTS before acting
+  (dry-run by default; `--yes` to act, `--terminate` for ephemeral instances).
+
+### What was built (all new under `backend/app/devops/`)
+`naming.py` (isolation), `sizing.py` (STEP 1), `manifest.py` (STEP 2: assemble +
+generate requirements.txt via QA's AST import-scan + Dockerfiles + Caddyfile +
+bootstrap + compose), `secrets_store.py` (STEP 5), `cost.py`, `health.py`
+(STEP 7: probe + deterministic infra/app/security classifier), `drivers/base.py`
++ `drivers/local.py` (real docker) + `drivers/aws.py` (ECR + EC2 + Caddy/LE +
+Route53, real but unrun), `orchestrator.py` (STEP 0–7 wiring), `graph.py`,
+`teardown_aws.py`. Plus: `Secret` + `Deployment` models (migrations 0010, 0011),
+config additions, `boto3`+`cryptography` in requirements, Docker CLI + socket +
+`~/.aws` wired into the backend container, `POST /pipeline/deploy` +
+`GET /pipeline/{id}/deploy-status`, and the frontend CLIMAX screen (deploying
+animation → "Your app is ready!" + big live URL + Security/tests badges + honest
+running cost).
+
+### Verification (all green, 2026-07-30)
+- **`test_devops_offline.py` — 46 checks, 0 failures** (free; sizing, isolation,
+  manifest, secret redaction both-ways, cost tripwire, health ordering, fail-closed
+  cert gate, AWS pure functions).
+- **`test_devops_local_live.py` — 18 checks, 0 failures** (real Docker: two real
+  deploys go LIVE over HTTPS, DB schema created, secret injected + not leaked,
+  network isolation proven by crossing, teardown before/during/after). NOT in the
+  free suite — needs the Docker socket, like `test_qa_classification` is excluded.
+- **All 6 prior free suites still pass** (no regression).
+- **A real defect the live test caught** (very much the project's spirit): the
+  local Caddy site was `:443` with `tls internal`, which has no hostname to mint a
+  cert for → the TLS handshake failed with an internal-error alert. Fixed by
+  naming the site `localhost, host.docker.internal`. The mechanism proof caught a
+  bug the offline tests structurally could not.
+
+### AWS path — REAL CODE, NOT YET RUN LIVE (deliberate)
+Off by default (`DEPLOY_TARGET=local`); never touched by the test suite. It cannot
+succeed until DNS is delegated + the paid run is greenlit, so it is NOT called
+verified (the "built ≠ verified" rule). To go live:
+1. **DNS delegation (operator action, pending):** Route53 public hosted zone
+   `apps.rajkumarai.dev` was created — **zone id `Z02777111O69NKZ136VS`**, account
+   `812141348875`, region `us-east-2`. Add an `NS` record for `apps` at
+   rajkumarai.dev's current DNS host with: `ns-1092.awsdns-08.org`,
+   `ns-1958.awsdns-52.co.uk`, `ns-957.awsdns-55.net`, `ns-462.awsdns-57.com`.
+2. Launch ONE t3.micro tagged `Project=ai-org` with an instance profile granting
+   ECR pull + SSM; the driver reuses it (start if stopped) and delivers the stack
+   via SSM. Per the cost plan: STOP (not terminate) between tests; teardown by tag.
+3. Set `DEPLOY_TARGET=aws` and deploy a known-good project.
+- **Cost reality:** always-on t3.micro ≈ **$12/mo** (t3.micro ~$7.59 + the new
+  ~$3.65 public-IPv4 charge + EBS + $0.50 zone). The $5-10 target needs the 12-mo
+  free tier active OR stop/start between tests. SSL is Let's Encrypt via Caddy on
+  the instance (ACM needs a paid ALB → would break the budget).
+
+### Carried forward / known-open (Week 7)
+- **No onboarding stage populates the `secrets` table with real user secrets yet**
+  — a "connect your API keys" UI is scoped future work; the store is real and
+  read by DevOps today, seeded directly (tests). Same explicit gap as
+  requirements.txt. Stripe still never lands here (hosted OAuth inside the app).
+- **AWS end-to-end is unverified** until the live shakeout above.
+- **The local proof used a backend-only synthetic app** to prove the mechanism
+  (real build/run/DB/secret/HTTPS/isolation/teardown). A full FRONTEND deploy
+  (Next `npm run build` in the image) is wired but not yet exercised end-to-end —
+  do that with a known-good generated project (the D4 SSG-prerender quality issue
+  from Week 6 would surface at image-build time here, honestly).
+- Docker-out-of-docker: the backend container builds via the host socket
+  (acceptable for this dev platform; a real product would use a build service).
+
+---
+
+# (Week 6 verification history below — superseded as the resume point by Week 7)
+
+# ⏭️ Week 6 VERIFICATION COMPLETE (2026-07-30)
 
 ## VERDICT: every pipeline MECHANISM is proven with hard evidence
 

@@ -27,3 +27,29 @@ body {
     transform: rotate(360deg);
   }
 }
+
+/* DevOps deploy wait: a gently floating rocket (placeholder for the Lottie
+   character the design system will use). */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+/* Climax celebration pop. */
+@keyframes pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}

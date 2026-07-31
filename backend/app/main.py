@@ -26,10 +26,12 @@ from app.models import (
 from app.product_intel import graph as pi_graph
 from app.qa import graph as qa_graph
 from app.reviewer import orchestrator as reviewer_orchestrator
+from app.devops import graph as devops_graph
 from sqlalchemy import func as sqlfunc, select
 from app.redis_client import redis_client
 from app.schemas import (
     BuildStatusResponse,
+    DeployStatusResponse,
     DesignExplanationResponse,
     SecurityStatusResponse,
     MessageRequest,
@@ -112,6 +114,29 @@ def _secure_key(project_id: int) -> str:
 
 def _qa_key(project_id: int) -> str:
     return f"qa:status:{project_id}"
+
+
+def _deploy_key(project_id: int) -> str:
+    return f"deploy:status:{project_id}"
+
+
+async def _run_deploy(project_id: int) -> None:
+    """Background job: the DevOps agent (assemble -> build -> deploy -> health).
+
+    Stores the full report and a status of live | failed | blocked. Runs
+    silently; the API exposes only the live URL and counts.
+    """
+    try:
+        report = await devops_graph.run(project_id)
+        await redis_client.set(
+            f"deploy_report:{project_id}", json.dumps(report), ex=86400
+        )
+        await redis_client.set(
+            _deploy_key(project_id), report.get("status", "failed"), ex=86400
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("Deploy failed for project %s", project_id)
+        await redis_client.set(_deploy_key(project_id), "failed", ex=86400)
 
 
 async def _run_qa(project_id: int) -> None:
@@ -444,4 +469,46 @@ async def qa_status(project_id: int):
         total=report.get("total", 0),
         passed=report.get("passed", 0),
         failed=report.get("failed", 0),
+    )
+
+
+@app.post("/pipeline/deploy", response_model=DeployStatusResponse)
+async def pipeline_deploy(req: PipelineStartRequest, db: AsyncSession = Depends(get_db)):
+    """Kick off the DevOps agent for a tested, security-certified project.
+
+    Assembles the generated code into real images, deploys an ISOLATED per-project
+    stack, injects secrets, stands up HTTPS, and health-checks the live URL. The
+    agent refuses to deploy code the security review never saw (fail-closed).
+    """
+    result = await db.execute(
+        select(GeneratedFile.id).where(GeneratedFile.project_id == req.project_id).limit(1)
+    )
+    if result.first() is None:
+        raise HTTPException(status_code=400, detail="No generated files to deploy yet")
+    if await redis_client.get(_deploy_key(req.project_id)) == "running":
+        return DeployStatusResponse(status="running")
+    await redis_client.set(_deploy_key(req.project_id), "running", ex=86400)
+    asyncio.create_task(_run_deploy(req.project_id))
+    return DeployStatusResponse(status="running")
+
+
+@app.get("/pipeline/{project_id}/deploy-status", response_model=DeployStatusResponse)
+async def deploy_status(project_id: int):
+    """The climax screen's data — live URL, badges, honest cost. No code/agent/
+    model names, no secret values."""
+    status = await redis_client.get(_deploy_key(project_id)) or "not_started"
+    raw = await redis_client.get(f"deploy_report:{project_id}")
+    report = json.loads(raw) if raw else {}
+    return DeployStatusResponse(
+        status=status,
+        live_url=report.get("live_url"),
+        ssl_enabled=report.get("ssl_enabled", False),
+        ssl_type=report.get("ssl_type"),
+        security_certified=report.get("security_certified", False),
+        tests_passed=report.get("tests_passed", 0),
+        monthly_cost_estimate=report.get("monthly_cost_estimate"),
+        cost_basis=report.get("cost_basis"),
+        server_type=report.get("server_type"),
+        auto_fixed=report.get("auto_fixed", False),
+        reason=report.get("reason"),
     )

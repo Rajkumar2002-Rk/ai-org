@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (Boolean, DateTime, ForeignKey, Integer, Numeric, String,
-                        Text, func)
+                        Text, UniqueConstraint, func)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -44,6 +44,12 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     qa_results: Mapped[list["QAResult"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    deployments: Mapped[list["Deployment"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    secrets: Mapped[list["Secret"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
 
@@ -276,3 +282,121 @@ class LLMUsage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class Secret(Base):
+    """A user-connected API key / credential for ONE project's generated app.
+
+    DevOps (Week 7) reads these and injects them into the deployed container as
+    environment variables. The VALUE is stored encrypted (Fernet) and never
+    returned to any API/dashboard payload — only `key_name` and a count are ever
+    surfaced. See app/devops/secrets_store.py.
+
+    ⚠️ KNOWN GAP, deliberately logged (like `requirements.txt` was for Week 7):
+    no onboarding stage populates this table with REAL user-supplied secrets yet.
+    A proper "connect your API keys" onboarding UI is scoped future work. For now
+    the table is real, encrypted, and read by DevOps; it is seeded directly (e.g.
+    in tests) until that UI exists. Stripe deliberately never lands here — the
+    business owner connects their own Stripe account via Stripe's hosted OAuth
+    from inside the generated app, so the platform never stores a Stripe token.
+    """
+
+    __tablename__ = "secrets"
+    __table_args__ = (
+        # One value per key name per project — a re-connect updates in place.
+        UniqueConstraint("project_id", "key_name", name="uq_secrets_project_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # The env var name the generated app expects, e.g. "OPENAI_API_KEY".
+    key_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Fernet ciphertext of the secret value. NEVER the plaintext, NEVER logged,
+    # NEVER placed in an API response.
+    value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="secrets")
+
+
+class Deployment(Base):
+    """One deployment attempt for a project's generated app (Week 7, DevOps).
+
+    Columns beyond the original spec exist to keep the record HONEST rather than
+    reassuring — the standing principle of this project:
+
+    - `auto_fixed` + `fix_description`: a deployment that only came up after an
+      infra auto-fix is a DIFFERENT state from a clean first-pass success and is
+      shown as such, never laundered into looking pristine (cf. QA's
+      `recertified_after_qa`).
+    - `ssl_type`: 'lets_encrypt' (real, on AWS) vs 'self_signed_local' (local
+      proof) vs 'none'. `ssl_enabled=True` is never claimed for a cert we did not
+      actually stand up, and the ISSUER is recorded so the two are never confused.
+    - `cost_basis`: whether `monthly_cost_estimate` is a projection for the sized
+      AWS tier ('projected_aws_<tier>'), an actually-billed AWS deployment
+      ('billed_aws_<server>'), or a local $0 run ('local_zero'). A number without
+      its basis is not a measurement.
+    - `security_certified`: whether a valid Opus certificate covered EXACTLY the
+      files that were deployed (drift re-checked at deploy time). FAILS CLOSED.
+    """
+
+    __tablename__ = "deployments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Groups every row/LLM call this deploy pass writes (joins to llm_usage.run_id).
+    run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # The exact blueprint version whose cloud_config was deployed.
+    blueprint_id: Mapped[int | None] = mapped_column(
+        ForeignKey("blueprints.id", ondelete="SET NULL"), nullable=True
+    )
+    # local | aws — which driver produced this deployment.
+    target: Mapped[str] = mapped_column(String(20), nullable=False, default="local")
+    live_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    subdomain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Human + concrete server descriptor, e.g. "EC2 t3.micro" / "local docker".
+    server_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # deploying | live | failed | torn_down
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="deploying")
+    ssl_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # lets_encrypt | self_signed_local | none
+    ssl_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    monthly_cost_estimate: Mapped[float | None] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
+    # projected_aws_<tier> | billed_aws_<server> | local_zero
+    cost_basis: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # A deployment that needed an infra auto-fix is flagged, never silently clean.
+    auto_fixed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    fix_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Whether the Opus certificate covered EXACTLY the deployed files (fail-closed).
+    security_certified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    # Snapshot for the "X tests passed" badge (from the latest QA pass).
+    tests_passed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # How many health probes it took to come up (0 = never came up).
+    health_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Registry references for the built images (ECR URI or local image tag).
+    image_backend_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    image_frontend_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    deployed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(),
+        nullable=False,
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="deployments")
