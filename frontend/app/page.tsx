@@ -1,8 +1,75 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { BuildCharacter, Pose } from "./character";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// Rotating hero placeholder examples (Section 1).
+const PLACEHOLDERS = [
+  "I want an app to manage my grocery store…",
+  "Build me a booking system for my salon…",
+  "I need an inventory tracker for my warehouse…",
+];
+
+// Section 3 — three audience buckets mapped to the LOCKED plan pricing.
+const BUCKETS = [
+  {
+    audience: "Just for me",
+    desc: "Personal apps, just for you.",
+    tier: "Starter",
+    price: 19,
+  },
+  {
+    audience: "My small team",
+    desc: "Shared access for your whole team.",
+    tier: "Growth",
+    price: 49,
+  },
+  {
+    audience: "My customers",
+    desc: "Customer-facing apps your customers use.",
+    tier: "Business",
+    price: 99,
+  },
+];
+
+// Section 4 — the trust promises (exact wording from the brief).
+const TRUST = [
+  "Security reviewed by the most advanced AI available",
+  "Tested on every button and screen before going live",
+  "Monitored 24/7 after launch",
+  "Automatically fixed if anything goes wrong",
+  "Backed up daily",
+];
+
+// Section 5 — six plain-English FAQs (no technical words).
+const FAQS = [
+  {
+    q: "Do I need to know anything about building apps?",
+    a: "Not at all. You describe what you want in plain words, and the whole thing is built for you — you never have to touch anything technical.",
+  },
+  {
+    q: "How much does it cost?",
+    a: "You can try it for free. When you're ready to keep your app online, plans start at $19 a month — and that covers building it, keeping it running, and any changes you want. No surprise fees.",
+  },
+  {
+    q: "How long does it take?",
+    a: "Most ideas go from a description to a working app in one sitting. You watch it come together on your screen as it happens.",
+  },
+  {
+    q: "Is my app safe?",
+    a: "Yes. Every app is checked for safety by the most advanced AI available before it ever goes live, and it's watched around the clock afterwards.",
+  },
+  {
+    q: "What if something breaks later?",
+    a: "We keep an eye on your app day and night. If something goes wrong, it's usually put right on its own before you even notice — and your app is backed up every single day.",
+  },
+  {
+    q: "Can I make changes after it's built?",
+    a: "Of course. Just tell us what you'd like changed in plain words, as often as you like. Changes are always included — you're never charged for each one.",
+  },
+];
 
 type Msg = { role: "ba" | "user"; text: string };
 type UI = {
@@ -17,6 +84,10 @@ type UI = {
 };
 
 export default function Home() {
+  // "landing" until the user starts building; "app" is the chat + build flow.
+  const [view, setView] = useState<"landing" | "app">("landing");
+  const [landingInput, setLandingInput] = useState("");
+  const [phIndex, setPhIndex] = useState(0);
   const [projectId, setProjectId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [ui, setUi] = useState<UI>({ kind: "text" });
@@ -58,11 +129,36 @@ export default function Home() {
       })();
       return;
     }
-    start();
+    // Otherwise the landing page shows first; building starts on the CTA.
   }, []);
+
+  // Rotate the hero placeholder examples while on the landing page.
+  useEffect(() => {
+    if (view !== "landing" || dashboardMode) return;
+    const t = setInterval(
+      () => setPhIndex((i) => (i + 1) % PLACEHOLDERS.length),
+      2800
+    );
+    return () => clearInterval(t);
+  }, [view, dashboardMode]);
+
+  // Section 1 / Section 6 CTA — leave the landing page and start the build.
+  async function startBuilding(idea: string) {
+    if (loading) return;
+    setView("app");
+    setDashboardMode(false);
+    setDashboard(null);
+    setPipeline("idle");
+    setMessages([]);
+    const pid = await start();
+    const trimmed = idea.trim();
+    if (pid != null && trimmed) await send(trimmed, pid);
+    setLandingInput("");
+  }
 
   async function makeAChange() {
     // "Make a change to my app" — starts a fresh BA conversation.
+    setView("app");
     setDashboardMode(false);
     setDashboard(null);
     setPipeline("idle");
@@ -74,16 +170,20 @@ export default function Home() {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, ui, researching]);
 
-  async function start() {
+  async function start(): Promise<number | null> {
     const res = await fetch(`${API_URL}/conversation/start`, { method: "POST" });
     const data = await res.json();
     setProjectId(data.project_id);
     setMessages([{ role: "ba", text: data.reply }]);
     setUi(data.ui);
+    return data.project_id ?? null;
   }
 
-  async function send(text: string) {
-    if (!text.trim() || projectId == null || loading) return;
+  async function send(text: string, pidOverride?: number) {
+    // pidOverride lets the very first message be sent right after start(),
+    // before the projectId state update has flushed.
+    const pid = pidOverride ?? projectId;
+    if (!text.trim() || pid == null || loading) return;
     setMessages((m) => [...m, { role: "user", text }]);
     setInput("");
     setUi({ kind: "text" });
@@ -94,7 +194,7 @@ export default function Home() {
       const res = await fetch(`${API_URL}/conversation/message`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project_id: projectId, message: text }),
+        body: JSON.stringify({ project_id: pid, message: text }),
       });
       const data = await res.json();
       setMessages((m) => [...m, { role: "ba", text: data.reply }]);
@@ -392,12 +492,168 @@ export default function Home() {
 
   const inputHidden = ui.kind === "done" || ui.kind === "blocked";
 
+  // Which mascot pose fits the current stage (null = no character shown).
+  const pose: Pose | null =
+    pipeline === "reviewing" || pipeline === "review" || pipeline === "designing"
+      ? "thinking"
+      : pipeline === "building"
+      ? "typing"
+      : pipeline === "securing" ||
+        pipeline === "secured" ||
+        pipeline === "testing"
+      ? "inspecting"
+      : pipeline === "deploying"
+      ? "launching"
+      : pipeline === "live"
+      ? "celebrating"
+      : pipeline === "idle" && !inputHidden
+      ? "thinking" // BA conversation
+      : null;
+  const poseCaption =
+    pipeline === "idle" ? "Getting to know your idea…" : undefined;
+
+  // ---- Landing page (Sections 1–6). Shown until the user starts building. ----
+  if (view === "landing" && !dashboardMode) {
+    const ctaForm = (big: boolean) => (
+      <form
+        style={big ? s.heroForm : s.ctaForm}
+        onSubmit={(e) => {
+          e.preventDefault();
+          startBuilding(landingInput);
+        }}
+      >
+        <input
+          style={s.heroInput}
+          value={landingInput}
+          onChange={(e) => setLandingInput(e.target.value)}
+          placeholder={PLACEHOLDERS[phIndex]}
+          aria-label="Describe your idea"
+        />
+        <button style={s.heroBtn} type="submit">
+          Start building — it&apos;s free to try
+        </button>
+      </form>
+    );
+
+    return (
+      <main style={s.landing}>
+        {/* SECTION 1 — HERO */}
+        <section style={s.hero}>
+          <div style={s.heroBadge}>✦</div>
+          <h1 style={s.heroH1}>Describe your idea. We&apos;ll build the app.</h1>
+          {ctaForm(true)}
+          <div style={s.heroNote}>No signup required to start.</div>
+        </section>
+
+        {/* SECTION 2 — SOCIAL PROOF (honest, not fabricated) */}
+        <section style={s.statsRow}>
+          <div style={s.stat}>
+            <div style={s.statNum}>15</div>
+            <div style={s.statLabel}>specialized AI agents</div>
+          </div>
+          <div style={s.stat}>
+            <div style={s.statNum}>9</div>
+            <div style={s.statLabel}>
+              development phases, built &amp; verified
+            </div>
+          </div>
+          <div style={s.stat}>
+            <div style={s.statNum}>✓</div>
+            <div style={s.statLabel}>
+              security-reviewed by the most advanced AI available
+            </div>
+          </div>
+        </section>
+
+        {/* SECTION 3 — THREE AUDIENCE BUCKETS */}
+        <section style={s.section}>
+          <h2 style={s.sectionH2}>Who is it for?</h2>
+          <div style={s.bucketRow}>
+            {BUCKETS.map((b) => (
+              <div key={b.tier} style={s.bucket}>
+                <div style={s.bucketAudience}>{b.audience}</div>
+                <div style={s.bucketDesc}>{b.desc}</div>
+                <div style={s.bucketPrice}>
+                  ${b.price}
+                  <span style={s.bucketPer}>/month</span>
+                </div>
+                <div style={s.bucketTier}>{b.tier}</div>
+                <div style={s.bucketIncl}>
+                  Everything included — building, unlimited changes, and
+                  keeping it online.
+                </div>
+                <button
+                  style={s.bucketBtn}
+                  onClick={() => startBuilding(landingInput)}
+                >
+                  Start building
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* SECTION 4 — TRUST */}
+        <section style={s.section}>
+          <h2 style={s.sectionH2}>Every app we build is:</h2>
+          <div style={s.trustWrap}>
+            {TRUST.map((t, i) => (
+              <div
+                key={i}
+                style={{
+                  ...s.trustItem,
+                  ...(i === TRUST.length - 1 ? { borderBottom: "none" } : {}),
+                }}
+              >
+                <span style={s.checkCircle}>✓</span>
+                <span>{t}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* SECTION 5 — FAQ */}
+        <section style={s.section}>
+          <h2 style={s.sectionH2}>Questions, answered</h2>
+          <div style={s.faqWrap}>
+            {FAQS.map((f, i) => (
+              <details key={i} className="faqItem">
+                <summary>{f.q}</summary>
+                <p>{f.a}</p>
+              </details>
+            ))}
+          </div>
+        </section>
+
+        {/* SECTION 6 — BOTTOM CTA (same headline + input as the hero) */}
+        <section style={s.section}>
+          <div style={s.ctaBand}>
+            <h2 style={s.ctaH2}>
+              Describe your idea. We&apos;ll build the app.
+            </h2>
+            {ctaForm(false)}
+            <div style={s.heroNote}>No signup required to start.</div>
+          </div>
+        </section>
+
+        <footer style={s.footer}>
+          Built by 15 AI agents, from your first sentence to a live app.
+        </footer>
+      </main>
+    );
+  }
+
   return (
     <main style={s.main}>
       <div style={s.card}>
         <h1 style={s.header}>
           {dashboardMode ? "Your app dashboard" : "Let’s build your idea"}
         </h1>
+
+        {/* Build-dashboard character — pose follows the current stage. */}
+        {!dashboardMode && pose && (
+          <BuildCharacter pose={pose} caption={poseCaption} />
+        )}
 
         {/* Post-launch dashboard (Week 9) — four sections, no technical words. */}
         {dashboardMode && dashboard && (
@@ -1036,7 +1292,7 @@ export default function Home() {
   );
 }
 
-const PURPLE = "#7c3aed";
+const PURPLE = "#534AB7";
 
 const s: Record<string, React.CSSProperties> = {
   main: {
@@ -1045,6 +1301,217 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: "center",
     padding: "24px",
   },
+
+  // ================= Landing page (Week 10 Part 1) =================
+  landing: { width: "100%", color: "#1f2937", background: "#ffffff" },
+
+  // Section 1 — hero
+  hero: {
+    maxWidth: "860px",
+    margin: "0 auto",
+    padding: "72px 24px 48px",
+    textAlign: "center",
+  },
+  heroBadge: {
+    width: "56px",
+    height: "56px",
+    margin: "0 auto 28px",
+    borderRadius: "16px",
+    background: PURPLE,
+    color: "#ffffff",
+    fontSize: "28px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: "0 8px 24px rgba(83,74,183,0.28)",
+  },
+  heroH1: {
+    fontSize: "clamp(34px, 6vw, 58px)",
+    fontWeight: 800,
+    lineHeight: 1.08,
+    letterSpacing: "-0.02em",
+    color: "#1f2937",
+  },
+  heroForm: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "12px",
+    marginTop: "36px",
+    justifyContent: "center",
+  },
+  heroInput: {
+    flex: "1 1 320px",
+    minWidth: 0,
+    padding: "18px 22px",
+    fontSize: "18px",
+    border: "2px solid #e5e0f7",
+    borderRadius: "14px",
+    outline: "none",
+    color: "#1f2937",
+    background: "#ffffff",
+  },
+  heroBtn: {
+    padding: "18px 28px",
+    fontSize: "18px",
+    fontWeight: 700,
+    color: "#ffffff",
+    background: PURPLE,
+    border: "none",
+    borderRadius: "14px",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  heroNote: { marginTop: "16px", fontSize: "15px", color: "#6b7280" },
+
+  // Section 2 — social proof
+  statsRow: {
+    maxWidth: "960px",
+    margin: "0 auto",
+    padding: "24px",
+    display: "flex",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: "16px",
+  },
+  stat: { flex: "1 1 220px", maxWidth: "300px", textAlign: "center", padding: "20px" },
+  statNum: { fontSize: "52px", fontWeight: 800, color: PURPLE, lineHeight: 1 },
+  statLabel: { marginTop: "12px", fontSize: "16px", color: "#4b5563", lineHeight: 1.45 },
+
+  // Shared section wrapper + heading
+  section: { maxWidth: "1000px", margin: "0 auto", padding: "52px 24px" },
+  sectionH2: {
+    textAlign: "center",
+    fontSize: "clamp(26px, 4vw, 36px)",
+    fontWeight: 800,
+    color: "#1f2937",
+    marginBottom: "8px",
+  },
+
+  // Section 3 — audience buckets
+  bucketRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "20px",
+    justifyContent: "center",
+    marginTop: "32px",
+  },
+  bucket: {
+    flex: "1 1 260px",
+    maxWidth: "320px",
+    background: "#ffffff",
+    border: "1px solid #e5e0f7",
+    borderRadius: "20px",
+    padding: "30px 26px",
+    textAlign: "center",
+    boxShadow: "0 4px 20px rgba(83,74,183,0.07)",
+    display: "flex",
+    flexDirection: "column",
+  },
+  bucketAudience: { fontSize: "22px", fontWeight: 800, color: "#1f2937" },
+  bucketDesc: { marginTop: "6px", fontSize: "16px", color: "#6b7280", lineHeight: 1.4 },
+  bucketPrice: {
+    marginTop: "22px",
+    fontSize: "44px",
+    fontWeight: 800,
+    color: PURPLE,
+    lineHeight: 1,
+  },
+  bucketPer: { fontSize: "16px", fontWeight: 600, color: "#9ca3af" },
+  bucketTier: {
+    marginTop: "6px",
+    fontSize: "14px",
+    fontWeight: 700,
+    color: PURPLE,
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+  },
+  bucketIncl: {
+    marginTop: "16px",
+    fontSize: "14px",
+    color: "#6b7280",
+    lineHeight: 1.55,
+    flex: 1,
+  },
+  bucketBtn: {
+    marginTop: "22px",
+    padding: "14px 18px",
+    fontSize: "16px",
+    fontWeight: 700,
+    color: "#ffffff",
+    background: PURPLE,
+    border: "none",
+    borderRadius: "12px",
+    cursor: "pointer",
+  },
+
+  // Section 4 — trust
+  trustWrap: {
+    maxWidth: "660px",
+    margin: "32px auto 0",
+    background: "#faf9ff",
+    border: "1px solid #e5e0f7",
+    borderRadius: "22px",
+    padding: "20px 32px",
+  },
+  trustItem: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "16px",
+    padding: "16px 0",
+    fontSize: "18px",
+    lineHeight: 1.4,
+    color: "#1f2937",
+    borderBottom: "1px solid #efedfb",
+  },
+  checkCircle: {
+    flex: "0 0 auto",
+    width: "28px",
+    height: "28px",
+    borderRadius: "50%",
+    background: PURPLE,
+    color: "#ffffff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "15px",
+    fontWeight: 800,
+  },
+
+  // Section 5 — FAQ
+  faqWrap: { maxWidth: "740px", margin: "32px auto 0" },
+
+  // Section 6 — bottom CTA
+  ctaBand: {
+    background: "linear-gradient(160deg, #faf5ff 0%, #eef0ff 100%)",
+    border: "1px solid #e5e0f7",
+    borderRadius: "24px",
+    maxWidth: "880px",
+    margin: "0 auto",
+    padding: "52px 28px",
+    textAlign: "center",
+  },
+  ctaH2: {
+    fontSize: "clamp(26px, 4vw, 40px)",
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    color: "#1f2937",
+    lineHeight: 1.12,
+  },
+  ctaForm: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "12px",
+    marginTop: "28px",
+    justifyContent: "center",
+  },
+  footer: {
+    textAlign: "center",
+    padding: "48px 24px",
+    color: "#9ca3af",
+    fontSize: "14px",
+  },
+  // ================= End landing page =================
+
   card: { width: "100%", maxWidth: "560px", display: "flex", flexDirection: "column" },
   header: { fontSize: "22px", fontWeight: 600, marginBottom: "16px" },
   chat: {

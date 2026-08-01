@@ -53,3 +53,445 @@ body {
     opacity: 1;
   }
 }
+
+/* =========================================================================
+   Build mascot (Week 10 Part 1) — simple, swappable CSS poses.
+   A friendly purple robot. The pose is a single class on `.mascot`
+   (`.mascot--thinking` etc.); each pose swaps the body animation, the eyes,
+   the arms and one accessory. Nothing here depends on Lottie or JS timers,
+   so poses are easy to tweak or replace later. See character.tsx.
+   ========================================================================= */
+.mascotWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 6px;
+}
+.mascot {
+  position: relative;
+  width: 96px;
+  height: 108px;
+  transform-origin: bottom center;
+}
+.mascot__antenna {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  width: 4px;
+  height: 12px;
+  margin-left: -2px;
+  background: #b8b2e6;
+  border-radius: 2px;
+}
+.mascot__antenna::after {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  margin-left: -4.5px;
+  background: #534ab7;
+  border-radius: 50%;
+}
+.mascot__head {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 66px;
+  height: 50px;
+  margin-left: -33px;
+  background: #efedfb;
+  border: 3px solid #534ab7;
+  border-radius: 16px;
+  z-index: 2;
+}
+.mascot__eye {
+  position: absolute;
+  top: 18px;
+  width: 10px;
+  height: 13px;
+  background: #534ab7;
+  border-radius: 5px;
+  animation: mascotBlink 4.2s infinite;
+}
+.mascot__eye--l {
+  left: 15px;
+}
+.mascot__eye--r {
+  right: 15px;
+}
+.mascot__body {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 74px;
+  height: 52px;
+  margin-left: -37px;
+  background: #534ab7;
+  border-radius: 16px 16px 12px 12px;
+}
+.mascot__arm {
+  position: absolute;
+  top: 8px;
+  width: 10px;
+  height: 26px;
+  background: #534ab7;
+  border-radius: 6px;
+  transform-origin: top center;
+}
+.mascot__arm--l {
+  left: -8px;
+}
+.mascot__arm--r {
+  right: -8px;
+}
+
+/* Accessories are hidden unless the pose turns them on. */
+.mascot__thought,
+.mascot__confetti,
+.mascot__lens,
+.mascot__flame,
+.mascot__keys {
+  display: none;
+}
+
+@keyframes mascotBlink {
+  0%, 92%, 100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
+  }
+}
+
+/* ---- THINKING (BA + Architect) ---- */
+.mascot--thinking {
+  animation: mascotSway 3s ease-in-out infinite;
+}
+@keyframes mascotSway {
+  0%, 100% {
+    transform: rotate(-3deg);
+  }
+  50% {
+    transform: rotate(3deg);
+  }
+}
+.mascot--thinking .mascot__arm--r {
+  transform: rotate(-125deg);
+  top: 0;
+  right: 4px;
+}
+.mascot--thinking .mascot__thought {
+  display: block;
+  position: absolute;
+  top: -14px;
+  right: -16px;
+  z-index: 3;
+}
+.mascot--thinking .mascot__thought span {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 1px;
+  background: #b8b2e6;
+  border-radius: 50%;
+  animation: mascotDots 1.4s infinite;
+}
+.mascot--thinking .mascot__thought span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.mascot--thinking .mascot__thought span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes mascotDots {
+  0%, 100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* ---- TYPING (Developer agents) ---- */
+.mascot--typing {
+  animation: mascotBob 1.1s ease-in-out infinite;
+}
+@keyframes mascotBob {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+.mascot--typing .mascot__arm {
+  top: 14px;
+  height: 22px;
+  animation: mascotType 0.55s infinite;
+}
+.mascot--typing .mascot__arm--r {
+  animation-delay: 0.28s;
+}
+@keyframes mascotType {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(4px);
+  }
+}
+.mascot--typing .mascot__keys {
+  display: flex;
+  gap: 4px;
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  margin-left: -19px;
+}
+.mascot--typing .mascot__keys i {
+  width: 9px;
+  height: 6px;
+  background: #efedfb;
+  border: 1px solid #b8b2e6;
+  border-radius: 2px;
+  animation: mascotTap 0.55s infinite;
+}
+.mascot--typing .mascot__keys i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.mascot--typing .mascot__keys i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes mascotTap {
+  0%, 100% {
+    transform: translateY(0);
+    background: #efedfb;
+  }
+  50% {
+    transform: translateY(2px);
+    background: #c9c2f0;
+  }
+}
+
+/* ---- INSPECTING (Code Review + QA) ---- */
+.mascot--inspecting {
+  transform: rotate(-4deg);
+}
+.mascot--inspecting .mascot__eye {
+  height: 6px;
+  top: 23px;
+  animation: none;
+}
+.mascot--inspecting .mascot__arm--r {
+  transform: rotate(-55deg);
+  top: -2px;
+}
+.mascot--inspecting .mascot__lens {
+  display: block;
+  position: absolute;
+  top: 4px;
+  right: -20px;
+  width: 22px;
+  height: 22px;
+  border: 3px solid #534ab7;
+  border-radius: 50%;
+  background: rgba(83, 74, 183, 0.1);
+  animation: mascotSweep 2.4s ease-in-out infinite;
+}
+.mascot--inspecting .mascot__lens::after {
+  content: "";
+  position: absolute;
+  bottom: -9px;
+  right: -3px;
+  width: 3px;
+  height: 11px;
+  background: #534ab7;
+  border-radius: 2px;
+  transform: rotate(-45deg);
+}
+@keyframes mascotSweep {
+  0%, 100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(-34px, 8px);
+  }
+}
+
+/* ---- LAUNCHING (DevOps) ---- */
+.mascot--launching {
+  animation: mascotRise 1s ease-in-out infinite;
+}
+@keyframes mascotRise {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-9px);
+  }
+}
+.mascot--launching .mascot__arm {
+  transform: rotate(155deg);
+  top: -8px;
+}
+.mascot--launching .mascot__flame {
+  display: block;
+  position: absolute;
+  bottom: -15px;
+  left: 50%;
+  margin-left: -9px;
+  width: 18px;
+  height: 22px;
+  background: linear-gradient(#ffd36b, #ff8a3d);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+  animation: mascotFlicker 0.28s infinite alternate;
+}
+@keyframes mascotFlicker {
+  from {
+    transform: scaleY(1);
+    opacity: 0.85;
+  }
+  to {
+    transform: scaleY(1.35);
+    opacity: 1;
+  }
+}
+
+/* ---- CELEBRATING (complete) ---- */
+.mascot--celebrating {
+  animation: mascotBounce 0.6s ease-in-out infinite;
+}
+@keyframes mascotBounce {
+  0%, 100% {
+    transform: translateY(0) scale(1);
+  }
+  40% {
+    transform: translateY(-11px) scale(1.03);
+  }
+}
+.mascot--celebrating .mascot__arm--l {
+  transform: rotate(145deg);
+  top: -8px;
+}
+.mascot--celebrating .mascot__arm--r {
+  transform: rotate(-145deg);
+  top: -8px;
+}
+.mascot--celebrating .mascot__eye {
+  height: 7px;
+  top: 20px;
+  border-radius: 6px 6px 0 0;
+  animation: none;
+}
+.mascot--celebrating .mascot__confetti {
+  display: block;
+  position: absolute;
+  top: -12px;
+  left: 0;
+  right: 0;
+  height: 0;
+}
+.mascot--celebrating .mascot__confetti i {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  animation: mascotConfetti 1.1s ease-in infinite;
+}
+.mascot--celebrating .mascot__confetti i:nth-child(1) {
+  left: 8%;
+  background: #534ab7;
+  animation-delay: 0s;
+}
+.mascot--celebrating .mascot__confetti i:nth-child(2) {
+  left: 30%;
+  background: #ffb020;
+  animation-delay: 0.15s;
+}
+.mascot--celebrating .mascot__confetti i:nth-child(3) {
+  left: 52%;
+  background: #22a06b;
+  animation-delay: 0.3s;
+}
+.mascot--celebrating .mascot__confetti i:nth-child(4) {
+  left: 72%;
+  background: #e5484d;
+  animation-delay: 0.45s;
+}
+.mascot--celebrating .mascot__confetti i:nth-child(5) {
+  left: 92%;
+  background: #534ab7;
+  animation-delay: 0.6s;
+}
+@keyframes mascotConfetti {
+  0% {
+    transform: translateY(0) rotate(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(78px) rotate(240deg);
+    opacity: 0;
+  }
+}
+
+.mascotCaption {
+  font-size: 15px;
+  font-weight: 600;
+  color: #534ab7;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot,
+  .mascot * {
+    animation: none !important;
+  }
+}
+
+/* =========================================================================
+   Landing page FAQ (Week 10 Part 1) — native <details> accordion, no JS.
+   ========================================================================= */
+.faqItem {
+  border: 1px solid #e5e0f7;
+  border-radius: 14px;
+  padding: 0 22px;
+  margin-bottom: 12px;
+  background: #ffffff;
+}
+.faqItem > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 20px 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2937;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.faqItem > summary::-webkit-details-marker {
+  display: none;
+}
+.faqItem > summary::after {
+  content: "+";
+  color: #534ab7;
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.faqItem[open] > summary::after {
+  content: "\2013";
+}
+.faqItem > p {
+  padding: 0 0 22px;
+  font-size: 16px;
+  line-height: 1.65;
+  color: #4b5563;
+}
