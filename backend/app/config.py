@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     devops_build_timeout: int = 900
     devops_deploy_timeout: int = 600
 
+    # ---------------------------------------------------------------- Documentation (Week 8)
+    # Gemini 2.5 Flash-Lite per CONTEXT UPDATED ROUTING (locked through Week 8 —
+    # the claude-haiku-4-5 switch is scheduled for AFTER Week 8). 0.5 = readable
+    # but consistent (CONTEXT temperature table). The Documentation agent is
+    # read-only: it reports real stored data and never fabricates.
+    documentation_model: str = "gemini-2.5-flash-lite"
+    documentation_temperature: float = 0.5
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -18,6 +18,7 @@ from app.developers import orchestrator
 from app.models import (
     Blueprint,
     Conversation,
+    Document,
     GeneratedFile,
     PipelineStatus,
     ProductReview,
@@ -27,11 +28,13 @@ from app.product_intel import graph as pi_graph
 from app.qa import graph as qa_graph
 from app.reviewer import orchestrator as reviewer_orchestrator
 from app.devops import graph as devops_graph
+from app.documentation import graph as documentation_graph
 from sqlalchemy import func as sqlfunc, select
 from app.redis_client import redis_client
 from app.schemas import (
     BuildStatusResponse,
     DeployStatusResponse,
+    DocumentsStatusResponse,
     DesignExplanationResponse,
     SecurityStatusResponse,
     MessageRequest,
@@ -137,6 +140,28 @@ async def _run_deploy(project_id: int) -> None:
     except Exception:  # pragma: no cover
         logger.exception("Deploy failed for project %s", project_id)
         await redis_client.set(_deploy_key(project_id), "failed", ex=86400)
+
+
+def _document_key(project_id: int) -> str:
+    return f"document:status:{project_id}"
+
+
+async def _run_documentation(project_id: int) -> None:
+    """Background job: the Documentation agent (read-only -> 4 documents).
+
+    Reports real stored data only. Stores the completion-screen summary.
+    """
+    try:
+        report = await documentation_graph.run(project_id)
+        await redis_client.set(
+            f"document_report:{project_id}", json.dumps(report), ex=86400
+        )
+        await redis_client.set(
+            _document_key(project_id), report.get("status", "error"), ex=86400
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("Documentation failed for project %s", project_id)
+        await redis_client.set(_document_key(project_id), "error", ex=86400)
 
 
 async def _run_qa(project_id: int) -> None:
@@ -512,3 +537,60 @@ async def deploy_status(project_id: int):
         auto_fixed=report.get("auto_fixed", False),
         reason=report.get("reason"),
     )
+
+
+@app.post("/pipeline/document", response_model=DocumentsStatusResponse)
+async def pipeline_document(req: PipelineStartRequest, db: AsyncSession = Depends(get_db)):
+    """Kick off the Documentation agent (read-only -> user guide, demo script,
+    maintenance guide, handoff summary). Needs a blueprint to describe."""
+    result = await db.execute(
+        select(Blueprint.id).where(Blueprint.project_id == req.project_id).limit(1)
+    )
+    if result.first() is None:
+        raise HTTPException(status_code=400, detail="No blueprint to document yet")
+    if await redis_client.get(_document_key(req.project_id)) == "running":
+        return DocumentsStatusResponse(status="running")
+    await redis_client.set(_document_key(req.project_id), "running", ex=86400)
+    asyncio.create_task(_run_documentation(req.project_id))
+    return DocumentsStatusResponse(status="running")
+
+
+@app.get("/pipeline/{project_id}/documents-status", response_model=DocumentsStatusResponse)
+async def documents_status(project_id: int):
+    """The completion screen's data — real values only, no technical words."""
+    status = await redis_client.get(_document_key(project_id)) or "not_started"
+    raw = await redis_client.get(f"document_report:{project_id}")
+    r = json.loads(raw) if raw else {}
+    return DocumentsStatusResponse(
+        status=status,
+        business_name=r.get("business_name"),
+        live_url=r.get("live_url"),
+        is_live=r.get("is_live", False),
+        security_passed=r.get("security_passed", False),
+        security_status=r.get("security_status"),
+        tests_available=r.get("tests_available", False),
+        tests_passed=r.get("tests_passed", 0),
+        tests_total=r.get("tests_total", 0),
+        monthly_cost_estimate=r.get("monthly_cost_estimate"),
+        cost_basis=r.get("cost_basis"),
+        user_guide_ready=r.get("user_guide_ready", False),
+        demo_script_ready=r.get("demo_script_ready", False),
+        maintenance_guide_ready=r.get("maintenance_guide_ready", False),
+        handoff_ready=r.get("handoff_ready", False),
+        reason=r.get("reason"),
+    )
+
+
+@app.get("/pipeline/{project_id}/documents")
+async def documents(project_id: int, db: AsyncSession = Depends(get_db)):
+    """Return the latest generated document of each type (for viewing/export)."""
+    rows = (await db.execute(
+        select(Document.doc_type, Document.content, Document.created_at)
+        .where(Document.project_id == project_id)
+        .order_by(Document.id.desc())
+    )).all()
+    latest: dict[str, dict] = {}
+    for doc_type, content, created_at in rows:
+        if doc_type not in latest:   # rows are newest-first
+            latest[doc_type] = {"content": content, "created_at": created_at.isoformat()}
+    return latest

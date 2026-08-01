@@ -88,3 +88,25 @@ class DeployStatusResponse(BaseModel):
     auto_fixed: bool = False
     # Present on a blocked/failed deploy so the reason travels with the status.
     reason: str | None = None
+
+
+class DocumentsStatusResponse(BaseModel):
+    """The final completion screen's data. Real values only — a not-deployed or
+    not-green project reports the honest state, never a fabricated ✓."""
+
+    status: str  # not_started | running | done | error
+    business_name: str | None = None
+    live_url: str | None = None
+    is_live: bool = False
+    security_passed: bool = False
+    security_status: str | None = None
+    tests_available: bool = False
+    tests_passed: int = 0
+    tests_total: int = 0
+    monthly_cost_estimate: float | None = None
+    cost_basis: str | None = None
+    user_guide_ready: bool = False
+    demo_script_ready: bool = False
+    maintenance_guide_ready: bool = False
+    handoff_ready: bool = False
+    reason: str | None = None

@@ -52,6 +52,9 @@ class Project(Base):
     secrets: Mapped[list["Secret"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    documents: Mapped[list["Document"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Conversation(Base):
@@ -400,3 +403,32 @@ class Deployment(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="deployments")
+
+
+class Document(Base):
+    """A generated document for a project (Week 8, Documentation agent).
+
+    The Documentation agent is READ-ONLY over the rest of the system: it reports
+    real stored data (deployment, security cert, QA results, blueprint, generated
+    files) and writes ONLY here. It never invents a number or status — a missing
+    source reads as "not available yet", never a plausible-sounding fill-in.
+
+    `content` holds markdown (user_guide, maintenance_guide) or a JSON string
+    (demo_script, handoff_summary). A new row is written per generation; readers
+    take the latest by `created_at`, so document history is preserved.
+    """
+
+    __tablename__ = "documents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # user_guide | demo_script | maintenance_guide | handoff_summary
+    doc_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="documents")

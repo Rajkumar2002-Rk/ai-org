@@ -37,6 +37,8 @@ export default function Home() {
   const [security, setSecurity] = useState<any>(null);
   const [qa, setQa] = useState<any>(null);
   const [deploy, setDeploy] = useState<any>(null);
+  const [documenting, setDocumenting] = useState(false);
+  const [docs, setDocs] = useState<any>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -299,6 +301,7 @@ export default function Home() {
           setDeploy(data);
           setPipeline("live");
           clearInterval(t);
+          startDocumentation();   // generate the guides for the finale
         } else if (data.status === "failed" || data.status === "blocked") {
           setDeploy(data);
           setPipeline("deploy_failed");
@@ -310,6 +313,39 @@ export default function Home() {
     }, 3000);
     return () => clearInterval(t);
   }, [pipeline, projectId]);
+
+  async function startDocumentation() {
+    if (projectId == null) return;
+    setDocumenting(true);
+    try {
+      await fetch(`${API_URL}/pipeline/document`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+    } catch {
+      setDocumenting(false);
+    }
+  }
+
+  // Poll the Documentation agent; when done, show the final completion table.
+  useEffect(() => {
+    if (!documenting || projectId == null) return;
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_URL}/pipeline/${projectId}/documents-status`);
+        const data = await res.json();
+        if (data.status === "done" || data.status === "error") {
+          setDocs(data);
+          setDocumenting(false);
+          clearInterval(t);
+        }
+      } catch {
+        /* keep polling */
+      }
+    }, 2500);
+    return () => clearInterval(t);
+  }, [documenting, projectId]);
 
   async function restart() {
     setMessages([]);
@@ -324,6 +360,8 @@ export default function Home() {
     setSecurity(null);
     setQa(null);
     setDeploy(null);
+    setDocumenting(false);
+    setDocs(null);
     await start();
   }
 
@@ -756,6 +794,70 @@ export default function Home() {
             </div>
           )}
 
+          {/* Documentation: putting the guides together */}
+          {documenting && (
+            <div style={s.pipeline}>
+              <span style={s.spinner} />
+              <span>Putting together your guides…</span>
+            </div>
+          )}
+
+          {/* Documentation: FINAL completion table — real values only */}
+          {docs && docs.status === "done" && (
+            <div style={s.reviewCard}>
+              <div style={s.reviewTitle}>All done — here&apos;s everything</div>
+              <table style={s.doneTable}>
+                <tbody>
+                  <tr>
+                    <td style={s.doneCell}>Live app link</td>
+                    <td style={s.doneVal}>
+                      {docs.is_live && docs.live_url ? (
+                        <a href={docs.live_url} target="_blank"
+                           rel="noopener noreferrer" style={s.doneLink}>
+                          {docs.live_url} ✓
+                        </a>
+                      ) : ("Not live yet")}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={s.doneCell}>Security review</td>
+                    <td style={s.doneVal}>
+                      {docs.security_passed ? "Passed ✓" : "Not passed yet"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={s.doneCell}>Tests passed</td>
+                    <td style={s.doneVal}>
+                      {docs.tests_available
+                        ? `${docs.tests_passed} of ${docs.tests_total} ✓`
+                        : "Not available yet"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={s.doneCell}>User guide</td>
+                    <td style={s.doneVal}>
+                      {docs.user_guide_ready ? "Ready ✓" : "—"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={s.doneCell}>Demo video script</td>
+                    <td style={s.doneVal}>
+                      {docs.demo_script_ready ? "Ready ✓" : "—"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={s.doneCell}>Monthly running cost</td>
+                    <td style={s.doneVal}>
+                      {docs.monthly_cost_estimate != null
+                        ? `$${Number(docs.monthly_cost_estimate).toFixed(2)}/month ✓`
+                        : "Not available yet"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {/* DevOps: honest snag (blocked/failed) — never a fake success */}
           {pipeline === "deploy_failed" && (
             <div style={s.reviewCard}>
@@ -945,6 +1047,18 @@ const s: Record<string, React.CSSProperties> = {
   },
   cost: { fontSize: "15px", color: "#374151" },
   honestNote: { fontSize: "12px", color: "#92400e", fontStyle: "italic" },
+  // ---- final completion table ----
+  doneTable: { width: "100%", borderCollapse: "collapse", fontSize: "14px" },
+  doneCell: {
+    padding: "10px 8px", color: "#6b7280", borderBottom: "1px solid #eee",
+    width: "45%",
+  },
+  doneVal: {
+    padding: "10px 8px", color: "#1f2937", fontWeight: 600,
+    borderBottom: "1px solid #eee",
+  },
+  doneLink: { color: PURPLE, fontWeight: 700, textDecoration: "none",
+              wordBreak: "break-all" },
   buildCount: { fontSize: "13px", fontWeight: 600, color: PURPLE, marginTop: "4px" },
   fileList: {
     display: "flex",
