@@ -5,12 +5,70 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Week 8 Documentation COMPLETE & VERIFIED (2026-07-31)
+# ⏭️ RESUME HERE — Week 9 background agents COMPLETE & VERIFIED (2026-08-01)
 
-**Start the next session with:** "Read CONTEXT.md. Weeks 1-8 are complete. Week 9
-is Monitoring (#13)." Week 8 (Documentation) is CLOSED; this is its closing
-record — do NOT re-open it. (Week 7 DevOps — local + live-on-AWS, since torn down
-— is recorded below and also closed.)
+**Start the next session with:** "Read CONTEXT.md. Weeks 1-9 are complete." All 15
+agents are now built. Week 9 (Monitoring #13, Auto-fix #14, Cost Tracker #15 +
+post-launch dashboard) is CLOSED — do NOT re-open it. (Weeks 7-8 are recorded
+below and also closed.) Likely next work: the post-Week-8 MODEL SWITCH (its own
+dedicated session — switch to verified model strings, retest each agent), and/or
+the still-open producer gaps (secrets table, real AWS Cost Explorer shakeout).
+
+## WEEK 9 — Background agents (#13/#14/#15) — DONE (local/synthetic proof)
+
+Three post-launch agents that run silently; the user sees them only via a
+dashboard. Deterministic-first and honest — metrics/costs come from stored data,
+missing data reads as "not available yet". Code in `app/background/`.
+
+- **Monitoring (#13, monitor.py):** pings the live URL on a configurable cadence,
+  records health / response-time / 4xx-5xx into `monitoring_logs`, runs as a
+  BOUNDED loop after deploy (exits when the app is no longer live), writes a
+  plain-English `weekly_report` (documents table) from the REAL logs. Does NOT
+  invent an "actions completed" count; only says "we fixed it" when a `fix_log`
+  backs it.
+- **Auto-fix (#14, autofix.py):** Safe Mode — snapshots deployment state before
+  ANY fix (`deployment_snapshots`). Level 1 self-heal **reuses the Week-7
+  `driver.restart` primitive** (docker restart / SSM compose restart) — no second
+  restart path, structurally cannot touch code or security. Level 2 fixes +
+  notifies; Level 3 escalates with plain-English steps (`user_issues`); rolls back
+  if the fix made things worse. App-code / security / missing-config faults are
+  never restart-"fixed" (defect-#6 lesson carried into ops).
+- **Cost Tracker (#15, cost_tracker.py):** daily actual + projected spend vs
+  budget with a +20% alert (`cost_logs`). Real AWS Cost Explorer is written but
+  **GATED OFF** (`aws_cost_explorer_enabled=False`; CE lags 24-48h, ~$0.01/call) —
+  math proven synthetically, real poll awaits a shakeout (like the Week-7 driver).
+- **Post-launch dashboard:** `dashboard.py` + `GET /dashboard/{id}` + frontend
+  `?dashboard=<id>` page — four sections (app status, this-month cost vs budget,
+  recent activity, open issues) + "Make a change to my app" -> new BA conversation.
+
+New tables (migration `0013`): monitoring_logs, deployment_snapshots, fix_logs,
+user_issues, cost_logs. Routing stays CURRENT (Gemini monitoring/cost, GPT-4o
+auto-fix); the post-Week-8 model switch is still its own separate session.
+
+### Verified (2026-08-01)
+- **`test_background_offline.py` — 32 checks, 0 failures** (no AWS, no LLM):
+  monitoring against a REAL local HTTP server (200/404/500/dead-port); every
+  auto-fix branch (L1 silent / L2 notify / L3 escalate + rollback) with
+  snapshot-before-fix and read-only over generated_files/code_reviews; cost
+  projection/budget/alert; honest weekly-summary + dashboard.
+- **Dashboard verified live in the browser** (seeded project, since cleaned up).
+- All 9 free suites pass; no regressions.
+- Committed **`091b071`** (Week 9) + **`3f7e726`** (a follow-up honesty fix the demo
+  caught: don't project or fire an over-budget alarm from <3 days of data — a $4
+  day-1 spend was straight-lining to ~$127). No Co-Authored-By; `.env` untouched.
+
+### Carried forward
+- The `secrets` table still has no onboarding producer (integrations read
+  "designed, not yet connected") — since Week 7.
+- Real AWS Cost Explorer poll is unrun (gated), like the AWS deploy driver was
+  before its shakeout.
+- Stale blueprint `llm_routing` entries (`documentation`, and monitoring/cost/
+  auto-fix aren't in it) are cosmetic — agents use `settings.*_model`; tidy in the
+  model-switch session.
+
+---
+
+# (Week 8 record below — also closed)
 
 ## WEEK 8 — Documentation Agent (#12) — DONE (read-only; honest on real data)
 
