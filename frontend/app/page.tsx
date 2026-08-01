@@ -39,11 +39,36 @@ export default function Home() {
   const [deploy, setDeploy] = useState<any>(null);
   const [documenting, setDocumenting] = useState(false);
   const [docs, setDocs] = useState<any>(null);
+  // Post-launch dashboard (Week 9): reached at ?dashboard=<projectId>.
+  const [dashboardMode, setDashboardMode] = useState(false);
+  const [dashboard, setDashboard] = useState<any>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const dash = new URLSearchParams(window.location.search).get("dashboard");
+    if (dash) {
+      const pid = parseInt(dash, 10);
+      setProjectId(pid);
+      setDashboardMode(true);
+      (async () => {
+        try {
+          const d = await (await fetch(`${API_URL}/dashboard/${pid}`)).json();
+          setDashboard(d);
+        } catch {}
+      })();
+      return;
+    }
     start();
   }, []);
+
+  async function makeAChange() {
+    // "Make a change to my app" — starts a fresh BA conversation.
+    setDashboardMode(false);
+    setDashboard(null);
+    setPipeline("idle");
+    setMessages([]);
+    await start();
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -370,7 +395,115 @@ export default function Home() {
   return (
     <main style={s.main}>
       <div style={s.card}>
-        <h1 style={s.header}>Let&apos;s build your idea</h1>
+        <h1 style={s.header}>
+          {dashboardMode ? "Your app dashboard" : "Let’s build your idea"}
+        </h1>
+
+        {/* Post-launch dashboard (Week 9) — four sections, no technical words. */}
+        {dashboardMode && dashboard && (
+          <div style={s.reviewCard}>
+            {/* 1. App status */}
+            <div style={s.dashRow}>
+              <span style={s.dashLabel}>App status</span>
+              <span style={s.dashVal}>
+                {dashboard.app_status === "live"
+                  ? "Live ✓"
+                  : dashboard.app_status === "issue_detected"
+                  ? "Issue detected"
+                  : "Not live"}
+              </span>
+            </div>
+            {dashboard.live_url && (
+              <a href={dashboard.live_url} target="_blank" rel="noopener noreferrer"
+                 style={s.doneLink}>
+                {dashboard.live_url}
+              </a>
+            )}
+
+            {/* 2. This month cost */}
+            <div style={s.reviewSection}>
+              <div style={s.reviewHead}>This month</div>
+              {dashboard.cost ? (
+                <>
+                  <div style={s.dashRow}>
+                    <span style={s.dashLabel}>This month so far</span>
+                    <span style={s.dashVal}>${dashboard.cost.this_month_so_far?.toFixed(2)}</span>
+                  </div>
+                  <div style={s.dashRow}>
+                    <span style={s.dashLabel}>Projected by end of month</span>
+                    <span style={s.dashVal}>
+                      {dashboard.cost.projected_month_end != null
+                        ? `$${dashboard.cost.projected_month_end.toFixed(2)}` : "—"}
+                    </span>
+                  </div>
+                  <div style={s.dashRow}>
+                    <span style={s.dashLabel}>Your budget</span>
+                    <span style={s.dashVal}>
+                      {dashboard.cost.budget != null
+                        ? `$${dashboard.cost.budget.toFixed(0)}/month` : "not set"}
+                    </span>
+                  </div>
+                  <div style={{
+                    ...s.budgetBox,
+                    ...(dashboard.cost.over_budget ? s.budgetWarn : s.budgetOk),
+                  }}>
+                    {dashboard.cost.status_text}
+                  </div>
+                </>
+              ) : (
+                <div style={s.designBody}>
+                  Cost tracking will appear once your app has been running for a day.
+                </div>
+              )}
+            </div>
+
+            {/* 3. Recent activity */}
+            <div style={s.reviewSection}>
+              <div style={s.reviewHead}>Recent activity</div>
+              {dashboard.activity ? (
+                <>
+                  <div style={s.dashRow}>
+                    <span style={s.dashLabel}>Uptime</span>
+                    <span style={s.dashVal}>{dashboard.activity.uptime_pct}%</span>
+                  </div>
+                  <div style={s.dashRow}>
+                    <span style={s.dashLabel}>Response time</span>
+                    <span style={s.dashVal}>
+                      {dashboard.activity.avg_response_ms ?? "—"} ms
+                    </span>
+                  </div>
+                  <div style={s.dashRow}>
+                    <span style={s.dashLabel}>Errors</span>
+                    <span style={s.dashVal}>{dashboard.activity.error_count}</span>
+                  </div>
+                </>
+              ) : (
+                <div style={s.designBody}>
+                  We&apos;ll show activity once your app has been checked a few times.
+                </div>
+              )}
+            </div>
+
+            {/* Level-3 issues needing the user */}
+            {dashboard.issues && dashboard.issues.length > 0 && (
+              <div style={s.reviewSection}>
+                <div style={s.reviewHead}>Needs your attention</div>
+                {dashboard.issues.map((iss: any, i: number) => (
+                  <div key={i} style={s.designBody}>
+                    <strong>{iss.title}</strong>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{iss.instructions}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 4. One button */}
+            <button style={{ ...s.choiceBtn, ...s.confirmBtn, marginTop: "8px" }}
+                    onClick={makeAChange}>
+              Make a change to my app
+            </button>
+          </div>
+        )}
 
         <div style={s.chat}>
           {messages.map((m, i) => (
@@ -879,7 +1012,7 @@ export default function Home() {
           <div ref={endRef} />
         </div>
 
-        {!inputHidden && (
+        {!inputHidden && !dashboardMode && (
           <form
             style={s.form}
             onSubmit={(e) => {
@@ -1059,6 +1192,13 @@ const s: Record<string, React.CSSProperties> = {
   },
   doneLink: { color: PURPLE, fontWeight: 700, textDecoration: "none",
               wordBreak: "break-all" },
+  // ---- post-launch dashboard ----
+  dashRow: {
+    display: "flex", justifyContent: "space-between", alignItems: "baseline",
+    gap: "12px", fontSize: "14px", padding: "3px 0",
+  },
+  dashLabel: { color: "#6b7280" },
+  dashVal: { color: "#1f2937", fontWeight: 600, textAlign: "right" },
   buildCount: { fontSize: "13px", fontWeight: 600, color: PURPLE, marginTop: "4px" },
   fileList: {
     display: "flex",

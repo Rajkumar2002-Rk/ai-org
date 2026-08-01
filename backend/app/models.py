@@ -55,6 +55,21 @@ class Project(Base):
     documents: Mapped[list["Document"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    monitoring_logs: Mapped[list["MonitoringLog"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    deployment_snapshots: Mapped[list["DeploymentSnapshot"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    fix_logs: Mapped[list["FixLog"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    user_issues: Mapped[list["UserIssue"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    cost_logs: Mapped[list["CostLog"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Conversation(Base):
@@ -432,3 +447,128 @@ class Document(Base):
     )
 
     project: Mapped["Project"] = relationship(back_populates="documents")
+
+
+# ------------------------------------------------------------------ Week 9: post-launch background agents
+
+
+class MonitoringLog(Base):
+    """One health check of a deployed app (Monitoring agent, #13). A row every
+    ~60s while the app is live: is it responding, how fast, and any 4xx/5xx."""
+
+    __tablename__ = "monitoring_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+    is_healthy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The HTTP status when it was a 4xx/5xx; NULL on a healthy 2xx/3xx.
+    error_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    project: Mapped["Project"] = relationship(back_populates="monitoring_logs")
+
+
+class DeploymentSnapshot(Base):
+    """Safe Mode: a snapshot of deployment state taken BEFORE any auto-fix, so a
+    fix that makes things worse can be rolled back. Core rule: 'every change takes
+    a snapshot before touching anything'."""
+
+    __tablename__ = "deployment_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    deployment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("deployments.id", ondelete="SET NULL"), nullable=True
+    )
+    # JSON: the deployment state we can restore to (image refs, status,
+    # server_type, target, live_url) + the health reading at snapshot time.
+    state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="deployment_snapshots")
+
+
+class FixLog(Base):
+    """An auto-fix attempt (Auto-fix agent, #14). level 1 = silent self-heal,
+    2 = fixed + user notified, 3 = escalated to the user."""
+
+    __tablename__ = "fix_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    level: Mapped[int] = mapped_column(Integer, nullable=False)
+    problem: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("deployment_snapshots.id", ondelete="SET NULL"), nullable=True
+    )
+    # healed | notified | rolled_back | escalated
+    outcome: Mapped[str] = mapped_column(String(50), nullable=False)
+    downtime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Plain-English message shown to the user (Level 2/3); NULL for silent Level 1.
+    notification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="fix_logs")
+
+
+class UserIssue(Base):
+    """A Level-3 issue that needs the user (Auto-fix agent, #14). Shown in the
+    post-launch dashboard with plain-English step-by-step instructions."""
+
+    __tablename__ = "user_issues"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    # open | resolved
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="user_issues")
+
+
+class CostLog(Base):
+    """A daily cost reading for a deployed app (Cost Tracker, #15). actual =
+    month-to-date real spend; projected = end-of-month estimate."""
+
+    __tablename__ = "cost_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # YYYY-MM-DD of the reading.
+    date: Mapped[str] = mapped_column(String(10), nullable=False)
+    actual_cost_usd: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
+    projected_monthly_usd: Mapped[float | None] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
+    budget_usd: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    over_budget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship(back_populates="cost_logs")

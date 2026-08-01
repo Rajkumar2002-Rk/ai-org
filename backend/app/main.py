@@ -15,6 +15,7 @@ from app.ba import graph
 from app.ba import state as st
 from app.database import async_session, engine, get_db
 from app.developers import orchestrator
+from app.config import settings
 from app.models import (
     Blueprint,
     Conversation,
@@ -23,16 +24,20 @@ from app.models import (
     PipelineStatus,
     ProductReview,
     Project,
+    UserIssue,
 )
 from app.product_intel import graph as pi_graph
 from app.qa import graph as qa_graph
 from app.reviewer import orchestrator as reviewer_orchestrator
 from app.devops import graph as devops_graph
 from app.documentation import graph as documentation_graph
+from app.background import autofix, cost_tracker, dashboard as dashboard_mod, monitor
 from sqlalchemy import func as sqlfunc, select
 from app.redis_client import redis_client
 from app.schemas import (
     BuildStatusResponse,
+    CostCheckRequest,
+    DashboardResponse,
     DeployStatusResponse,
     DocumentsStatusResponse,
     DesignExplanationResponse,
@@ -137,9 +142,42 @@ async def _run_deploy(project_id: int) -> None:
         await redis_client.set(
             _deploy_key(project_id), report.get("status", "failed"), ex=86400
         )
+        # Post-launch: start monitoring the live app in the background (#13/#14).
+        if report.get("status") == "live":
+            asyncio.create_task(_run_monitor(project_id))
     except Exception:  # pragma: no cover
         logger.exception("Deploy failed for project %s", project_id)
         await redis_client.set(_deploy_key(project_id), "failed", ex=86400)
+
+
+async def _run_monitor(project_id: int) -> None:
+    """Background supervisor (#13 -> #14): ping the live app on a cadence; on a
+    NEW failure, trigger the Auto-fix agent. Bounded — it exits as soon as the app
+    is no longer live, so a torn-down app is never pinged forever."""
+    prev_healthy = True
+    try:
+        while True:
+            log = await monitor.check_and_record(project_id)
+            if log is None:
+                break  # nothing live to monitor
+            # Edge-triggered: only act when health flips healthy -> unhealthy, so a
+            # sustained outage doesn't spawn a fix every 60s.
+            if not log.is_healthy and prev_healthy:
+                # Don't re-escalate if the user already has an open issue.
+                async with async_session() as db:
+                    open_issue = (await db.execute(
+                        select(sqlfunc.count()).select_from(UserIssue)
+                        .where(UserIssue.project_id == project_id,
+                               UserIssue.status == "open")
+                    )).scalar()
+                if not open_issue:
+                    await autofix.handle(
+                        project_id, log.error_message or "app not responding",
+                        detected_at=log.checked_at)
+            prev_healthy = log.is_healthy
+            await asyncio.sleep(settings.monitoring_interval_seconds)
+    except Exception:  # pragma: no cover
+        logger.exception("Monitor supervisor failed for project %s", project_id)
 
 
 def _document_key(project_id: int) -> str:
@@ -594,3 +632,37 @@ async def documents(project_id: int, db: AsyncSession = Depends(get_db)):
         if doc_type not in latest:   # rows are newest-first
             latest[doc_type] = {"content": content, "created_at": created_at.isoformat()}
     return latest
+
+
+# ---------------------------------------------------------------- Week 9: post-launch
+@app.post("/pipeline/monitor")
+async def pipeline_monitor(req: PipelineStartRequest):
+    """Start the background monitoring supervisor for a live app (also started
+    automatically after a successful deploy)."""
+    asyncio.create_task(_run_monitor(req.project_id))
+    return {"status": "monitoring_started"}
+
+
+@app.post("/pipeline/cost-check")
+async def pipeline_cost_check(req: CostCheckRequest):
+    """Record a cost reading (manual/testing path) or poll AWS Cost Explorer
+    (gated off by default). Returns the current cost picture."""
+    if req.actual_cost_usd is not None:
+        await cost_tracker.record(req.project_id, req.actual_cost_usd)
+    else:
+        await cost_tracker.poll(req.project_id)
+    return {"cost": await cost_tracker.summary(req.project_id)}
+
+
+@app.post("/pipeline/weekly-summary")
+async def pipeline_weekly_summary(req: PipelineStartRequest):
+    """Generate + store this week's plain-English monitoring summary (weekly_report)."""
+    return {"summary": await monitor.weekly_summary(req.project_id)}
+
+
+@app.get("/dashboard/{project_id}", response_model=DashboardResponse)
+async def get_dashboard(project_id: int):
+    """The post-launch dashboard's four sections. No technical words; honest about
+    missing data. The 'Make a change to my app' button starts a new BA
+    conversation via POST /conversation/start."""
+    return DashboardResponse(**await dashboard_mod.build(project_id))

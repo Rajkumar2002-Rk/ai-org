@@ -90,6 +90,24 @@ class DeployStatusResponse(BaseModel):
     reason: str | None = None
 
 
+class CostCheckRequest(BaseModel):
+    project_id: int
+    # Manual/testing path: record this month-to-date actual. Omit to poll AWS Cost
+    # Explorer (gated off by default).
+    actual_cost_usd: float | None = None
+
+
+class DashboardResponse(BaseModel):
+    """Post-launch dashboard — four sections, no technical words. Honest: missing
+    data is null, never a fabricated value."""
+
+    app_status: str            # live | issue_detected | not_live
+    live_url: str | None = None
+    cost: dict[str, Any] | None = None        # this month / projected / budget / status
+    activity: dict[str, Any] | None = None     # uptime %, response time, errors, checks
+    issues: list[dict[str, Any]] = []          # open Level-3 issues needing the user
+
+
 class DocumentsStatusResponse(BaseModel):
     """The final completion screen's data. Real values only — a not-deployed or
     not-green project reports the honest state, never a fabricated ✓."""

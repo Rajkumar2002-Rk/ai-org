@@ -112,6 +112,26 @@ class Settings(BaseSettings):
     documentation_model: str = "gemini-2.5-flash-lite"
     documentation_temperature: float = 0.5
 
+    # ---------------------------------------------------------------- Week 9 background agents
+    # Routing stays CURRENT (the post-Week-8 model switch is a separate session).
+    # All three are deterministic-first: restart, math and log-aggregation are
+    # code; the LLM only polishes plain-English text, with deterministic fallbacks.
+    monitoring_model: str = "gemini-2.5-flash-lite"       # #13 (unchanged)
+    autofix_model: str = "gpt-4o"                          # #14 (unchanged)
+    cost_tracker_model: str = "gemini-2.5-flash-lite"      # #15 (unchanged)
+    monitoring_temperature: float = 0.4
+    # Ping cadence + request timeout for the monitoring loop.
+    monitoring_interval_seconds: int = 60
+    monitoring_request_timeout: int = 10
+    # A Level-1 self-heal that took longer than this to recover becomes a Level-2
+    # (fixed, but notify the user after). Quicker than this stays silent.
+    autofix_notify_downtime_seconds: int = 120
+    # Budget alert fires when projected month cost exceeds budget by this ratio.
+    cost_budget_alert_ratio: float = 1.20
+    # Real AWS Cost Explorer polling is REAL code but OFF by default: CE data lags
+    # 24-48h and costs ~$0.01/call, so testing uses recorded/synthetic readings.
+    aws_cost_explorer_enabled: bool = False
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
