@@ -5,27 +5,116 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Week 9 background agents COMPLETE & VERIFIED (2026-08-01)
+# ⏭️ RESUME HERE — Week 10 Part 1 (Landing page) COMPLETE & VERIFIED (2026-08-01)
 
-**Start the next session with:** "Read CONTEXT.md. Weeks 1-9 are complete." **All 15
-agents are now built and each week is closed.** Week 9 (Monitoring #13, Auto-fix
-#14, Cost Tracker #15 + post-launch dashboard) is CLOSED — do NOT re-open it.
-Weeks 7-8 records are below and also closed.
+**Start the next session with:** "Read CONTEXT.md. Weeks 1-9 and Week 10 Part 1 are
+complete." All 15 agents are built and each week is closed; the public landing page
+now fronts the whole experience. **Next up is Week 10 Part 2 — the real demo run**
+(a full BA→…→DevOps→Documentation pipeline for real, watched end to end; this spends
+real LLM/pipeline money, ~$1.40/build, so it's its own session).
 
-**Git state:** branch `master`, clean working tree, all pushed to
-`origin` (github.com/Rajkumar2002-Rk/ai-org, private). HEAD = **`97047e4`**.
-Week-9 commits, in order: `091b071` (agents) → `3f7e726` (cost day-1 fix) →
-`97047e4` (this CONTEXT). Permanent rules still apply: **no `Co-Authored-By` line,
-ever**; never commit `.env`; keep the repo private.
+**Git state:** branch `master`. Week-10-Part-1 commits, in order: **`3d2e469`**
+(landing page + build mascot, frontend) → this CONTEXT commit (follows). Permanent
+rules still apply: **no `Co-Authored-By` line, ever**; never commit `.env`; keep the
+repo private. (Not yet pushed by me — push when ready.)
 
-**Nothing is pending from this session** — the Week-9 build, the commit, the live
-browser dashboard demo, and this CONTEXT close-out are ALL done. (This section was
-later expanded into the comprehensive record below at the user's request.)
+**Nothing is pending from Part 1** — the build, the live browser verification, the
+test-project cleanup, the code commit, and this CONTEXT close-out are ALL done.
 
-**Likely next work:** the post-Week-8 **MODEL SWITCH** (its own dedicated session —
-see "MODEL SWITCH" further down; switch to verified model strings and retest each
-agent one at a time), and/or the carried-forward producer gaps (secrets-table
-onboarding, a real AWS Cost Explorer shakeout).
+**Likely next work:** Week 10 Part 2 (real demo run) as above. Still carried from
+earlier: the post-Week-8 **MODEL SWITCH** (own session; verified model strings +
+retest each agent), the secrets-table onboarding gap, and a real AWS Cost Explorer
+shakeout.
+
+---
+
+# WEEK 10 PART 1 — Landing page & website polish — DONE (verified live in browser)
+
+The public front door. A full marketing landing page now shows FIRST; the BA
+conversation + build pipeline (Weeks 1-9) is reached by the "Start building" CTA.
+Plus a simple, swappable CSS build-dashboard character. Frontend-only — no backend,
+model, or agent changes.
+
+### Every file created/modified this week, and why
+NEW:
+- `frontend/app/character.tsx` — `BuildCharacter` mascot (a friendly purple robot).
+  Pose is ONE CSS class (`.mascot--thinking|typing|inspecting|launching|
+  celebrating`); a `CAPTIONS` map gives each a plain-English line. Deliberately
+  **CSS-only, not Lottie** (user's call: minimal + easy to iterate). Swapping a pose
+  = editing the map + the matching `.mascot--x` rules; no animation runtime.
+
+MODIFIED:
+- `frontend/app/page.tsx` — the whole landing page (Sections 1-6) + wiring. New
+  `view` state (`"landing" | "app"`); the landing is the default and mount NO LONGER
+  auto-starts a BA conversation (`?dashboard=<id>` still jumps straight to the Week-9
+  dashboard). New module consts `PLACEHOLDERS` / `BUCKETS` / `TRUST` / `FAQS`; a
+  rotating-hero-placeholder effect; `startBuilding(idea)` (view→app, `start()`, then
+  sends the typed idea as the FIRST BA message); `start()` now RETURNS the project id
+  and `send()` takes a `pidOverride` (the id state hasn't flushed the instant after
+  `start()`, so the first message would otherwise post with `project_id=null`). The
+  `BuildCharacter` is rendered in the app view with pose derived from `pipeline`.
+  Brand `PURPLE` constant changed **`#7c3aed` → `#534AB7`** (one constant → recolors
+  landing + chat + build + dashboard). ~200 lines of landing styles added to `s`.
+- `frontend/app/globals.css` — mascot CSS (all 5 poses + keyframes, eyes/arms/
+  accessory per pose, a `prefers-reduced-motion` off-switch) and the FAQ native
+  `<details>` accordion styles.
+- `frontend/app/layout.tsx` — `<title>`/description set to the hero headline.
+
+### The six sections (exact, per brief)
+1. **Hero** — "Describe your idea. We'll build the app." + one input with the 3
+   rotating placeholders + "Start building — it's free to try" + "No signup required
+   to start." 2. **Social proof** (honest) — 15 / 9 / ✓ (see decision 1). 3. **Three
+   buckets** — Just for me / My small team / My customers → **$19 Starter / $49
+   Growth / $99 Business** (decision 2). 4. **Trust** — the exact five checkmarks.
+   5. **FAQ** — six plain-English Q&As, no technical words. 6. **Bottom CTA** — the
+   hero headline + input again, so the entry point is always in reach.
+
+### Decisions made this session (with rationale)
+1. **Honest social proof, no fabricated usage number** (user chose). Confirmed by
+   querying `pipeline_status`: every row is a dev/test run, per-run wall-clock 0s to
+   **52,275s (14.5h)**, "building" averages ~35min — so there is NO honest
+   build-time stat to quote and nobody has used the product yet. The three stats are
+   framing, not counts: "15 specialized AI agents" / "Built & verified across 9
+   development phases" / "Security-reviewed by the most advanced AI available".
+2. **LOCKED landing pricing $19/$49/$99 (Starter/Growth/Business)** came from the
+   user's brief, used verbatim. ⚠️ These are NOT in CONTEXT.md — the ~$15/$50/$150
+   figures elsewhere are the **DevOps server-sizing tiers** (quick/production/scale),
+   a different concept. Do not conflate them.
+3. **Character is CSS-only, not Lottie** (user: "keep it minimal and easy to iterate
+   on later"). Pose ↔ stage: thinking (BA + Architect), typing (Developer),
+   inspecting (Code Review + QA), launching (DevOps), celebrating (complete).
+4. **Brand purple unified to #534AB7 everywhere** (user chose "everywhere" over
+   "landing only") — a single shared constant, one consistent brand color.
+5. **Landing is the default view; building starts on the CTA. No backend change** —
+   `startBuilding` reuses `/conversation/start` + `/conversation/message`.
+
+### Verified (2026-08-01) — what + how
+- **⚠️ Frontend has NO volume mount** (`build: ./frontend` bakes source into the
+  image), so `next dev` served STALE code after my edits — caught live in the browser
+  (old chat auto-started, old purple, old title). Fix + the rule to remember:
+  **frontend edits need `docker compose build frontend && docker compose up -d
+  frontend`** (unlike backend *tests*, which mount source). After rebuild:
+  `npx tsc --noEmit` clean; Next compiled with 0 errors.
+- **Live browser check (localhost:3000):** all six sections render with the correct
+  copy + pricing; `<title>` updated. All **five mascot poses render distinctly**
+  (verified by injecting the mascot markup with each pose class — zero pipeline
+  cost). The **live landing→build transition works**: typed "I want an app to manage
+  my grocery store", clicked Start building, and it posted as the FIRST BA message
+  with the thinking mascot + "Getting to know your idea…". **Mobile (375px) stacks**
+  cleanly (hero, stats, buckets, trust all `flex-wrap`).
+- **Cleanup:** deleted 2 throwaway test projects — **433** (conversation from the
+  pre-rebuild stale auto-start) and **434** (the Start-building test) — both
+  conversation-only (0 deployments, 0 pipeline_status rows), so neither could read as
+  a monitoring/cost target.
+
+### Carried forward / known-open (Week 10 Part 1)
+- **Week 10 Part 2 = the real demo run** (next; real spend).
+- Frontend runs on local `next dev` at :3000; it is **not deployed**. Visual QA was
+  spot-checked at desktop + 375px only.
+- FAQ answer #2 quotes "$19 a month" as the entry price — keep it in sync if the
+  locked plan pricing ever changes.
+- Unchanged from Week 9: MODEL SWITCH pending; secrets-table onboarding + real AWS
+  Cost Explorer still open.
 
 ## HOW TO RUN (zero-context)
 - Start everything: `docker compose up -d` (postgres, redis, backend:8000,
