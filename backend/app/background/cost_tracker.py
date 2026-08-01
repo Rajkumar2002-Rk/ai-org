@@ -26,6 +26,12 @@ def parse_budget(summary: dict) -> float | None:
     return float(m.group(1)) if m else None
 
 
+# A straight-line projection from only a day or two of spend is noise (one $4 day
+# would "project" to ~$120). Below this many elapsed days we do NOT project or
+# alert — we say so honestly instead of printing a scary, unreliable number.
+_MIN_PROJECTION_DAYS = 3
+
+
 def project_month_end(actual_mtd: float, day_of_month: int, days_in_month: int) -> float:
     """Straight-line projection from month-to-date spend."""
     if day_of_month <= 0:
@@ -47,9 +53,15 @@ async def record(project_id: int, actual_cost_usd: float,
     the manual/testable path; `poll()` feeds it from Cost Explorer when enabled."""
     on_date = on_date or date.today()
     days_in_month = calendar.monthrange(on_date.year, on_date.month)[1]
-    projected = project_month_end(actual_cost_usd, on_date.day, days_in_month)
     budget = await _budget(project_id)
-    over = bool(budget is not None and projected > budget * settings.cost_budget_alert_ratio)
+    # Too early in the month to trust a projection -> don't project or alert.
+    if on_date.day < _MIN_PROJECTION_DAYS:
+        projected = None
+        over = False
+    else:
+        projected = project_month_end(actual_cost_usd, on_date.day, days_in_month)
+        over = bool(budget is not None
+                    and projected > budget * settings.cost_budget_alert_ratio)
     log = CostLog(project_id=project_id, date=on_date.isoformat(),
                   actual_cost_usd=round(actual_cost_usd, 2),
                   projected_monthly_usd=projected, budget_usd=budget,
@@ -114,7 +126,9 @@ async def summary(project_id: int) -> dict | None:
     actual = float(log.actual_cost_usd)
     projected = float(log.projected_monthly_usd) if log.projected_monthly_usd is not None else None
     budget = float(log.budget_usd) if log.budget_usd is not None else None
-    if budget is None:
+    if projected is None:
+        status_text = "It's still early in the month — we'll project your cost in a day or two."
+    elif budget is None:
         status_text = "No budget on file, so we can't compare to one yet."
     elif log.over_budget:
         status_text = "Heads up — trending over budget"

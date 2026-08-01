@@ -219,6 +219,14 @@ async def test_cost():
     summ = await cost_tracker.summary(pid)
     check("summary reflects the latest reading + status",
           summ["over_budget"] is True and "budget" in summ["status_text"].lower())
+    # Early in the month -> no unreliable projection or false alarm.
+    pid_early = await _seed(deployed_live=True, budget="$15")
+    early = await cost_tracker.record(pid_early, 4.10, on_date=date(2026, 6, 1))
+    check("day 1 -> no projection, no false over-budget alarm",
+          early.projected_monthly_usd is None and early.over_budget is False)
+    se = await cost_tracker.summary(pid_early)
+    check("early-month status is honest ('still early')",
+          "early" in se["status_text"].lower())
     # No budget -> honest, not a fake 'on track'.
     pid2 = await _seed(deployed_live=True, budget="")
     await cost_tracker.record(pid2, 5.0, on_date=d10)
