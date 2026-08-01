@@ -5,14 +5,16 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Week 7 DevOps built & LOCAL path PROVEN (2026-07-30)
+# ⏭️ RESUME HERE — Week 7 DevOps COMPLETE & VERIFIED, local AND live on AWS (2026-07-31)
 
-**Start the next session with:** "Read CONTEXT.md. Week 7 DevOps is built; the
-LOCAL deploy path is proven end-to-end. The AWS path is real code but NOT yet run
-live." Next real work is EITHER the first live AWS deploy (once DNS is delegated
-and the paid run is greenlit) OR Week 8.
+**Start the next session with:** "Read CONTEXT.md. Week 7 DevOps is complete and
+verified — local path AND a real live AWS deploy (since torn down). Week 8 next."
+Week 7 is CLOSED; this is its closing record. Do NOT re-open it. The AWS shakeout
+proved the driver end-to-end on a real EC2 instance and found+fixed four real
+bugs (see "AWS SHAKEOUT" below). All shakeout infra was torn down by tag; only the
+`apps.rajkumarai.dev` hosted zone is kept (for future deploys).
 
-## WEEK 7 — DevOps Agent (#11) — DONE (local proven; AWS pending live shakeout)
+## WEEK 7 — DevOps Agent (#11) — DONE (local proven AND live-on-AWS verified)
 
 The DevOps agent deploys a tested, security-certified project silently: read
 cloud_config → size the server → assemble the generated code into real Docker
@@ -80,32 +82,67 @@ running cost).
   naming the site `localhost, host.docker.internal`. The mechanism proof caught a
   bug the offline tests structurally could not.
 
-### AWS path — REAL CODE, NOT YET RUN LIVE (deliberate)
-Off by default (`DEPLOY_TARGET=local`); never touched by the test suite. It cannot
-succeed until DNS is delegated + the paid run is greenlit, so it is NOT called
-verified (the "built ≠ verified" rule). To go live:
-1. **DNS delegation (operator action, pending):** Route53 public hosted zone
-   `apps.rajkumarai.dev` was created — **zone id `Z02777111O69NKZ136VS`**, account
-   `812141348875`, region `us-east-2`. Add an `NS` record for `apps` at
-   rajkumarai.dev's current DNS host with: `ns-1092.awsdns-08.org`,
-   `ns-1958.awsdns-52.co.uk`, `ns-957.awsdns-55.net`, `ns-462.awsdns-57.com`.
-2. Launch ONE t3.micro tagged `Project=ai-org` with an instance profile granting
-   ECR pull + SSM; the driver reuses it (start if stopped) and delivers the stack
-   via SSM. Per the cost plan: STOP (not terminate) between tests; teardown by tag.
-3. Set `DEPLOY_TARGET=aws` and deploy a known-good project.
-- **Cost reality:** always-on t3.micro ≈ **$12/mo** (t3.micro ~$7.59 + the new
-  ~$3.65 public-IPv4 charge + EBS + $0.50 zone). The $5-10 target needs the 12-mo
-  free tier active OR stop/start between tests. SSL is Let's Encrypt via Caddy on
-  the instance (ACM needs a paid ALB → would break the budget).
+### ⭐ AWS SHAKEOUT — PROVEN LIVE on real EC2, then torn down (2026-07-31)
+The AWS driver is no longer "real but unrun". DNS was delegated (Namecheap NS →
+Route53, confirmed propagated), and a synthetic backend-only fixture (project 357)
+was deployed for real via `DEPLOY_TARGET=aws` onto a tagged t3.micro. **Verified
+LIVE, independently from the host:** `https://shakeout-3c155f.apps.rajkumarai.dev`
+served `/openapi.json` (200), `/` and `/config-check` (`has_demo_secret:true` —
+secret injected via SSM Parameter Store), with a **real, trusted Let's Encrypt
+certificate** (issuer `Let's Encrypt`, valid Jul 31 → Oct 29; confirmed in
+Chrome's security panel too). All 7 steps exercised on real AWS; the fail-closed
+security gate also fired for real (it blocked the deploy when the cached cert had
+expired, until re-established).
+
+**Four real bugs the shakeout found and fixed (all in `drivers/aws.py` +
+`backend/Dockerfile`) — this is why a live shakeout mattered:**
+1. **DNS created AFTER bring-up** → Caddy's first ACME attempt had no record to
+   validate against, and the health window missed the backoff retry. Fixed:
+   upsert the Route53 A record BEFORE `_deliver_and_up`.
+2. **Cross-arch mismatch** → images built on the arm64 Mac crash-looped on the
+   x86_64 instance (`exec format error`); the multi-arch postgres ran fine, which
+   is what pointed at arch. Fixed: cross-build `linux/amd64`.
+3. **`docker buildx` missing** in the backend image (only cli + compose plugins
+   were installed) → `docker build --platform` can't load a cross-arch image into
+   the arm64 store. Fixed: add `docker-buildx-plugin`; build+push via a
+   uniquely-named `docker-container` builder (removed in a `finally`, no leak).
+4. **Secret silently not injected** → the instance role lacked
+   `ssm:GetParametersByPath` AND the bring-up's `aws … | awk > deploy.env` pipe
+   had no `pipefail`, so the AccessDenied was swallowed and a MISSING SECRET read
+   as a successful deploy — this project's signature "absence of evidence =
+   success" anti-pattern, caught live. Fixed: scoped SSM-read inline policy on the
+   role, plus `set -euo pipefail` so a failed fetch aborts the bring-up loudly.
+
+**Teardown was run and VERIFIED clean** (`teardown_aws.py --yes --terminate` +
+extras): 0 tagged instances, 0 ai-org ECR repos, 0 A records, 0 security groups,
+0 SSM params, the `ai-org-ec2` role/profile deleted, local project-357 rows/keys
+removed. The `apps.rajkumarai.dev` hosted zone (`Z02777111O69NKZ136VS`) is KEPT.
+Nothing paid is left running.
+
+**To run a live AWS deploy again** (all shakeout infra was torn down, so it must
+be recreated — logged as a known gap below):
+1. DNS is already delegated (zone `Z02777111O69NKZ136VS`, NS at Namecheap).
+2. Create a role+profile with SSM + ECR-read + `ssm:GetParametersByPath`/`kms:Decrypt`
+   on `/ai-org/*`, a security group (80/443), and launch ONE t3.micro tagged
+   `Project=ai-org` (AL2023; user-data installs docker + compose). Per the cost
+   plan: STOP (not terminate) between tests; teardown by tag when done.
+3. `DEPLOY_TARGET=aws` and deploy. **Cost reality:** always-on t3.micro ≈ **$12/mo**
+   (t3.micro ~$7.59 + the ~$3.65 public-IPv4 charge + EBS + $0.50 zone); a short
+   shakeout torn down promptly is a few cents. SSL is Let's Encrypt via Caddy on
+   the instance (ACM needs a paid ALB → would break the budget).
 
 ### Carried forward / known-open (Week 7)
 - **No onboarding stage populates the `secrets` table with real user secrets yet**
   — a "connect your API keys" UI is scoped future work; the store is real and
   read by DevOps today, seeded directly (tests). Same explicit gap as
   requirements.txt. Stripe still never lands here (hosted OAuth inside the app).
-- **AWS end-to-end is unverified** until the live shakeout above.
-- **The local proof used a backend-only synthetic app** to prove the mechanism
-  (real build/run/DB/secret/HTTPS/isolation/teardown). A full FRONTEND deploy
+- **The AWS driver assumes the instance + IAM role/profile + SG already exist**
+  (`_find_instance` errors if none is tagged); it does NOT provision them. The
+  shakeout created them by hand and tore them down, so a future live deploy must
+  recreate them (see steps above). Auto-provisioning them (with the exact SSM
+  `GetParametersByPath`/`kms:Decrypt` perms bug #4 needed) is a clean future
+  enhancement.
+- **Both proofs used a backend-only synthetic app.** A full FRONTEND deploy
   (Next `npm run build` in the image) is wired but not yet exercised end-to-end —
   do that with a known-good generated project (the D4 SSG-prerender quality issue
   from Week 6 would surface at image-build time here, honestly).

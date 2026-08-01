@@ -22,6 +22,7 @@ import asyncio
 import base64
 import json
 import logging
+import uuid
 
 from app.config import settings
 from app.devops import manifest, secrets_store
@@ -33,6 +34,11 @@ logger = logging.getLogger("devops.driver.aws")
 # Every AWS resource DevOps creates carries these, so teardown is by-tag and
 # nothing paid can be orphaned silently.
 _TAG_PROJECT = "ai-org"
+
+# Images are BUILT here (often an arm64 Mac) but RUN on the EC2 instance. t2/t3
+# instances are x86_64, so images must be built for that arch or they crash-loop
+# with "exec format error". Built via `docker build --platform` (BuildKit + qemu).
+_TARGET_PLATFORM = "linux/amd64"
 
 
 def _tags(project_id: int, ephemeral: bool) -> list[dict]:
@@ -133,25 +139,39 @@ class AwsDriver(DeployDriver):
 
     async def _build_and_push(self, req: DeployRequest, m: manifest.Manifest,
                               registry: str) -> dict:
-        """Build each context locally and push to its ECR repo. Returns image
-        refs keyed by kind."""
+        """Cross-build each context for the EC2 arch and push STRAIGHT to ECR.
+
+        Uses a docker-container buildx builder: the default 'docker' driver can't
+        load a cross-arch image into an arm64 host's image store (that broke a
+        plain `docker build --platform`), and building + pushing via buildx in one
+        step avoids the local load entirely. The builder is uniquely named per run
+        (no cross-run collision), made current with --use (so no per-build flag),
+        and removed in a finally so nothing leaks.
+        """
+        builder = f"ai-org-bx-{uuid.uuid4().hex[:8]}"
+        code, out = await run_cmd(
+            ["docker", "buildx", "create", "--name", builder,
+             "--driver", "docker-container", "--use", "--bootstrap"], timeout=240)
+        if code != 0:
+            raise RuntimeError(f"could not create cross-arch builder: {out[-400:]}")
         refs: dict[str, str] = {}
         contexts = {"backend": (req.names["image_backend"], m.backend_context),
                     "caddy": (req.names["image_caddy"], m.caddy_context)}
         if m.has_frontend and m.frontend_context:
             contexts["frontend"] = (req.names["image_frontend"], m.frontend_context)
-
-        for kind, (repo, ctx) in contexts.items():
-            await self._ensure_repo(repo)
-            uri = f"{registry}/{repo}:latest"
-            code, out = await run_cmd(["docker", "build", "-t", uri, ctx],
-                                      timeout=settings.devops_build_timeout)
-            if code != 0:
-                raise RuntimeError(f"docker build {kind} failed: {out[-500:]}")
-            code, out = await run_cmd(["docker", "push", uri], timeout=600)
-            if code != 0:
-                raise RuntimeError(f"docker push {kind} failed: {out[-500:]}")
-            refs[kind] = uri
+        try:
+            for kind, (repo, ctx) in contexts.items():
+                await self._ensure_repo(repo)
+                uri = f"{registry}/{repo}:latest"
+                code, out = await run_cmd(
+                    ["docker", "buildx", "build", "--platform", _TARGET_PLATFORM,
+                     "-t", uri, "--push", ctx],
+                    timeout=settings.devops_build_timeout)
+                if code != 0:
+                    raise RuntimeError(f"buildx build+push {kind} failed: {out[-600:]}")
+                refs[kind] = uri
+        finally:
+            await run_cmd(["docker", "buildx", "rm", builder], timeout=60)
         return refs
 
     # ------------------------------------------------------------- EC2 (reused)
@@ -219,16 +239,21 @@ class AwsDriver(DeployDriver):
             inst = await self._find_instance(req.project_id)
         public_ip = inst.get("PublicIpAddress")
 
-        # Secrets -> SSM SecureString (never in user-data/argv/logs).
-        await self._push_secrets_to_ssm(req)
-        await self._deliver_and_up(req, m, registry)
-
+        # Point DNS FIRST. Caddy tries to obtain the Let's Encrypt cert as soon as
+        # it starts, and LE's HTTP-01 challenge validates against the subdomain —
+        # which must already resolve to this instance. Creating the record after
+        # bring-up (the original order) meant Caddy's first ACME attempt failed and
+        # only a later backoff retry could succeed, which the health window missed.
         if public_ip and settings.route53_zone_id:
             await self._call(
                 "route53", "change_resource_record_sets",
                 HostedZoneId=settings.route53_zone_id,
                 ChangeBatch=route53_upsert_batch(req.subdomain, public_ip),
             )
+
+        # Secrets -> SSM SecureString (never in user-data/argv/logs), then bring up.
+        await self._push_secrets_to_ssm(req)
+        await self._deliver_and_up(req, m, registry)
 
         return DeployResult(
             ok=True,
@@ -285,7 +310,11 @@ class AwsDriver(DeployDriver):
         # Build deploy.env on the instance by reading SSM SecureString params —
         # secrets never travel through argv or the compose file.
         commands = [
-            "set -e",
+            # pipefail is essential: the secrets fetch is `aws ... | awk > file`,
+            # and without it a failed `aws` (e.g. missing IAM permission) is
+            # swallowed by awk succeeding on empty input — silently deploying with
+            # NO secrets. A missing secret must fail the bring-up, not pass it.
+            "set -euo pipefail",
             f"mkdir -p {appdir}",
             f"echo {compose_b64} | base64 -d > {appdir}/docker-compose.deploy.yml",
             f"aws ssm get-parameters-by-path --path {prefix} --with-decryption "
