@@ -5,14 +5,68 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Week 7 DevOps COMPLETE & VERIFIED, local AND live on AWS (2026-07-31)
+# ⏭️ RESUME HERE — Week 8 Documentation COMPLETE & VERIFIED (2026-07-31)
 
-**Start the next session with:** "Read CONTEXT.md. Week 7 DevOps is complete and
-verified — local path AND a real live AWS deploy (since torn down). Week 8 next."
-Week 7 is CLOSED; this is its closing record. Do NOT re-open it. The AWS shakeout
-proved the driver end-to-end on a real EC2 instance and found+fixed four real
-bugs (see "AWS SHAKEOUT" below). All shakeout infra was torn down by tag; only the
-`apps.rajkumarai.dev` hosted zone is kept (for future deploys).
+**Start the next session with:** "Read CONTEXT.md. Weeks 1-8 are complete. Week 9
+is Monitoring (#13)." Week 8 (Documentation) is CLOSED; this is its closing
+record — do NOT re-open it. (Week 7 DevOps — local + live-on-AWS, since torn down
+— is recorded below and also closed.)
+
+## WEEK 8 — Documentation Agent (#12) — DONE (read-only; honest on real data)
+
+Generates four documents into a new `documents` table from REAL stored data only.
+Strictly READ-ONLY over the rest of the system (reads tables + Redis, writes only
+`documents`); never fabricates a number or status — a missing source reads as
+"not available yet". Routes to **Gemini 2.5 Flash-Lite @0.5** via
+`codegen.generate` (locked through Week 8; `claude-haiku-4-5` is the post-Week-8
+switch, NOT applied yet).
+
+### The honesty is structural
+- ONE `documentation/datasource.gather()` decides "what is true" from stored data
+  (deployment / Redis cert + code_reviews / qa_results / blueprint ∩
+  generated_files / secrets). Every generator reads only from it.
+- Integrations are "connected" ONLY when a real secret row backs them; Stripe is
+  never claimed live (it connects in-app after launch).
+- The Handoff summary uses NO LLM — every field is real data — and carries
+  `honest_notes` surfacing partial/known-open state (not deployed, tests failed,
+  no cert, Stripe not connected).
+- Demo script steps are one-per-REAL-screen (from generated files); the LLM only
+  phrases narration, so it can never script a screen that doesn't exist.
+
+### Outputs + surface
+`documents` (id, project_id, doc_type, content, created_at): user_guide (md),
+demo_script (json), maintenance_guide (md), handoff_summary (json). Plus
+`POST /pipeline/document`, `GET /pipeline/{id}/documents-status`, `/documents`,
+and the frontend FINAL completion table (live link, security, tests passed, user
+guide ready, demo script ready, monthly cost — no technical words).
+
+### Verification (2026-07-31)
+- **`test_documentation_offline.py` — 30 checks, 0 failures** (free; LLM patched):
+  honest reporting on REAL project 342 (not deployed, 2 of 8 tests failed, no cert
+  — the handoff says exactly that); READ-ONLY proven (every other table's row
+  count unchanged); real-screens-only (no Stripe screen unless present); honest
+  missing-data (support = no invented contact, leans on free code-export / no
+  lock-in).
+- **Real Gemini run** confirmed genuine plain-English output — and caught a
+  jargon-in-headings issue (guide headings echoed ticket titles like "Implement
+  menu retrieval endpoint"); fixed by forcing plain headings and re-verified.
+- **Completion screen verified live in the browser** (seeded green project, since
+  cleaned up).
+- All 8 free suites pass (6 prior + DevOps + Documentation); no regressions.
+- Committed **`c7cb94e`** (no Co-Authored-By; `.env` untouched). New:
+  `app/documentation/` (datasource, generators, orchestrator, graph), Document
+  model + migration `0012`, `test_documentation_offline.py`.
+
+### Carried forward
+- Still no onboarding stage populates the `secrets` table with real user secrets,
+  so integrations honestly read "designed, not yet connected" (gap since Week 7).
+- `builder._llm_routing()` still lists a stale `documentation: gpt-4o-mini` (same
+  shape QA's stale entry had); the agent uses `settings.documentation_model`
+  (Gemini) directly so it is cosmetic — correct it in the post-Week-8 model switch.
+
+---
+
+# (Week 7 record below — also closed)
 
 ## WEEK 7 — DevOps Agent (#11) — DONE (local proven AND live-on-AWS verified)
 
