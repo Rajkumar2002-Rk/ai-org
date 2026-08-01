@@ -7,64 +7,159 @@ fully before doing anything else in this project.
 
 # ⏭️ RESUME HERE — Week 9 background agents COMPLETE & VERIFIED (2026-08-01)
 
-**Start the next session with:** "Read CONTEXT.md. Weeks 1-9 are complete." All 15
-agents are now built. Week 9 (Monitoring #13, Auto-fix #14, Cost Tracker #15 +
-post-launch dashboard) is CLOSED — do NOT re-open it. (Weeks 7-8 are recorded
-below and also closed.) Likely next work: the post-Week-8 MODEL SWITCH (its own
-dedicated session — switch to verified model strings, retest each agent), and/or
-the still-open producer gaps (secrets table, real AWS Cost Explorer shakeout).
+**Start the next session with:** "Read CONTEXT.md. Weeks 1-9 are complete." **All 15
+agents are now built and each week is closed.** Week 9 (Monitoring #13, Auto-fix
+#14, Cost Tracker #15 + post-launch dashboard) is CLOSED — do NOT re-open it.
+Weeks 7-8 records are below and also closed.
+
+**Git state:** branch `master`, clean working tree, all pushed to
+`origin` (github.com/Rajkumar2002-Rk/ai-org, private). HEAD = **`97047e4`**.
+Week-9 commits, in order: `091b071` (agents) → `3f7e726` (cost day-1 fix) →
+`97047e4` (this CONTEXT). Permanent rules still apply: **no `Co-Authored-By` line,
+ever**; never commit `.env`; keep the repo private.
+
+**Nothing is pending from this session** — the Week-9 build, the commit, the live
+browser dashboard demo, and this CONTEXT close-out are ALL done. (This section was
+later expanded into the comprehensive record below at the user's request.)
+
+**Likely next work:** the post-Week-8 **MODEL SWITCH** (its own dedicated session —
+see "MODEL SWITCH" further down; switch to verified model strings and retest each
+agent one at a time), and/or the carried-forward producer gaps (secrets-table
+onboarding, a real AWS Cost Explorer shakeout).
+
+## HOW TO RUN (zero-context)
+- Start everything: `docker compose up -d` (postgres, redis, backend:8000,
+  frontend:3000). Backend runs `alembic upgrade head` on start; DB is at migration
+  **`0013`**.
+- Run a test / any backend script with the LIVE source mounted (so edits are seen
+  without a rebuild):
+  `docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" backend python tests/<name>.py`
+- **The 9 free regression suites** (all must print `RESULT: ALL CHECKS PASSED ✓`,
+  check the exit code too): `test_qa_offline`, `test_architect_offline`,
+  `test_qa_retry_loop`, `test_qa_teardown`, `test_token_instrumentation`,
+  `test_developers_offline`, `test_devops_offline`, `test_documentation_offline`,
+  `test_background_offline`. (`test_qa_classification` is excluded — real Gemini.)
+- After editing backend code that the RUNNING server must serve (endpoints, agents
+  invoked via the API), rebuild: `docker compose build backend && docker compose up
+  -d backend`. Same for `frontend`. Tests don't need a rebuild (source is mounted).
+- `.env` holds real API keys + `SECRETS_ENC_KEY` + AWS/DevOps vars; it is
+  gitignored. `~/.aws` + the docker socket are mounted into the backend for the
+  DevOps/AWS paths.
 
 ## WEEK 9 — Background agents (#13/#14/#15) — DONE (local/synthetic proof)
 
-Three post-launch agents that run silently; the user sees them only via a
-dashboard. Deterministic-first and honest — metrics/costs come from stored data,
-missing data reads as "not available yet". Code in `app/background/`.
+Three post-launch agents that run silently after deployment; the user sees them
+only via the dashboard. Deterministic-first and honest — metrics/costs come from
+stored data, and a missing source reads as "not available yet", never fabricated.
+All code is under `app/background/`.
 
-- **Monitoring (#13, monitor.py):** pings the live URL on a configurable cadence,
-  records health / response-time / 4xx-5xx into `monitoring_logs`, runs as a
-  BOUNDED loop after deploy (exits when the app is no longer live), writes a
-  plain-English `weekly_report` (documents table) from the REAL logs. Does NOT
-  invent an "actions completed" count; only says "we fixed it" when a `fix_log`
-  backs it.
-- **Auto-fix (#14, autofix.py):** Safe Mode — snapshots deployment state before
-  ANY fix (`deployment_snapshots`). Level 1 self-heal **reuses the Week-7
-  `driver.restart` primitive** (docker restart / SSM compose restart) — no second
-  restart path, structurally cannot touch code or security. Level 2 fixes +
-  notifies; Level 3 escalates with plain-English steps (`user_issues`); rolls back
-  if the fix made things worse. App-code / security / missing-config faults are
-  never restart-"fixed" (defect-#6 lesson carried into ops).
-- **Cost Tracker (#15, cost_tracker.py):** daily actual + projected spend vs
-  budget with a +20% alert (`cost_logs`). Real AWS Cost Explorer is written but
-  **GATED OFF** (`aws_cost_explorer_enabled=False`; CE lags 24-48h, ~$0.01/call) —
-  math proven synthetically, real poll awaits a shakeout (like the Week-7 driver).
-- **Post-launch dashboard:** `dashboard.py` + `GET /dashboard/{id}` + frontend
-  `?dashboard=<id>` page — four sections (app status, this-month cost vs budget,
-  recent activity, open issues) + "Make a change to my app" -> new BA conversation.
+### Every file created/modified this week, and why
+NEW:
+- `backend/app/background/__init__.py` — package doc for the three agents.
+- `backend/app/background/monitor.py` (#13) — `check_once` (one HTTP probe →
+  is_healthy/response_time_ms/error_code), `check_and_record` (probe the latest
+  LIVE deployment, else return None), `monitor_loop` (bounded cadence loop),
+  `weekly_summary` (aggregate real logs → plain English via Gemini + deterministic
+  fallback → stored as a `weekly_report` document). `monitor_url()` maps a local
+  `localhost:<port>` live_url to `host.docker.internal` so the in-container probe
+  reaches the host-published port (the Week-7 probe lesson).
+- `backend/app/background/autofix.py` (#14) — `handle(project_id, problem)`:
+  `_snapshot` (Safe Mode, before any fix) → `health.classify` → Level 1 restart
+  via the REUSED DevOps `driver.restart` → re-check → silent (L1) / notify (L2) /
+  escalate+`_escalate` (L3) / rollback-if-worse. `_LEVEL3_INSTRUCTIONS` = per-fault
+  plain-English steps.
+- `backend/app/background/cost_tracker.py` (#15) — `project_month_end` (straight
+  line), `record` (store actual+projected+budget+over_budget), `poll` (gated real
+  CE), `_ce_actual_month_to_date` (real boto3 Cost Explorer, GATED), `summary`
+  (dashboard cost picture). `_MIN_PROJECTION_DAYS=3` guard (see decisions).
+- `backend/app/background/dashboard.py` — `build(project_id)` aggregates the 4
+  dashboard sections read-only from deployment / cost_logs / monitoring_logs /
+  user_issues.
+- `backend/alembic/versions/0013_background_agents.py` — creates
+  `monitoring_logs`, `deployment_snapshots`, `fix_logs`, `user_issues`, `cost_logs`.
+- `backend/tests/test_background_offline.py` — the 32-check offline proof (below).
 
-New tables (migration `0013`): monitoring_logs, deployment_snapshots, fix_logs,
-user_issues, cost_logs. Routing stays CURRENT (Gemini monitoring/cost, GPT-4o
-auto-fix); the post-Week-8 model switch is still its own separate session.
+MODIFIED:
+- `backend/app/models.py` — 5 new models (MonitoringLog, DeploymentSnapshot,
+  FixLog, UserIssue, CostLog) + their `Project` relationships. Columns match the
+  spec + honesty fields (fix_logs.level/outcome/notified/notification, cost_logs.
+  over_budget, snapshots.state_json).
+- `backend/app/config.py` — W9 settings: `monitoring_model`=gemini-2.5-flash-lite,
+  `autofix_model`=gpt-4o, `cost_tracker_model`=gemini-2.5-flash-lite,
+  `monitoring_interval_seconds`=60, `monitoring_request_timeout`=10,
+  `autofix_notify_downtime_seconds`=120, `cost_budget_alert_ratio`=1.20,
+  `aws_cost_explorer_enabled`=False (gated).
+- `backend/app/main.py` — imports the 3 agents; `_run_monitor` background
+  supervisor (edge-triggered: on a NEW failure, and only if no open user_issue,
+  call `autofix.handle`); auto-starts monitoring after a `live` deploy; endpoints
+  `POST /pipeline/monitor`, `POST /pipeline/cost-check`, `POST /pipeline/weekly-
+  summary`, `GET /dashboard/{id}`.
+- `backend/app/schemas.py` — `CostCheckRequest`, `DashboardResponse`.
+- `frontend/app/page.tsx` — post-launch dashboard view rendered at
+  `?dashboard=<projectId>` (fetches `/dashboard/{id}`): 4 sections + "Make a change
+  to my app" button → `makeAChange()` starts a fresh BA conversation. Input form
+  hidden in dashboard mode. New styles `dashRow/dashLabel/dashVal`.
+- `CONTEXT.md` — this record.
 
-### Verified (2026-08-01)
-- **`test_background_offline.py` — 32 checks, 0 failures** (no AWS, no LLM):
-  monitoring against a REAL local HTTP server (200/404/500/dead-port); every
-  auto-fix branch (L1 silent / L2 notify / L3 escalate + rollback) with
-  snapshot-before-fix and read-only over generated_files/code_reviews; cost
-  projection/budget/alert; honest weekly-summary + dashboard.
-- **Dashboard verified live in the browser** (seeded project, since cleaned up).
-- All 9 free suites pass; no regressions.
-- Committed **`091b071`** (Week 9) + **`3f7e726`** (a follow-up honesty fix the demo
-  caught: don't project or fire an over-budget alarm from <3 days of data — a $4
-  day-1 spend was straight-lining to ~$127). No Co-Authored-By; `.env` untouched.
+### Decisions made this session (with rationale)
+1. **Local/synthetic testing, no live AWS spend** (user chose). Real AWS Cost
+   Explorer + AWS-driver restart are written as gated, off-by-default code.
+   Rationale: auto-fix reuses the already-proven Week-7 restart primitive, and CE
+   data lags 24-48h so a real call would teach little for the money — unlike the
+   Week-7 DevOps shakeout where the infra was genuinely untested.
+2. **Orphan cleanup before building** — a stale project `358` (and later demo
+   projects) with a fake `live` deployment row were deleted first, so nothing fake
+   read as a monitoring/cost target.
+3. **Auto-fix reuses the Week-7 `driver.restart` primitive** (not a second restart
+   path). It builds a minimal `DeployRequest` and calls
+   `devops.orchestrator._get_driver(dep.target).restart(req)`. Structurally can't
+   touch code/security. The three Level-1 remedies (not responding / memory / DB
+   dropped) are all one restart (a container restart re-establishes the pool +
+   clears memory).
+4. **No fabricated "actions completed" count** — the spec's example weekly summary
+   says "143 actions completed", but monitoring only pings; it does not observe
+   app-level actions. The summary reports uptime / checks / response time / real
+   downtime instead, and only claims "we fixed it" when a `fix_log` exists.
+5. **Cost projection guard** (`_MIN_PROJECTION_DAYS=3`) — caught during the live
+   demo: $4.10 spent on day 1 straight-lined to ~$127 and fired a FALSE over-budget
+   alarm. Below 3 elapsed days we now don't project or alert; the dashboard says
+   "still early in the month". Committed as follow-up `3f7e726`.
+6. **Routing stays current** (Gemini monitoring/cost, GPT-4o auto-fix); the
+   post-Week-8 model switch is deliberately a separate session.
 
-### Carried forward
-- The `secrets` table still has no onboarding producer (integrations read
-  "designed, not yet connected") — since Week 7.
+### Verified (2026-08-01) — what + how
+- **`test_background_offline.py` — 32 checks, 0 failures** (no AWS, no LLM spend;
+  `codegen.generate` patched, a real threaded `http.server` for monitoring):
+  Monitoring proven with REAL HTTP round-trips (200 healthy; 404/500 captured with
+  code; dead port unhealthy with message; no live deployment → honest None). Every
+  auto-fix branch: L1 silent heal (restart called once, snapshot taken BEFORE the
+  fix), L2 long-downtime notify, L3 app-error escalate (restart NOT attempted) +
+  user_issue created, L3 restart-didn't-help → rolled_back (restart called twice).
+  Read-only proven: `generated_files`/`code_reviews` counts unchanged after
+  auto-fix. Cost projection ($6 by day 10/30 → $18), +20% alert, day-1 guard, and
+  no-budget honesty. Weekly summary uses real uptime + no "actions" word + no
+  false "fixed" claim; empty project → honest "not a full week yet". Dashboard
+  aggregation live vs not_live.
+- **Dashboard verified LIVE in the browser** at `?dashboard=<id>` against a seeded
+  project (App status Live ✓, $4.10 → projected $12.71 vs $15 on track ✓, 99%
+  uptime / 118ms / 2 errors, "Make a change" button). Demo data cleaned up
+  afterward; working tree left clean; backend rebuilt to match committed code.
+- **All 9 free suites pass; no regressions** from the models/config/main/schemas
+  changes.
+
+### Carried forward / known-open
+- The `secrets` table still has NO onboarding producer, so integrations honestly
+  read "designed, not yet connected" (since Week 7).
 - Real AWS Cost Explorer poll is unrun (gated), like the AWS deploy driver was
-  before its shakeout.
-- Stale blueprint `llm_routing` entries (`documentation`, and monitoring/cost/
-  auto-fix aren't in it) are cosmetic — agents use `settings.*_model`; tidy in the
-  model-switch session.
+  before its shakeout. To enable: set `aws_cost_explorer_enabled=True`, a tagged
+  AWS deployment must exist, then `cost_tracker.poll(project_id)` (or the daily
+  cron in prod).
+- Blueprint `llm_routing` doesn't list monitoring/cost/auto-fix and its
+  `documentation` entry is a stale `gpt-4o-mini`; cosmetic (agents use
+  `settings.*_model`); tidy during the model-switch session.
+- Monitoring runs as an in-process asyncio task started after deploy; it does NOT
+  survive a backend restart (fine for this project — nothing stays deployed long).
+  A durable scheduler is future work if apps become long-lived.
 
 ---
 
