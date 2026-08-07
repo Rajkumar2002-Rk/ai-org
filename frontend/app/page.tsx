@@ -1132,7 +1132,7 @@ export default function Home() {
                 <div style={s.designBody}>
                   {qa.failed === 0
                     ? "We tried every button, form and screen — including the ways people accidentally break things. It all held up."
-                    : "We tried every button, form and screen. A few things need another pass, and they've been sent back to be sorted out."}
+                    : "We tried every button, form and screen. We hit something we couldn't fix automatically, so we stopped rather than ship something broken — our team needs to take a look."}
                 </div>
               </div>
             )}
