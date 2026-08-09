@@ -129,6 +129,7 @@ async def _ingest(turn: TurnState) -> TurnState:
         state.fields["platform"] = info["platform"]
         state.fields["app_kind"] = info["kind"]
         state.fields["is_local"] = info["is_local"]
+        state.fields["is_food"] = info["is_food"]
         # If the idea already made the platform clear, skip asking it.
         if info["platform"] in ("website", "app", "both"):
             state.fields["mobile_choice"] = {

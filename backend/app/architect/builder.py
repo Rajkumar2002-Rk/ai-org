@@ -764,6 +764,139 @@ def _payment_tickets() -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------- menu onboarding
+# Menu setup is a real generated FEATURE for food businesses (same shape as Stripe
+# Connect: built INTO the app, not done by the platform). The BA captures whether
+# the owner wants to type items in or upload a PDF; the Architect commissions the
+# matching tickets DETERMINISTICALLY so a feature the owner explicitly asked for
+# never depends on non-deterministic LLM ticket generation. Both paths share ONE
+# menu_items table + admin manage-items screen; the PDF path adds an extraction
+# pipeline (text-first, vision fallback) that writes UNPUBLISHED items plus a
+# review/confirm screen — nothing extracted goes live until the owner approves it.
+_MENU_ITEMS_TABLE = {
+    "table": "menu_items",
+    "columns": [
+        {"name": "id", "type": "integer"},
+        {"name": "name", "type": "string"},
+        {"name": "price", "type": "string"},
+        {"name": "category", "type": "string"},
+        {"name": "description", "type": "text"},
+        {"name": "status", "type": "string"},   # 'pending_review' | 'published'
+        {"name": "source", "type": "string"},    # 'manual' | 'pdf'
+        {"name": "created_at", "type": "datetime"},
+    ],
+    "relationships": [],
+}
+
+
+def _menu_schema() -> list[dict]:
+    return [dict(_MENU_ITEMS_TABLE)]
+
+
+def _menu_endpoints(menu_setup: str) -> list[dict]:
+    eps = [
+        {"method": "GET", "path": "/menu",
+         "purpose": "Public: list PUBLISHED menu items for customers"},
+        {"method": "GET", "path": "/admin/menu",
+         "purpose": "Owner: list all menu items (published + pending)"},
+        {"method": "POST", "path": "/admin/menu",
+         "purpose": "Owner: add a menu item manually (published)"},
+        {"method": "PUT", "path": "/admin/menu/{item_id}",
+         "purpose": "Owner: edit a menu item"},
+        {"method": "DELETE", "path": "/admin/menu/{item_id}",
+         "purpose": "Owner: delete a menu item"},
+    ]
+    if menu_setup == "pdf":
+        eps += [
+            {"method": "POST", "path": "/admin/menu/upload",
+             "purpose": "Owner: upload a menu PDF; extract items as PENDING review (never auto-published)"},
+            {"method": "GET", "path": "/admin/menu/pending",
+             "purpose": "Owner: list extracted items awaiting review"},
+            {"method": "POST", "path": "/admin/menu/confirm",
+             "purpose": "Owner: publish reviewed items — the ONLY way extracted items go live"},
+        ]
+    return eps
+
+
+def _menu_tickets(menu_setup: str) -> list[dict]:
+    tickets = [
+        {
+            "id": "MENU-1",
+            "title": "Menu items: admin CRUD + public menu endpoint",
+            "assigned_to": "backend",
+            "filepath": "backend/app/routes/menu.py",
+            "description": (
+                "Build the menu API on the menu_items model from app.models "
+                "(FND-1 defines it from the contract). GET /menu returns ONLY "
+                "status='published' items for customers. Owner endpoints: GET "
+                "/admin/menu (all items), POST /admin/menu (add one item with "
+                "status='published', source='manual'), PUT /admin/menu/{item_id} "
+                "(edit), DELETE /admin/menu/{item_id}. Use Pydantic schemas for "
+                "request/response bodies — never an ORM model as a response_model."
+            ),
+            "dependencies": ["FND-1", "FND-2"],
+        },
+        {
+            "id": "MENU-2",
+            "title": "Admin 'Manage menu' screen (add / edit / delete items)",
+            "assigned_to": "frontend",
+            "filepath": "frontend/app/admin/menu/page.tsx",
+            "description": (
+                "An owner screen listing menu items with a form to add an item "
+                "(name, price, category, description) and controls to edit or "
+                "delete each, wired to /admin/menu. This is the owner's manual "
+                "menu-entry surface, and where confirmed items also appear."
+            ),
+            "dependencies": ["MENU-1"],
+        },
+    ]
+    if menu_setup == "pdf":
+        tickets += [
+            {
+                "id": "MENU-3",
+                "title": "Menu PDF upload + extraction (text-first, vision fallback) into pending review",
+                "assigned_to": "backend",
+                "filepath": "backend/app/routes/menu_upload.py",
+                "description": (
+                    "POST /admin/menu/upload accepts a menu PDF and creates "
+                    "menu_items with status='pending_review', source='pdf' — NEVER "
+                    "published directly. Automatically detect which case applies: "
+                    "FIRST extract real text directly from the PDF (e.g. "
+                    "pypdf/pdfplumber — no AI model, low error rate). If the PDF "
+                    "yields little or no extractable text (a scanned/image menu), "
+                    "FALL BACK to a vision model that reads the page image(s) "
+                    "directly (Anthropic Claude; read the key from the "
+                    "MENU_EXTRACTION_API_KEY environment variable) with a "
+                    "STRUCTURED prompt returning each item's dish name, price, "
+                    "category and description as JSON. Before processing, VALIDATE "
+                    "the upload: enforce a maximum file size, require a PDF content "
+                    "type, and NEVER use the client-supplied filename in a "
+                    "filesystem path or shell command. A malformed or corrupt PDF "
+                    "must fail gracefully with a clear error and never crash the "
+                    "server. GET /admin/menu/pending lists the items awaiting review."
+                ),
+                "dependencies": ["MENU-1"],
+            },
+            {
+                "id": "MENU-4",
+                "title": "Menu review/confirm screen — approve extracted items before publishing",
+                "assigned_to": "frontend",
+                "filepath": "frontend/app/admin/menu/review/page.tsx",
+                "description": (
+                    "After a PDF upload, show the extracted items (GET "
+                    "/admin/menu/pending) as an EDITABLE review list. The owner can "
+                    "correct any field and reject/remove wrong items, then confirm. "
+                    "ONLY on confirm does POST /admin/menu/confirm publish the "
+                    "approved items — nothing pulled from the PDF goes live until "
+                    "the owner approves it. Make clear on screen that these items "
+                    "were auto-extracted from their PDF and should be checked."
+                ),
+                "dependencies": ["MENU-3", "MENU-2"],
+            },
+        ]
+    return tickets
+
+
 def _integration_ticket(apis: list[dict]) -> dict:
     names = ", ".join(a["name"] for a in apis)
     return {
@@ -789,7 +922,10 @@ _ARCH_SYSTEM = (
     "mobile, integration. Ticket ids like BE-1, FE-1, INT-1. Do NOT create "
     "tickets for custom password authentication or for payment processing — "
     "authentication is delegated to a managed identity provider and payments use "
-    "Stripe Connect; both are added separately. No prose."
+    "Stripe Connect; both are added separately. Also do NOT create tickets for "
+    "menu management, menu item entry (admin add/edit forms), or menu PDF "
+    "upload/extraction — those are added separately when applicable; you MAY still "
+    "design a customer-facing menu DISPLAY page that reads GET /menu. No prose."
 )
 
 
@@ -902,6 +1038,16 @@ async def build_blueprint(summary: dict) -> dict:
         database_schema += _stripe_connect_schema()
         api_endpoints += _stripe_connect_endpoints()
         tickets += _payment_tickets()
+
+    # Menu onboarding (food businesses): a real generated feature, deterministic
+    # like Stripe Connect. Manual -> shared menu_items table + admin form; PDF ->
+    # also a text/vision extraction pipeline feeding a review screen so nothing is
+    # auto-published. Gated on the BA-captured is_food + menu_setup choice.
+    menu_setup = summary.get("menu_setup")
+    if summary.get("is_food") and menu_setup in ("manual", "pdf"):
+        database_schema += _menu_schema()
+        api_endpoints += _menu_endpoints(menu_setup)
+        tickets += _menu_tickets(menu_setup)
 
     # Generic integration ticket only for NON-payment third-party services
     # (Stripe Connect has its own PAY-* tickets above).

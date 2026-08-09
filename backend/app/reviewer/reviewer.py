@@ -87,6 +87,34 @@ def _is_payment_sensitive(file: dict) -> bool:
     return any(hint in path for hint in _PAYMENT_PATH_HINTS)
 
 
+# Menu PDF upload/extraction files process user-UPLOADED files — a common source
+# of bugs (malformed PDFs, oversized files, filename injection). They get extra
+# scrutiny in the GENERAL review pass (per the menu-onboarding feature spec).
+_MENU_EXTRACTION_FOCUS = (
+    "\n\nThis file is part of the menu PDF upload/extraction feature, which "
+    "processes user-UPLOADED files. Scrutinize SPECIFICALLY and flag any failure: "
+    "(1) malformed or corrupt PDFs are handled gracefully — the server returns a "
+    "clear error and NEVER crashes; (2) upload limits are enforced — oversized "
+    "files and non-PDF content types are rejected BEFORE processing; (3) no "
+    "injection via a crafted filename — the client-supplied filename is never used "
+    "in a filesystem path or shell command; (4) extracted items are NEVER "
+    "auto-published — they must be stored as pending review and only go live after "
+    "explicit owner confirmation."
+)
+
+_MENU_EXTRACTION_TICKETS = ("MENU-3", "MENU-4")
+_MENU_EXTRACTION_PATH_HINTS = ("menu_upload", "menu/review")
+
+
+def _is_menu_extraction(file: dict) -> bool:
+    """A menu PDF upload/extraction or review file — extra scrutiny in the general
+    pass, since it processes user-uploaded files."""
+    if str(file.get("ticket_id", "")) in _MENU_EXTRACTION_TICKETS:
+        return True
+    path = (file.get("filepath") or file.get("filename") or "").lower()
+    return any(hint in path for hint in _MENU_EXTRACTION_PATH_HINTS)
+
+
 async def _review(model: str, system: str, file: dict, content: str, bypass: bool) -> list[dict]:
     text, _ = await codegen.generate(
         model, system,
@@ -125,7 +153,11 @@ async def review_file(file: dict, general_model: str) -> dict:
     found = fixed = 0
 
     # --- PASS 1: general review (respects cheap mode) ---
-    g_issues = await _review(general_model, _GENERAL_SYS, file, content, bypass=False)
+    # Menu upload/extraction files get an extra file-handling checklist here.
+    general_sys = _GENERAL_SYS + (
+        _MENU_EXTRACTION_FOCUS if _is_menu_extraction(file) else ""
+    )
+    g_issues = await _review(general_model, general_sys, file, content, bypass=False)
     found += len(g_issues)
     g_fixable = [i for i in g_issues if i.get("severity") in ("minor", "medium")]
     if g_fixable:

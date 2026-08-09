@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     # Extra code-gen providers (Week 4). Absent -> fall back to OpenAI.
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
+    # Platform-held vision key for menu PDF extraction, injected by DevOps ONLY
+    # into deployed apps that shipped the menu PDF-upload feature (Week 10). This
+    # is a SCOPED, single-purpose platform key — deliberately separate from the
+    # master anthropic_api_key, and distinct from the still-open owner-facing
+    # secrets-onboarding UI. Absent -> scanned-menu extraction is unavailable and
+    # the app says so honestly (it never fakes an extraction).
+    menu_extraction_api_key: str | None = None
 
     # LLM routing for the BA agent (locked per CONTEXT.md).
     ba_model: str = "gpt-4o-mini"

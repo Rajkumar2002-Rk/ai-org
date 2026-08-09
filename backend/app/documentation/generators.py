@@ -69,6 +69,15 @@ async def user_guide(facts: dict) -> str:
         + ("Include a section 'Connecting your Stripe account' explaining they "
            "open Settings and tap 'Connect Stripe' (payments are visible but off "
            "until they connect). " if facts["has_payments"] else "")
+        + (("Include a section 'Your menu' explaining they upload a PDF of their "
+            "menu and then REVIEW the items we pulled out — they can fix or remove "
+            "any item, and NOTHING appears for customers until they confirm. Be "
+            "honest that the auto-pulled items should be checked and may not be "
+            "perfect; do NOT claim the reading is always accurate. "
+            if facts["menu"]["is_pdf"] else
+            "Include a section 'Your menu' explaining they add and edit their menu "
+            "items themselves from the menu screen. ")
+           if facts["menu"]["built"] else "")
         + "No preamble, output only the markdown guide."
     )
     user = json.dumps({
@@ -102,6 +111,25 @@ async def user_guide(facts: dict) -> str:
                   "2. Tap **Connect Stripe**.",
                   "3. Sign in to Stripe and approve — your payment buttons turn on "
                   "automatically.", ""]
+    if facts["menu"]["built"]:
+        if facts["menu"]["is_pdf"]:
+            lines += ["## Your menu", "",
+                      "You can upload a PDF of your menu and we'll pull the items "
+                      "out for you. Because that reading isn't always perfect, "
+                      "nothing goes live until you check it.", "",
+                      "1. Open the **Manage menu** screen and choose your menu PDF.",
+                      "2. We'll show you the items we found.",
+                      "3. Fix or remove anything that looks wrong.",
+                      "4. Tap **Confirm** — only then do the items appear for your "
+                      "customers.", ""]
+        else:
+            lines += ["## Your menu", "",
+                      "You add your menu items yourself, and can change them "
+                      "anytime.", "",
+                      "1. Open the **Manage menu** screen.",
+                      "2. Tap **Add item** and fill in the name, price, category "
+                      "and description.",
+                      "3. Use edit or delete to keep your menu up to date.", ""]
     return "\n".join(lines)
 
 
@@ -254,6 +282,11 @@ def handoff_summary(facts: dict) -> dict:
         if "stripe" in i["name"].lower() and not i["connected"]:
             notes.append("Payments are set up in the app but no Stripe account has "
                          "been connected yet.")
+
+    if facts["menu"]["is_pdf"]:
+        notes.append("Menu items uploaded from a PDF are read automatically, which "
+                     "isn't always perfect — the owner reviews and confirms every "
+                     "item before it goes live, so nothing publishes unchecked.")
 
     return {
         "project_id": facts["project_id"],

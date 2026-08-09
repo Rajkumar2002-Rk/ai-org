@@ -65,6 +65,16 @@ async def _load_files(project_id: int) -> list[dict]:
              "content": r[4], "agent_type": r[5]} for r in rows]
 
 
+def _has_menu_pdf(files: list[dict]) -> bool:
+    """True when this app shipped the menu PDF-upload/extraction feature (MENU-3),
+    identified by its route file. Drives the scoped platform vision-key injection."""
+    for f in files:
+        path = (f.get("filepath") or f.get("filename") or "").lower()
+        if "menu_upload" in path or f.get("ticket_id") == "MENU-3":
+            return True
+    return False
+
+
 async def _tests_passed(project_id: int) -> int:
     raw = await redis_client.get(f"qa_report:{project_id}")
     if raw:
@@ -179,6 +189,23 @@ async def run(project_id: int) -> dict:
             logger.warning("SECRETS_ENC_KEY unset — deploying with no injected "
                            "secrets. If the app needs a key it will fail-fast and "
                            "be escalated (never faked).")
+
+        # Platform-provided menu vision key — injected ONLY for apps that shipped
+        # the menu PDF-upload feature (menu_upload.py). Scoped, platform-held
+        # (settings.menu_extraction_api_key), distinct from the owner-facing
+        # secrets-onboarding gap. Added BEFORE guard() so its value is redacted
+        # from logs like any other secret. Absent -> we warn and let the app
+        # report scanned-menu reading as unavailable (never faked).
+        if _has_menu_pdf(files):
+            if settings.menu_extraction_api_key:
+                env["MENU_EXTRACTION_API_KEY"] = settings.menu_extraction_api_key
+                secret_names = sorted(set(secret_names) | {"MENU_EXTRACTION_API_KEY"})
+            else:
+                logger.warning("Project %s ships the menu PDF feature but "
+                               "MENU_EXTRACTION_API_KEY is unset — scanned-menu "
+                               "reading will be unavailable until the platform key "
+                               "is configured.", project_id)
+
         # Register secret VALUES for redaction, and protect the root handlers so
         # nothing in this deploy can emit them.
         secrets_store.guard(env.values())

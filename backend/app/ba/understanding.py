@@ -28,6 +28,9 @@ _CLASSIFY_SYS = (
     "physical business tied to a place (coffee shop, salon, gym, restaurant, "
     "auto shop). false for global/online apps (social, SaaS, marketplaces) and "
     "for internal/personal tools.\n"
+    '- "is_food": true if the business sells food or drink and would have a '
+    "MENU — restaurant, cafe, coffee shop, bakery, bar, food truck, deli, "
+    "juice bar, ice-cream shop. false otherwise.\n"
     "Return ONLY that JSON object."
 )
 
@@ -39,7 +42,7 @@ async def classify(build: str) -> dict:
     if not isinstance(result, dict):
         return {
             "customer_facing": True, "platform": "unknown",
-            "kind": "unknown", "is_local": False,
+            "kind": "unknown", "is_local": False, "is_food": False,
         }
     platform = str(result.get("platform", "unknown")).lower()
     if platform not in ("website", "app", "both", "unknown"):
@@ -53,6 +56,7 @@ async def classify(build: str) -> dict:
         "platform": platform,
         "kind": str(result.get("kind", "unknown")),
         "is_local": bool(result.get("is_local", False)),
+        "is_food": bool(result.get("is_food", False)),
     }
 
 

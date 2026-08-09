@@ -243,6 +243,8 @@ def ingest(state: st.BAState, message: str) -> None:
             f["city"], f["state"] = msg, ""
     elif stage == st.ASK_AUDIENCE:
         f["audience"] = msg
+    elif stage == st.ASK_MENU:
+        f["menu_setup"] = _parse_menu_setup(msg)
     elif stage == st.ASK_USER_COUNT:
         f["user_count"] = msg
     elif stage == st.ASK_BUDGET:
@@ -282,6 +284,12 @@ def _parse_ci_selection(msg: str, ci: dict | None) -> list[str]:
         # Fall back to treating the message as a free-text wish.
         selected.append(msg)
     return selected
+
+
+def _parse_menu_setup(msg: str) -> str:
+    """"pdf" if they want to upload a menu PDF, else "manual" (type items in)."""
+    low = msg.lower()
+    return "pdf" if ("pdf" in low or "upload" in low or "file" in low) else "manual"
 
 
 def _parse_plan(msg: str) -> str:
@@ -334,6 +342,8 @@ def _should_skip(stage: str, state: st.BAState) -> bool:
         return True  # platform already known from the idea
     if stage == st.ASK_LOCATION and not _needs_market_research(f):
         return True
+    if stage == st.ASK_MENU and not f.get("is_food", False):
+        return True  # menu setup only matters for food/restaurant businesses
     if stage == st.ASK_USER_COUNT and understanding.is_single_user(f):
         return True
     if stage == st.PRESENT_CI and not _needs_market_research(f):
@@ -400,6 +410,12 @@ async def compose(state: st.BAState) -> dict:
         return _choices(
             _ack(state) + "Who's going to use this — just you, or other people too?",
             ["Just me", "Other people too"],
+        )
+    if stage == st.ASK_MENU:
+        return _choices(
+            _ack(state) + "Would you like to type in your menu items yourself, "
+            "or upload a PDF of your menu and we'll pull the items out for you?",
+            ["Type them in myself", "Upload a PDF"],
         )
     if stage == st.ASK_USER_COUNT:
         return _text("Roughly how many people do you expect to use it?")
@@ -555,6 +571,13 @@ def _summary(state: st.BAState) -> str:
     if f.get("location"):
         lines.append(f"• Location: {f['location']}")
     lines.append(f"• Who it's for: {f.get('audience', '—')}")
+    if f.get("is_food") and f.get("menu_setup"):
+        lines.append(
+            "• Your menu: "
+            + ("upload a PDF and we'll pull the items out (you review before "
+               "anything goes live)" if f["menu_setup"] == "pdf"
+               else "you'll type in your menu items")
+        )
     lines.append(f"• Expected users: {f.get('user_count', '—')}")
     lines.append(f"• Monthly budget: {f.get('budget', '—')}")
     lines.append(f"• Timing: {f.get('timeline', '—')}")
@@ -600,6 +623,8 @@ def build_summary_dict(state: st.BAState) -> dict:
         "platform": f.get("platform"),
         "customer_facing": f.get("customer_facing", True),
         "is_local": f.get("is_local", False),
+        "is_food": f.get("is_food", False),
+        "menu_setup": f.get("menu_setup"),
         "app_kind": f.get("app_kind"),
         "plan": {"id": plan["id"], "name": plan["name"]},
         "competitor_features": f.get("selected_ci", []),
@@ -644,6 +669,13 @@ async def persist_on_confirm(db: AsyncSession, state: st.BAState) -> None:
     add_req(f"Growth plans: {f.get('growth', '')}", "user_stated")
     if f.get("mobile_choice"):
         add_req(f"Phone experience: {f['mobile_choice']}", "user_stated")
+    if f.get("is_food") and f.get("menu_setup"):
+        _menu_label = (
+            "upload a PDF menu and have items extracted (with a review step)"
+            if f["menu_setup"] == "pdf"
+            else "add menu items manually"
+        )
+        add_req(f"Menu setup: {_menu_label}", "user_stated")
 
     for suggestion in f.get("selected_ci", []):
         add_req(suggestion, "competitor_insight")

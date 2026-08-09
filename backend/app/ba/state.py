@@ -15,6 +15,7 @@ ASK_PLATFORM = "ask_platform"
 ASK_BUSINESS_NAME = "ask_business_name"
 ASK_LOCATION = "ask_location"
 ASK_AUDIENCE = "ask_audience"
+ASK_MENU = "ask_menu"  # food businesses only: type-in vs upload-a-PDF menu
 ASK_USER_COUNT = "ask_user_count"
 ASK_BUDGET = "ask_budget"
 ASK_TIMELINE = "ask_timeline"
@@ -38,6 +39,7 @@ ORDER = [
     ASK_BUSINESS_NAME,
     ASK_LOCATION,
     ASK_AUDIENCE,
+    ASK_MENU,
     ASK_USER_COUNT,
     ASK_BUDGET,
     ASK_TIMELINE,

@@ -243,4 +243,15 @@ async def gather(project_id: int) -> dict:
         "file_count": len(files),
         "has_payments": any(i["connection"] == "in_app_oauth" or "stripe" in i["name"].lower()
                             for i in _integrations(blueprint, secret_names)),
+        "menu": _menu(files),
     }
+
+
+def _menu(files: list[dict]) -> dict:
+    """Whether a menu feature was actually BUILT, and whether the PDF-upload path
+    was built — derived from the real generated files, so the guide describes only
+    what exists (and mentions the review step ONLY when the PDF path shipped)."""
+    paths = [(f.get("filepath") or f.get("filename") or "").lower() for f in files]
+    is_pdf = any("menu_upload" in p or "menu/review" in p for p in paths)
+    has_menu = is_pdf or any("routes/menu.py" in p or "admin/menu" in p for p in paths)
+    return {"built": has_menu, "is_pdf": is_pdf}

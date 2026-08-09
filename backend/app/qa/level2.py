@@ -325,6 +325,106 @@ async def _malicious_filenames(client, base, spec) -> list[TestOutcome]:
     return out
 
 
+_MENU_SENTINEL = "QATESTMENUITEM"
+
+
+def _text_pdf(text: str) -> bytes:
+    """A minimal, valid single-page PDF whose visible text is `text` (also present
+    as plain bytes, so even a naive extractor finds it). Used to prove a text menu
+    is extracted but held for review, never auto-published."""
+    safe = text.replace("(", " ").replace(")", " ").encode("latin-1", "replace")
+    stream = b"BT /F1 14 Tf 20 120 Td (" + safe + b") Tj ET"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    buf = b"%PDF-1.4\n"
+    offsets = []
+    for i, body in enumerate(objects, start=1):
+        offsets.append(len(buf))
+        buf += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref_pos = len(buf)
+    buf += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for off in offsets:
+        buf += b"%010d 00000 n \n" % off
+    buf += (b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF"
+            % (len(objects) + 1, xref_pos))
+    return buf
+
+
+async def _menu_pdf_extraction(client, base, spec) -> list[TestOutcome]:
+    """Menu PDF onboarding safety. Only runs when the app exposes POST
+    .../menu/upload. Verifies: (1) a malformed/corrupt PDF fails GRACEFULLY (no
+    server crash); (2) extracted items are NEVER auto-published — they must wait
+    for the owner's review before appearing on the public menu.
+
+    The upload endpoint is owner-only, so without a login token QA cannot exercise
+    extraction. When that happens we record an explicit 'not exercised' note rather
+    than a false pass — an auth block is not proof the PDF handling is safe."""
+    paths = spec.get("paths") or {}
+    upload = next((p for p in paths
+                   if p.lower().endswith("/menu/upload") and "post" in paths[p]), None)
+    if not upload:
+        return []
+    target = f"POST {upload}"
+    out: list[TestOutcome] = []
+
+    async def _upload(data: bytes):
+        return await _req(client, base, "POST", upload,
+                          files={"file": ("menu.pdf", data, "application/pdf")})
+
+    # Probe once to see whether the endpoint is reachable without a login.
+    try:
+        first = await _upload(b"%PDF-1.4\nnot a real pdf " + b"\x00\x01\x02\x03" * 32)
+    except Exception as exc:
+        return [TestOutcome(f"{target} — corrupt PDF handled gracefully", 2, False,
+                            f"The upload request raised an error: {exc}", target)]
+
+    if first.status_code in (401, 403):
+        # Honest: extraction and the auto-publish guard were NOT exercised here.
+        return [TestOutcome(
+            f"{target} — menu extraction (login-gated, not exercised by QA)", 2, True,
+            "Upload requires an owner login; QA has no token, so corrupt-PDF handling "
+            "and the auto-publish guard were not exercised in this run.", target)]
+
+    # (1) Malformed PDF must not crash the server.
+    if failure_is_server_error(first.status_code):
+        out.append(TestOutcome(f"{target} — corrupt PDF handled gracefully", 2, False,
+                   f"Server error {first.status_code} on a malformed PDF — it should "
+                   f"be rejected gracefully, not crash.", target))
+    else:
+        out.append(TestOutcome(f"{target} — corrupt PDF handled gracefully", 2, True, "",
+                   target))
+
+    # (2) A text PDF's items must land for review, NOT on the public menu.
+    try:
+        up = await _upload(_text_pdf(f"{_MENU_SENTINEL} 9.99"))
+        if failure_is_server_error(up.status_code):
+            out.append(TestOutcome(f"{target} — text PDF handled gracefully", 2, False,
+                       f"Server error {up.status_code} on a valid text PDF.", target))
+        else:
+            out.append(TestOutcome(f"{target} — text PDF handled gracefully", 2, True, "",
+                       target))
+            menu = await _req(client, base, "GET", "/menu")
+            published = (menu.text if menu is not None else "") or ""
+            label = f"{target} — extracted items are NOT auto-published"
+            if _MENU_SENTINEL in published:
+                out.append(TestOutcome(label, 2, False,
+                           "An uploaded menu item appeared on the PUBLIC menu without "
+                           "the owner reviewing it. Extracted items must wait for "
+                           "confirmation.", target))
+            else:
+                out.append(TestOutcome(label, 2, True, "", target))
+    except Exception as exc:
+        out.append(TestOutcome(f"{target} — extracted items are NOT auto-published", 2,
+                   False, f"The upload/verify flow raised an error: {exc}", target))
+    return out
+
+
 # ------------------------------------------------------------------ entrypoint
 async def run(env: TestEnv) -> list[TestOutcome]:
     """Run the full attack simulation against the throwaway instance."""
@@ -340,7 +440,8 @@ async def run(env: TestEnv) -> list[TestOutcome]:
                                 f"Could not inspect the running app: {exc}", "app")]
 
         for attack in (_no_login, _bad_credentials, _sql_injection, _idor,
-                       _negative_amounts, _malicious_filenames):
+                       _negative_amounts, _malicious_filenames,
+                       _menu_pdf_extraction):
             try:
                 results.extend(await attack(client, env.base_url, spec))
             except Exception as exc:  # pragma: no cover - one attack must not kill the rest
