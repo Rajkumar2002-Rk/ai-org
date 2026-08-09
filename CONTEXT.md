@@ -5,26 +5,114 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Week 10 Part 1 (Landing page) COMPLETE & VERIFIED (2026-08-01)
+# ⏭️ RESUME HERE — Menu Onboarding feature BUILT & offline-proven (2026-08-08)
 
-**Start the next session with:** "Read CONTEXT.md. Weeks 1-9 and Week 10 Part 1 are
-complete." All 15 agents are built and each week is closed; the public landing page
-now fronts the whole experience. **Next up is Week 10 Part 2 — the real demo run**
-(a full BA→…→DevOps→Documentation pipeline for real, watched end to end; this spends
-real LLM/pipeline money, ~$1.40/build, so it's its own session).
+**Start the next session with:** "Read CONTEXT.md. Weeks 1-9, Week 10 Part 1, and the
+Menu Onboarding feature are complete." All 15 agents are built; the landing page
+fronts the experience; and food/restaurant apps now get a real menu-onboarding
+feature (manual entry OR PDF upload with AI extraction), built the same way as Stripe
+Connect. **Next up is still the real demo run** — a full BA→…→DevOps→Documentation
+pipeline for real, watched end to end (spends real money, ~$2/build), now including
+the menu feature for a food-business idea.
 
-**Git state:** branch `master`. Week-10-Part-1 commits, in order: **`3d2e469`**
-(landing page + build mascot, frontend) → this CONTEXT commit (follows). Permanent
-rules still apply: **no `Co-Authored-By` line, ever**; never commit `.env`; keep the
-repo private. (Not yet pushed by me — push when ready.)
+**⚠️ Menu Onboarding is OFFLINE-PROVEN ONLY — it has NOT been exercised in a real
+build.** 42 offline checks pass and all 9 free suites still pass (no regressions), but
+no paid pipeline has generated/deployed the menu feature yet. The Developer agents'
+actual menu code (real PDF text extraction + vision fallback) is unproven on a live
+run — verify it in the demo run.
 
-**Nothing is pending from Part 1** — the build, the live browser verification, the
-test-project cleanup, the code commit, and this CONTEXT close-out are ALL done.
+**Git state:** branch `master`. Recent commits: `3d2e469`/`3b87178` (Week 10 Part 1) →
+`9f763fd` (QA-failed message wording fix, from the aborted demo run). The Menu
+Onboarding change is **UNCOMMITTED in the working tree** unless a later commit records
+it — check `git status` / `git log`. Permanent rules still apply: **no `Co-Authored-By`
+line, ever**; never commit `.env`; keep the repo private.
 
-**Likely next work:** Week 10 Part 2 (real demo run) as above. Still carried from
-earlier: the post-Week-8 **MODEL SWITCH** (own session; verified model strings +
-retest each agent), the secrets-table onboarding gap, and a real AWS Cost Explorer
-shakeout.
+**Likely next work:** the real demo run (now with a food-business idea to exercise the
+menu feature). Still carried from earlier: the post-Week-8 **MODEL SWITCH** (own
+session; verified model strings + retest each agent), the **secrets-table onboarding
+gap** (see the menu-vision-key note below — this feature now depends on it), and a real
+AWS Cost Explorer shakeout.
+
+---
+
+# MENU ONBOARDING — food/restaurant menu setup (manual OR PDF extraction) — BUILT, offline-proven (2026-08-08)
+
+A real generated FEATURE for food businesses, built into the generated app the SAME
+way as Stripe Connect (BA captures the choice → Architect commissions deterministic
+tickets → Developer agents build it), NOT something the platform does itself. The
+owner chooses to type menu items in OR upload a menu PDF and have items pulled out.
+
+### The six agent changes (all offline-proven; no LLM/network/paid build)
+- **BA** (`ba/understanding.py`, `ba/graph.py`, `ba/state.py`, `ba/controller.py`):
+  `classify()` now returns **`is_food`** (restaurant/cafe/bar/etc., detected exactly
+  like `is_local`/`customer_facing`). A new **`ASK_MENU`** stage (in `ORDER`, gated by
+  `_should_skip` on `is_food`) asks the one plain-English question *"type in your menu
+  items yourself, or upload a PDF…"*. The answer is parsed (`_parse_menu_setup` →
+  `manual`/`pdf`), shown on the confirmation screen, carried in the summary
+  (`is_food`+`menu_setup`), and captured as a **`user_stated` requirement** — same
+  pattern as every other BA answer.
+- **Architect** (`architect/builder.py`): deterministic `_menu_schema()` (a shared
+  **`menu_items`** table with a `status` = `pending_review`|`published` and `source`),
+  `_menu_endpoints()`, and `_menu_tickets(menu_setup)`. Gated in `build_blueprint` on
+  `is_food` + `menu_setup`. **Manual** → MENU-1 (backend CRUD + public `GET /menu`) +
+  MENU-2 (admin add/edit form). **PDF** → also MENU-3 (upload: text-first extraction,
+  vision fallback via `MENU_EXTRACTION_API_KEY`, writes `pending_review`, file-size +
+  content-type + filename-injection guards, graceful on corrupt PDFs) + MENU-4 (review/
+  confirm screen — nothing publishes until the owner approves). The `_ARCH_SYSTEM`
+  prompt now tells the LLM **not** to generate menu tickets (may still design a
+  customer-facing menu DISPLAY page). One shared table + admin form is reused by both
+  paths — the PDF review screen is that form pre-filled.
+- **Code Reviewer** (`reviewer/reviewer.py`): `_is_menu_extraction()` flags MENU-3/4
+  and `menu_upload`/`menu/review` files; the GENERAL review pass gets a
+  `_MENU_EXTRACTION_FOCUS` checklist (malformed PDFs, oversized files, filename
+  injection, never auto-publish). Ordinary menu CRUD (MENU-1) is deliberately NOT
+  over-flagged.
+- **QA** (`qa/level2.py`): new `_menu_pdf_extraction` probe (in the attack list) +
+  `_text_pdf` fixture builder. Verifies a corrupt PDF fails gracefully (no 5xx crash)
+  and extracted items are NEVER auto-published (sentinel absent from public `/menu`).
+  Because `/admin/menu/upload` is owner-only, a real QA run without a token records an
+  explicit **"login-gated, not exercised"** note (honest — never a false pass).
+- **Documentation** (`documentation/datasource.py`, `documentation/generators.py`): a
+  `menu` fact derived from REAL generated files (`built`/`is_pdf`); the user guide and
+  handoff describe the feature accurately — for the PDF path they mention the review
+  step and say the reading "isn't always perfect" (never overstate accuracy).
+- **DevOps** (`config.py`, `devops/orchestrator.py`): `_has_menu_pdf()` gates a scoped
+  injection of the platform-held **`MENU_EXTRACTION_API_KEY`** into deploys of apps
+  that shipped MENU-3 — added before `guard()` so it's redacted from logs, and only
+  when the setting is present (else it warns; the app reports scanned-menu reading as
+  unavailable, never faked).
+
+### Decisions (with rationale)
+1. **Deterministic shared menu feature** (user chose) — one `menu_items` table + admin
+   form generated deterministically, not left to the non-deterministic LLM (same
+   reasoning as the binding-contract / Stripe fix). Confirmed first that NO
+   deterministic menu ticket existed (menu tables/tickets were LLM-emergent and usually
+   a customer-facing display, not an admin add-item form).
+2. **Platform-provided vision extraction** (user chose) — a small restaurant owner
+   won't have their own AI account (unlike Stripe, which owners expect to "connect").
+   A **scoped, single-purpose** platform key (`menu_extraction_api_key`), deliberately
+   separate from the master `anthropic_api_key`.
+3. **Build + offline tests only** (user chose) — no paid end-to-end run this session.
+
+### ⚠️ KNOWN GAP — vision extraction depends on the secrets-injection gap (Week 7)
+Platform-provided vision extraction needs `MENU_EXTRACTION_API_KEY` to actually reach
+the deployed app. The DevOps injection path is BUILT and offline-proven (the scoped
+"minimal path" the user asked for, NOT the full owner-facing "connect your keys" UI —
+that broader secrets-onboarding producer is still open since Week 7). To make scanned-
+menu extraction usable on a real deploy: set `MENU_EXTRACTION_API_KEY` in the
+platform's env. Until then, text-PDF and manual entry work; scanned/image menus read
+as "unavailable" (honestly), never faked. **This is the temporary, scoped unblock —
+the fuller secrets-onboarding UI remains the real fix.**
+
+### Verified (2026-08-08) — `test_menu_onboarding_offline.py`, 42 checks, 0 failures
+Architect ticket emission (food+pdf → MENU-1..4 + schema + endpoints; food+manual →
+MENU-1/2 only; non-food → none; LLM guard; unique filepaths; MENU-3 spec content); BA
+parsing + `is_food` gating + summary capture; reviewer flagging (positive AND negative
+cases); the QA probe run against a **correct** synthetic app (all checks pass) and a
+**broken** one that crashes on a corrupt PDF / auto-publishes (probe correctly FAILS —
+so it can fail for the reason it exists); documentation honesty; DevOps injection
+gating. **All 9 free suites still pass — no regressions.** No paid run (see the ⚠️
+above — the Developers' real menu code is unproven live).
 
 ---
 
