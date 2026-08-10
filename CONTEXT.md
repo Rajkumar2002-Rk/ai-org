@@ -5,33 +5,51 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Menu Onboarding feature BUILT & offline-proven (2026-08-08)
+# ⏭️ RESUME HERE — Menu Onboarding built; 2 live-run bugs found & fixed; extraction STILL unproven live (2026-08-10)
 
 **Start the next session with:** "Read CONTEXT.md. Weeks 1-9, Week 10 Part 1, and the
-Menu Onboarding feature are complete." All 15 agents are built; the landing page
-fronts the experience; and food/restaurant apps now get a real menu-onboarding
-feature (manual entry OR PDF upload with AI extraction), built the same way as Stripe
-Connect. **Next up is still the real demo run** — a full BA→…→DevOps→Documentation
-pipeline for real, watched end to end (spends real money, ~$2/build), now including
-the menu feature for a food-business idea.
+Menu Onboarding feature are complete; re-run the food-business demo." All 15 agents are
+built; the landing page fronts the experience; food/restaurant apps get a real
+menu-onboarding feature (manual entry OR PDF upload with AI extraction), built like
+Stripe Connect. **Next up is the real demo run** — re-run a restaurant idea →
+"Upload a PDF", end to end (real money, ~$3-4/build).
 
-**⚠️ Menu Onboarding is OFFLINE-PROVEN ONLY — it has NOT been exercised in a real
-build.** 42 offline checks pass and all 9 free suites still pass (no regressions), but
-no paid pipeline has generated/deployed the menu feature yet. The Developer agents'
-actual menu code (real PDF text extraction + vision fallback) is unproven on a live
-run — verify it in the demo run.
+**⚠️ Menu extraction is STILL UNPROVEN LIVE.** Two real end-to-end attempts were made
+and BOTH failed before the app booted — for reasons UNRELATED to the menu UI/extraction
+logic, each a real bug now fixed:
+- **Run 461** — the LLM Architect ALSO schemas its own `menu_items` table, so
+  `build_blueprint` had TWO → FND-1 "table already defined" → app never booted.
+  **Fixed** (`aef5349`): `_reconcile_menu_schema()` collapses them to one; the Architect
+  prompt now forbids a menu table/backend route; regression test added.
+- **Run 487** — got PAST the menu bug (built + security-reviewed fine, single
+  `menu_items` ✓), then wouldn't boot: `email-validator is not installed` (a generated
+  Pydantic `EmailStr` needs the extra, which no import names, so requirements missed it).
+  **Fixed** (`4a91170`): `needs_email_validator()` detection wired into the QA venv and
+  the deployed requirements; regression test added.
 
-**Git state:** branch `master`. Recent commits: `3d2e469`/`3b87178` (Week 10 Part 1) →
-`9f763fd` (QA-failed message wording fix, from the aborted demo run). The Menu
-Onboarding change is **UNCOMMITTED in the working tree** unless a later commit records
-it — check `git status` / `git log`. Permanent rules still apply: **no `Co-Authored-By`
-line, ever**; never commit `.env`; keep the repo private.
+So the menu upload/extraction code has NEVER actually run — the app died first both
+times. The **next run's job**: get the app to BOOT, then finally test manual entry +
+text-PDF extraction + scanned-PDF vision fallback + the pending-review gate. Expect the
+possibility of yet another unrelated codegen-quality blocker (this is the known
+non-deterministic tail); each one is a real fix.
 
-**Likely next work:** the real demo run (now with a food-business idea to exercise the
-menu feature). Still carried from earlier: the post-Week-8 **MODEL SWITCH** (own
-session; verified model strings + retest each agent), the **secrets-table onboarding
-gap** (see the menu-vision-key note below — this feature now depends on it), and a real
-AWS Cost Explorer shakeout.
+**Costs so far on the live attempts:** run 461 ≈ $1.90 (aborted mid-Opus-review), run
+487 ≈ $3.40 (ran to QA-fail). Both projects deleted; DB max project id back to 435.
+
+**⚠️ BEFORE THE DEMO RECORDING:** `MENU_EXTRACTION_API_KEY` in `.env` is currently the
+MASTER Anthropic key (test-only) and is wired into the backend via `docker-compose.yml`.
+Replace it with a SEPARATE scoped/rate-limited key before recording (see the vision-key
+gap note further down).
+
+**Git state:** branch `master`, all LOCAL/UNPUSHED. Menu feature `788a5fd` + record
+`04f1787`; compose wiring `765ce97` + note `ab06f8c`; dedupe fix `aef5349`;
+email-validator fix `4a91170`; this CONTEXT commit follows. Permanent rules: **no
+`Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
+
+**Likely next work:** the real demo run (food idea) to finally exercise the menu
+extraction live. Still carried: the post-Week-8 **MODEL SWITCH** (own session), the
+**secrets-table onboarding gap** (the menu vision key depends on it — scoped-key note
+below), and a real AWS Cost Explorer shakeout.
 
 ---
 
