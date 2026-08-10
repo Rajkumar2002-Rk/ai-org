@@ -104,6 +104,16 @@ platform's env. Until then, text-PDF and manual entry work; scanned/image menus 
 as "unavailable" (honestly), never faked. **This is the temporary, scoped unblock —
 the fuller secrets-onboarding UI remains the real fix.**
 
+**⚠️ ACTION REQUIRED BEFORE THE REAL DEMO RECORDING (not before the local test run).**
+For the 2026-08-09 local test run, `MENU_EXTRACTION_API_KEY` in `.env` was set to the
+**master `ANTHROPIC_API_KEY` value** (and wired into the backend via
+`docker-compose.yml`), so the deployed local app calls Claude with the master key.
+That is acceptable ONLY for a local test on the owner's own machine. **Before the real
+demo recording, replace it with a SEPARATE, scoped, rate-limited Anthropic key** (its
+own budget cap) so a deployed app never holds the platform master key — this is exactly
+why `menu_extraction_api_key` is a distinct setting from `anthropic_api_key`. Do NOT
+record the demo until this swap is done.
+
 ### Verified (2026-08-08) — `test_menu_onboarding_offline.py`, 42 checks, 0 failures
 Architect ticket emission (food+pdf → MENU-1..4 + schema + endpoints; food+manual →
 MENU-1/2 only; non-food → none; LLM guard; unique filepaths; MENU-3 spec content); BA
