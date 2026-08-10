@@ -793,6 +793,30 @@ def _menu_schema() -> list[dict]:
     return [dict(_MENU_ITEMS_TABLE)]
 
 
+def _reconcile_menu_schema(database_schema: list[dict]) -> list[dict]:
+    """Guarantee EXACTLY ONE menu_items table, owned by the deterministic menu
+    feature. For a restaurant idea the LLM Architect often schemas its own
+    menu_items table too — two entries make FND-1 define the model twice
+    ("table already defined") and the app never boots. So we drop any LLM-provided
+    menu_items table and use the deterministic one (which carries the columns the
+    feature needs — status/source for the review-before-publish flow), merging in
+    any EXTRA columns the LLM added (e.g. image_url) that we don't already define."""
+    det_cols = [dict(c) for c in _MENU_ITEMS_TABLE["columns"]]
+    have = {c["name"] for c in det_cols}
+    kept: list[dict] = []
+    for t in database_schema:
+        if (t.get("table") or "").strip().lower() == "menu_items":
+            for c in t.get("columns", []) or []:
+                name = c.get("name")
+                if name and name not in have:
+                    det_cols.append(dict(c))
+                    have.add(name)
+        else:
+            kept.append(t)
+    kept.append({**_MENU_ITEMS_TABLE, "columns": det_cols})
+    return kept
+
+
 def _menu_endpoints(menu_setup: str) -> list[dict]:
     eps = [
         {"method": "GET", "path": "/menu",
@@ -922,10 +946,13 @@ _ARCH_SYSTEM = (
     "mobile, integration. Ticket ids like BE-1, FE-1, INT-1. Do NOT create "
     "tickets for custom password authentication or for payment processing — "
     "authentication is delegated to a managed identity provider and payments use "
-    "Stripe Connect; both are added separately. Also do NOT create tickets for "
-    "menu management, menu item entry (admin add/edit forms), or menu PDF "
-    "upload/extraction — those are added separately when applicable; you MAY still "
-    "design a customer-facing menu DISPLAY page that reads GET /menu. No prose."
+    "Stripe Connect; both are added separately. Also do NOT include a menu_items "
+    "table in database_schema, do NOT create any menu backend route or endpoint, "
+    "and do NOT create tickets for menu management, menu item entry, or menu PDF "
+    "upload/extraction — the menu DATA MODEL, its API, and its admin screens are "
+    "ALL added separately when applicable. The ONLY menu thing you may add is a "
+    "single customer-facing menu DISPLAY page (a frontend ticket) that reads the "
+    "GET /menu endpoint. No prose."
 )
 
 
@@ -1045,7 +1072,10 @@ async def build_blueprint(summary: dict) -> dict:
     # auto-published. Gated on the BA-captured is_food + menu_setup choice.
     menu_setup = summary.get("menu_setup")
     if summary.get("is_food") and menu_setup in ("manual", "pdf"):
-        database_schema += _menu_schema()
+        # Reconcile, don't append: the LLM often schemas its OWN menu_items table
+        # for a restaurant idea, and two entries crash FND-1 ("table already
+        # defined"). This collapses them into the single deterministic table.
+        database_schema = _reconcile_menu_schema(database_schema)
         api_endpoints += _menu_endpoints(menu_setup)
         tickets += _menu_tickets(menu_setup)
 

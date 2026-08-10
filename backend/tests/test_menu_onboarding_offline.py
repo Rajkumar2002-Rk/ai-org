@@ -44,6 +44,10 @@ async def _none():
     return None
 
 
+async def _wrap(val):
+    return val
+
+
 def _bp(is_food, menu_setup):
     return asyncio.run(builder.build_blueprint({
         "build": "a taco spot", "is_food": is_food, "menu_setup": menu_setup,
@@ -97,6 +101,40 @@ check("text" in m3 and ("vision" in m3 or "image" in m3) and "pending_review" in
       "MENU-3 spec: text-first + vision fallback + pending_review + platform key")
 check("filename" in m3 and ("max" in m3 or "size" in m3),
       "MENU-3 spec: filename-injection + file-size guardrails called out")
+
+# --- REGRESSION: the live-run bug — LLM Architect ALSO schemas menu_items.
+# Two menu_items entries made FND-1 define the model twice ("table already
+# defined") and the app never booted. build_blueprint must reconcile to ONE.
+_llm_with_menu = {
+    "tech_stack": {"backend": "FastAPI", "frontend": "Next.js", "database": "PostgreSQL"},
+    "database_schema": [
+        {"table": "menu_items", "columns": [
+            {"name": "id", "type": "integer"},
+            {"name": "name", "type": "string"},
+            {"name": "image_url", "type": "string"},   # extra column only the LLM has
+        ], "relationships": []},
+        {"table": "orders", "columns": [{"name": "id", "type": "integer"}],
+         "relationships": []},
+    ],
+    "api_endpoints": [{"method": "GET", "path": "/menu", "purpose": "display"}],
+    "sprint_tickets": [{"id": "BE-1", "title": "menu retrieval endpoint",
+                        "assigned_to": "backend", "description": "GET /menu",
+                        "dependencies": []}],
+}
+builder._generate_creative = lambda *a, **k: _wrap(_llm_with_menu)
+bp_collide = asyncio.run(builder.build_blueprint({
+    "build": "an italian restaurant", "is_food": True, "menu_setup": "pdf",
+    "audience": "customers", "user_count": "100", "budget": "$50", "mobile_choice": None}))
+menu_tables = [t for t in bp_collide["database_schema"]
+               if (t.get("table") or "").lower() == "menu_items"]
+check(len(menu_tables) == 1,
+      "Architect dedupe: EXACTLY ONE menu_items table when the LLM also schemas one")
+_cols = {c["name"] for c in menu_tables[0]["columns"]} if menu_tables else set()
+check({"status", "source", "name", "price"}.issubset(_cols),
+      "Architect dedupe: the surviving menu_items keeps the feature's required columns")
+check("image_url" in _cols,
+      "Architect dedupe: extra LLM columns (image_url) are merged, not lost")
+builder._generate_creative = lambda *a, **k: _none()   # restore mock for later use
 
 
 # ============================================================================= BA
