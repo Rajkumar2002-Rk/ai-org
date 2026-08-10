@@ -46,6 +46,9 @@ services:
       YELP_API_KEY: ${YELP_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Scoped platform vision key for menu PDF extraction (Week 10). DevOps
+      # injects it only into deployed apps that shipped the PDF menu feature.
+      MENU_EXTRACTION_API_KEY: ${MENU_EXTRACTION_API_KEY:-}
       CODEGEN_MODE: ${CODEGEN_MODE:-real}
       # Step 5 verification: run a real `next build` against generated frontend
       # code instead of the cheap syntax-only check. Off by default — a full
