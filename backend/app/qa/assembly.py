@@ -125,7 +125,21 @@ _PACKAGE_ALIASES = {
     "redis": "redis",
     "httpx": "httpx",
     "pydantic_settings": "pydantic-settings",
+    "email_validator": "email-validator",
 }
+
+
+def needs_email_validator(contents) -> bool:
+    """Pydantic's `EmailStr` (and `pydantic[email]`) require the separate
+    `email-validator` package. It is triggered by the field TYPE and referenced by
+    NO import statement, so the AST import scan never sees it and the app dies at
+    startup with "email-validator is not installed". Detect the usage directly so
+    both the QA venv AND the deployed image include it. (Reproduced by project 487,
+    2026-08-10 — the app built and passed security review, then would not boot.)"""
+    for c in contents:
+        if c and ("EmailStr" in c or "pydantic[email]" in c):
+            return True
+    return False
 
 # NOTE: this used to be a regex. It was wrong: `import\s+([A-Za-z0-9_.,\s]+)`
 # put \s inside the character class, so a leading `import os` greedily swallowed
@@ -309,6 +323,9 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
         code, _ = _run([py, "-c", f"import {mod}"], timeout=30)
         if code != 0:
             missing.append(_PACKAGE_ALIASES.get(mod, mod))
+    # EmailStr needs the email-validator extra, which no import statement names.
+    if needs_email_validator(written.values()) and "email-validator" not in missing:
+        missing.append("email-validator")
     if not missing:
         return []
 

@@ -345,6 +345,31 @@ def test_aws_pure_functions():
           and tags.get("created_by") == "devops")
 
 
+def test_email_validator_reqs():
+    print("\nH. Requirements: Pydantic EmailStr -> email-validator (regression, project 487)")
+    from app.qa import assembly
+
+    # Detector: positive on EmailStr / pydantic[email], negative otherwise.
+    check("detector: EmailStr triggers email-validator",
+          assembly.needs_email_validator(
+              ["from pydantic import EmailStr\n    email: EmailStr\n"]) is True)
+    check("detector: pydantic[email] triggers email-validator",
+          assembly.needs_email_validator(["deps = 'pydantic[email]'"]) is True)
+    check("detector: a plain model does NOT trigger it",
+          assembly.needs_email_validator(["class User:\n    name: str\n"]) is False)
+
+    # Deployed requirements.txt: EmailStr present -> email-validator; absent -> not.
+    with_email = _synthetic_backend()
+    with_email[0]["content"] = ("from pydantic import BaseModel, EmailStr\n"
+                                "class UserIn(BaseModel):\n    email: EmailStr\n")
+    reqs = manifest._backend_requirements(with_email)
+    check("deployed requirements include email-validator when EmailStr is used",
+          "email-validator" in reqs, reqs)
+    reqs_none = manifest._backend_requirements(_synthetic_backend())
+    check("deployed requirements omit email-validator when no email field is used",
+          "email-validator" not in reqs_none, reqs_none)
+
+
 def main():
     print("=" * 64)
     print("DevOps offline proof (no AWS, no LLM, no Docker daemon)")
@@ -356,6 +381,7 @@ def main():
     test_cost()
     test_health()
     test_security_gate()
+    test_email_validator_reqs()
     test_aws_pure_functions()
 
     print("\n" + "=" * 64)
