@@ -41,6 +41,18 @@ _STACK = {
 
 
 def _system(agent_type: str) -> str:
+    # FastAPI-specific rule for backend files: a build died at startup with
+    # "Invalid args for response field" because a route used a SQLAlchemy ORM model
+    # as its response_model / return type (projects 342 and 573). FastAPI rejects an
+    # ORM model there at app construction — pin the rule so no backend file guesses.
+    backend_rule = (
+        " CRITICAL FastAPI rule: a route's `response_model` — and any response "
+        "TYPE ANNOTATION on the endpoint function — MUST be a Pydantic schema (a "
+        "BaseModel), NEVER a SQLAlchemy ORM model. FastAPI rejects an ORM model "
+        "there at app startup with 'Invalid args for response field'. Define a "
+        "Pydantic response schema for what you return, or set response_model=None "
+        "and do not annotate the return type with an ORM model."
+    ) if agent_type == "backend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "
         f"production-quality code file for the given ticket. Stack: "
@@ -54,6 +66,7 @@ def _system(agent_type: str) -> str:
         f"Return ONLY a JSON "
         f'object: {{"filename": string, "filepath": string, "content": string}}. '
         f"content is the FULL file as a single string. No markdown fences, no prose."
+        + backend_rule
     )
 
 

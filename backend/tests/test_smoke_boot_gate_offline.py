@@ -36,8 +36,9 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 
 
 class _Fail:
-    def __init__(self, name):
+    def __init__(self, name, reason=""):
         self.test_name = name
+        self.reason = reason
 
 
 class _Env:
@@ -76,14 +77,14 @@ async def _cleanup(pid: int) -> None:
     await redis_client.delete(main._secure_key(pid))
 
 
-async def _smoke_stage_status(pid: int):
+async def _smoke_stage(pid: int):
     async with async_session() as db:
         row = (await db.execute(
-            select(PipelineStatus.status)
+            select(PipelineStatus.status, PipelineStatus.error_message)
             .where(PipelineStatus.project_id == pid,
                    PipelineStatus.stage == "smoke_boot")
             .order_by(PipelineStatus.id.desc()).limit(1))).first()
-    return row[0] if row else None
+    return (row[0], row[1]) if row else (None, None)
 
 
 async def _security_stage_exists(pid: int) -> bool:
@@ -113,8 +114,13 @@ async def main_test() -> None:
     qa_assembly.teardown = fake_teardown
 
     # ---------------- BROKEN build: the app does not boot ----------------
+    _FAKE_TB = (
+        "Traceback (most recent call last):\n  ... fastapi/utils.py line 98 ...\n"
+        "fastapi.exceptions.FastAPIError: Invalid args for response field! check "
+        "that <class 'backend.app.models.Order'> is a valid Pydantic field type")
+
     async def assemble_broken(files, expected=None):
-        return _Env(False, [_Fail("assembly: app did not start")])
+        return _Env(False, [_Fail("assembly: app did not start", _FAKE_TB)])
 
     qa_assembly.assemble = assemble_broken
     pid = await _seed_project()
@@ -124,8 +130,10 @@ async def main_test() -> None:
     check("broken build -> build status is 'boot_failed', not 'done' (fails fast)",
           (await redis_client.get(main._build_key(pid))) == "boot_failed",
           str(await redis_client.get(main._build_key(pid))))
-    check("broken build -> smoke_boot stage recorded as error",
-          (await _smoke_stage_status(pid)) == "error")
+    _status, _err = await _smoke_stage(pid)
+    check("broken build -> smoke_boot stage recorded as error", _status == "error")
+    check("broken build -> smoke_boot stage CAPTURES the boot traceback (diagnosable)",
+          "Invalid args for response field" in (_err or ""), str(_err)[:160])
 
     # The security review must REFUSE — never call the (expensive) reviewer.
     await main._run_review(pid)
@@ -148,8 +156,8 @@ async def main_test() -> None:
 
     check("bootable build -> build status 'done'",
           (await redis_client.get(main._build_key(pid2))) == "done")
-    check("bootable build -> smoke_boot stage recorded as done",
-          (await _smoke_stage_status(pid2)) == "done")
+    _status2, _ = await _smoke_stage(pid2)
+    check("bootable build -> smoke_boot stage recorded as done", _status2 == "done")
     await main._run_review(pid2)
     check("bootable build -> Opus security review RUNS (reviewer called once)",
           reviewer_calls["n"] == 1)

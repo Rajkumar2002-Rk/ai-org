@@ -221,6 +221,23 @@ def test_auth_symbol_contract():
     check("frontend files are excluded", "AUTH CONTRACT" not in pf)
 
 
+def test_response_model_rule():
+    """Regression: projects 342 and 573 both died at startup with 'Invalid args for
+    response field' because a route used a SQLAlchemy ORM model as its response_model
+    / return annotation. The Backend Developer system prompt must forbid that."""
+    from app.developers import agents
+
+    sys_be = agents._system("backend")
+    check("backend prompt: response_model must be a Pydantic schema, never an ORM model",
+          "response_model" in sys_be and "Pydantic" in sys_be and "ORM" in sys_be, sys_be)
+    check("backend prompt: names the exact FastAPI startup failure",
+          "Invalid args for response field" in sys_be)
+    check("backend prompt: offers response_model=None as the escape hatch",
+          "response_model=None" in sys_be)
+    check("frontend prompt does NOT carry the backend FastAPI rule",
+          "response_model" not in agents._system("frontend"))
+
+
 async def main():
     original = agents.build_ticket
     removed = await cleanup()
@@ -228,6 +245,7 @@ async def main():
         print(f"(cleaned {removed} previous synthetic project(s))")
     try:
         test_auth_symbol_contract()
+        test_response_model_rule()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

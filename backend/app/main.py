@@ -124,7 +124,8 @@ async def _run_build(project_id: int) -> None:
                 gate = await db.get(PipelineStatus, gate_id)
                 gate.status = "done" if booted else "error"
                 gate.completed_at = sqlfunc.now()
-                gate.error_message = None if booted else (boot_err or "")[:1000]
+                # Keep the TAIL — the actual error line is at the end of a traceback.
+                gate.error_message = None if booted else (boot_err or "")[-3500:]
                 await db.commit()
             if not booted:
                 # Distinct from a generic build error so the UI can say specifically
@@ -174,8 +175,13 @@ async def _smoke_boot(project_id: int, blueprint: dict) -> tuple[bool, str]:
                 if e.get("path")]
     env = await assembly.assemble(files, expected)
     booted = env.ok
-    reason = "" if booted else (
-        "; ".join(f.test_name for f in env.failures) or "the app did not start")
+    if booted:
+        reason = ""
+    else:
+        # Capture the full detail (name + traceback), not just the label, so a boot
+        # failure is diagnosable from the smoke_boot stage WITHOUT re-running the boot.
+        parts = [f"{f.test_name}: {f.reason}".strip() for f in env.failures]
+        reason = "\n".join(p for p in parts if p) or "the app did not start"
     await assembly.teardown(env)
     return booted, reason
 
