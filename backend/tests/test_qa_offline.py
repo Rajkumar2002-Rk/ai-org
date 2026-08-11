@@ -478,6 +478,10 @@ def test_env_autodiscovery():
             "REDIRECT = os.getenv('STRIPE_REDIRECT_URI')\n"
             "KEY = os.environ['STRIPE_SECRET_KEY']\n"           # curated in _TEST_ENV
             "MODE = os.getenv('APP_MODE', 'prod')\n"            # HAS a default
+            # project 606: a module-level Fernet cipher — the QA value MUST be a
+            # valid Fernet key or a correct app crashes at import. This var name is
+            # NOT curated in _TEST_ENV, so it exercises the discovery path.
+            "ENC = os.environ['APP_TOKEN_ENC_KEY']\n"
         ),
     }, {
         "filepath": "frontend/app/page.tsx",              # non-python: ignored
@@ -499,8 +503,27 @@ def test_env_autodiscovery():
           found.get("STRIPE_REDIRECT_URI", "").startswith("http://127.0.0.1")
           and found.get("STRIPE_STATE_SECRET") == "qa-test-stripe_state_secret",
           str(found))
-    check("every supplied value is obviously fake (loopback/placeholder only)",
-          all(v.startswith(("qa-test-", "http://127.0.0.1")) for v in found.values()))
+    # project 606 regression: an encryption-key env var must be a VALID Fernet key,
+    # or a correct app that builds `Fernet(KEY.encode())` at import crashes under QA
+    # with "Fernet key must be 32 url-safe base64-encoded bytes" (a QA-env fault).
+    from cryptography.fernet import Fernet
+
+    def _valid_fernet(k: str) -> bool:
+        try:
+            Fernet((k or "").encode())
+            return True
+        except Exception:
+            return False
+
+    check("a discovered *_ENC_KEY env var is filled", "APP_TOKEN_ENC_KEY" in found)
+    check("the DISCOVERED *_ENC_KEY value is a VALID Fernet key",
+          _valid_fernet(found.get("APP_TOKEN_ENC_KEY")), found.get("APP_TOKEN_ENC_KEY"))
+    check("the CURATED STRIPE_TOKEN_ENC_KEY is a VALID Fernet key (project 606 fix)",
+          _valid_fernet(assembly._TEST_ENV.get("STRIPE_TOKEN_ENC_KEY")),
+          assembly._TEST_ENV.get("STRIPE_TOKEN_ENC_KEY"))
+    check("every supplied value is obviously fake (loopback/placeholder/throwaway key)",
+          all(v.startswith(("qa-test-", "http://127.0.0.1"))
+              or v == assembly._FAKE_FERNET_KEY for v in found.values()))
 
 
 async def test_frontend_checks_not_gated_on_backend_boot():

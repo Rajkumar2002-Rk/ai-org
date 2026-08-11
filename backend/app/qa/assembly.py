@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import re
+import base64
 import secrets
 import shutil
 import socket
@@ -54,9 +55,20 @@ _STDLIB_SKIP = set(sys.stdlib_module_names) | {
 # the Developer for a bug that does not exist. (Observed in verification: the
 # Developer "fixed" it by hardcoding mock Auth0 credentials to get past QA.)
 # These are obviously-fake loopback-only values; nothing here is a real secret.
+# A VALID (throwaway) Fernet key — 32 url-safe base64 bytes. Encryption-key env
+# vars MUST decode as a real Fernet key or a CORRECT app that builds a Fernet cipher
+# at import (e.g. the Stripe token store: `Fernet(STRIPE_TOKEN_ENC_KEY.encode())`)
+# crashes under QA with "Fernet key must be 32 url-safe base64-encoded bytes" — a
+# QA-environment fault, not an app bug (project 606). Used both here (curated) and
+# in _fake_env_value (discovered enc-key vars).
+_FAKE_FERNET_KEY = base64.urlsafe_b64encode(
+    b"qa-test-fernet-throwaway-key".ljust(32, b"0")[:32]).decode()
+
 _TEST_ENV = {
     "SECRET_KEY": "qa-test-secret-not-a-real-key",
-    "STRIPE_TOKEN_ENC_KEY": "qa-test-enc-key-0123456789abcdef",
+    # Was a raw 32-char string — NOT a valid Fernet key, so it crashed at import
+    # (project 606). Must be a real Fernet key.
+    "STRIPE_TOKEN_ENC_KEY": _FAKE_FERNET_KEY,
     "STRIPE_CLIENT_ID": "ca_qa_test_client_id",
     "STRIPE_SECRET_KEY": "sk_test_qa_placeholder",
     "STRIPE_WEBHOOK_SECRET": "whsec_qa_test_placeholder",
@@ -93,6 +105,9 @@ def _fake_env_value(name: str) -> str:
     """An obviously-fake, loopback-only value — never a plausible real secret."""
     if name.endswith(("_URI", "_URL")):
         return "http://127.0.0.1/qa-test"
+    up = name.upper()
+    if "FERNET" in up or "ENC_KEY" in up or "ENCRYPTION_KEY" in up:
+        return _FAKE_FERNET_KEY
     return f"qa-test-{name.lower()}"
 
 
