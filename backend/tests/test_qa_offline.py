@@ -525,6 +525,13 @@ def test_env_autodiscovery():
           all(v.startswith(("qa-test-", "http://127.0.0.1"))
               or v == assembly._FAKE_FERNET_KEY for v in found.values()))
 
+    # project 773: the entrypoint reads ALLOWED_ORIGINS WITH a default ('') then
+    # fail-fasts if empty. Discovery skips defaulted vars, so it MUST be curated with
+    # a value that survives `os.getenv('ALLOWED_ORIGINS','').split(',')` being non-empty.
+    _ao = assembly._TEST_ENV.get("ALLOWED_ORIGINS", "")
+    check("ALLOWED_ORIGINS is curated with a non-empty origin list (project 773)",
+          bool(_ao) and _ao.split(",")[0].strip() != "", repr(_ao))
+
 
 async def test_frontend_checks_not_gated_on_backend_boot():
     """Frontend buildability has nothing to do with whether the backend starts.

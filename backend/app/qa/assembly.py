@@ -79,6 +79,13 @@ _TEST_ENV = {
     "AUTH0_CLIENT_ID": "qa-test-client-id",
     "AUTH0_CLIENT_SECRET": "qa-test-client-secret",
     "APP_ENV": "test",
+    # CORS: the entrypoint reads an allowed-origins list from the env and fail-fasts
+    # if it's empty (a security hardening the Opus review adds). It reads WITH a
+    # default (`os.getenv('ALLOWED_ORIGINS', '')`), so discovery skips it — curate a
+    # valid loopback origin list here so a correct app boots (project 773). CORS_ORIGINS
+    # is the common alias.
+    "ALLOWED_ORIGINS": "http://127.0.0.1,http://localhost",
+    "CORS_ORIGINS": "http://127.0.0.1,http://localhost",
 }
 
 # Generated code fail-fast requires provider secrets by env-var name, and the

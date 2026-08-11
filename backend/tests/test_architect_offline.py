@@ -244,6 +244,10 @@ async def test_gating_suite():
         check("entrypoint asks for the FastAPI app + routers",
               "FastAPI" in app_t.get("description", "")
               and "include_router" in app_t.get("description", ""))
+        # project 773: pin the EXACT CORS origins env var name so QA can supply it
+        # (the Opus review hardens CORS to read from env and fail-fast if empty).
+        check("entrypoint pins the ALLOWED_ORIGINS env var name",
+              "ALLOWED_ORIGINS" in app_t.get("description", ""))
         check("no bcrypt/custom-auth in measures", "bcrypt" not in measures_text(bp))
         check("auth measure mentions delegated provider",
               "delegate" in measures_text(bp) and "auth0" in measures_text(bp))
