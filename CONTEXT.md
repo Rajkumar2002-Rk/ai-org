@@ -5,51 +5,154 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Menu Onboarding built; 2 live-run bugs found & fixed; extraction STILL unproven live (2026-08-10)
+# ⏭️ RESUME HERE — Pipeline reached DEPLOY-readiness; menu feature ONE run from live (2026-08-11)
 
-**Start the next session with:** "Read CONTEXT.md. Weeks 1-9, Week 10 Part 1, and the
-Menu Onboarding feature are complete; re-run the food-business demo." All 15 agents are
-built; the landing page fronts the experience; food/restaurant apps get a real
-menu-onboarding feature (manual entry OR PDF upload with AI extraction), built like
-Stripe Connect. **Next up is the real demo run** — re-run a restaurant idea →
-"Upload a PDF", end to end (real money, ~$3-4/build).
+**Start the next session with:** "Read CONTEXT.md. The pipeline now reliably reaches QA —
+re-run the Bella Vista restaurant idea to finally test live PDF extraction." This session
+turned the pipeline from "dies at boot every run" into one that BOOTS, passes the Opus
+security review, and runs the full QA suite. **Eleven deterministic fixes** were found and
+committed by driving the SAME restaurant build over and over — each run got exactly one
+blocker further. **The very next run is expected to be the FIRST to reach a live deploy
+URL** and finally exercise the menu PDF extraction end to end.
 
-**⚠️ Menu extraction is STILL UNPROVEN LIVE.** Two real end-to-end attempts were made
-and BOTH failed before the app booted — for reasons UNRELATED to the menu UI/extraction
-logic, each a real bug now fixed:
-- **Run 461** — the LLM Architect ALSO schemas its own `menu_items` table, so
-  `build_blueprint` had TWO → FND-1 "table already defined" → app never booted.
-  **Fixed** (`aef5349`): `_reconcile_menu_schema()` collapses them to one; the Architect
-  prompt now forbids a menu table/backend route; regression test added.
-- **Run 487** — got PAST the menu bug (built + security-reviewed fine, single
-  `menu_items` ✓), then wouldn't boot: `email-validator is not installed` (a generated
-  Pydantic `EmailStr` needs the extra, which no import names, so requirements missed it).
-  **Fixed** (`4a91170`): `needs_email_validator()` detection wired into the QA venv and
-  the deployed requirements; regression test added.
+**EXACT CURRENT STATE (last run = project 801):** building ✅ → smoke_boot ✅ →
+security_review ✅ (Opus PASSED) → QA ran **100 of 109 tests PASSED**. All 9 failures
+traced to ONE root cause: generated `models.py` called its own `declarative_base()`
+separate from `database.py`'s Base, so `create_all` built NO tables and every read
+endpoint (`GET /menu`, `GET /reviews`) 500'd. **That Base bug is now fixed (`1cda1f9`).**
+With one shared Base the tables exist, the reads work, and QA should pass → deploy → live
+URL. DB is CLEAN (max project id 435; every test project deleted).
 
-So the menu upload/extraction code has NEVER actually run — the app died first both
-times. The **next run's job**: get the app to BOOT, then finally test manual entry +
-text-PDF extraction + scanned-PDF vision fallback + the pending-review gate. Expect the
-possibility of yet another unrelated codegen-quality blocker (this is the known
-non-deterministic tail); each one is a real fix.
+**GIT — everything COMMITTED AND PUSHED.** `HEAD == origin/master == 1cda1f9`, 0 ahead.
+github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`,
+ever**; never commit `.env`; keep the repo private.
 
-**Costs so far on the live attempts:** run 461 ≈ $1.90 (aborted mid-Opus-review), run
-487 ≈ $3.40 (ran to QA-fail). Both projects deleted; DB max project id back to 435.
+**KEYS/CONFIG (verified live this session):** OpenAI ✅ + Anthropic ✅ + Gemini ✅ all
+funded. `.env`: `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`, `MENU_EXTRACTION_API_KEY=SET`
+(currently = the MASTER Anthropic key, test-only). The key reaches the backend via an
+explicit line in `docker-compose.yml` — the backend uses explicit `environment:` mappings,
+NOT `env_file`, so a var not listed there never reaches the app.
 
-**⚠️ BEFORE THE DEMO RECORDING:** `MENU_EXTRACTION_API_KEY` in `.env` is currently the
-MASTER Anthropic key (test-only) and is wired into the backend via `docker-compose.yml`.
-Replace it with a SEPARATE scoped/rate-limited key before recording (see the vision-key
-gap note further down).
+## ⏭️ NEXT STEPS (do these to resume)
+1. **Docker up + rebuild BOTH from HEAD `1cda1f9`.** The running server has NO volume mount,
+   so a rebuild is REQUIRED to pick up committed code:
+   `docker compose build backend frontend && docker compose up -d`.
+2. **Confirm keys live** — one cheap OpenAI + Anthropic call each; confirm
+   `MENU_EXTRACTION_API_KEY` SET (needed for the scanned-PDF vision path, else it reads
+   "unavailable"); confirm `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`.
+3. **Arm a monitor on the MAIN backend container only** (avoids ephemeral test-container
+   noise): `docker logs -f --tail 0 ai-org-backend-1 2>&1 | grep --line-buffered -iE '…'`.
+   Match HTTP 5xx in the STATUS position (`HTTP/[0-9.]+" 5[0-9][0-9]`) NOT a bare `5\d\d`,
+   or project ids like 5xx false-trip it. Include: traceback|exception|failed|smoke.?boot|
+   boot_failed|did not start|escalat|no security certificate|missing from the running|
+   live_url|deployed|collided|menu[_ ]|extract|upload|vision|Fernet|multipart|anthropic|
+   response field|allowed_origins.
+4. **Re-run the SAME idea at localhost:3000:** an **Italian restaurant named Bella Vista**
+   (BA rendered it "bella veita"/"Bella Veita"); at the menu question choose **"Upload a
+   PDF"**. Have TWO 1-page test PDFs ready: a **text-based** menu PDF (fast pypdf/pdfplumber
+   path) and a **scanned/image-only** menu PDF (Claude vision fallback); optionally a
+   corrupt file to test graceful failure.
+5. **When it reaches a live URL**, arm a SECOND monitor on the DEPLOYED app's container
+   (name derived from the project id) to watch the runtime extraction (text-extract →
+   vision-fallback → pending-review gate) — the backend monitor can't see the deployed
+   container.
+6. Cost per full run ≈ **$2.6–4** (run 801 was $2.59 through QA); the Opus review is the
+   variable line.
 
-**Git state:** branch `master`, all LOCAL/UNPUSHED. Menu feature `788a5fd` + record
-`04f1787`; compose wiring `765ce97` + note `ab06f8c`; dedupe fix `aef5349`;
-email-validator fix `4a91170`; this CONTEXT commit follows. Permanent rules: **no
-`Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
+## 🧱 THE SMOKE-BOOT GATE (added this session, `7beaee1`; live + proven)
+A FREE assemble+boot check (`main._smoke_boot`, reuses `qa.assembly.assemble` → `env.ok`,
+NO LLM) runs right after the Developer agents and BEFORE the Opus security review. Only
+code that actually STARTS (and exposes all designed endpoints) proceeds. A boot failure
+sets build status `boot_failed`, records the FULL traceback in a new `smoke_boot` pipeline
+stage (`4f2d017` — so you diagnose without re-running), and routes back to the Developer
+stage. `_run_review` also HARD-GATES on the build having booted. **Why it exists:** three
+consecutive live runs each paid for a full Opus security review (~$1–1.5+) on code that
+then failed to boot at QA. The gate makes every boot failure a CHEAP catch + zero-re-run
+diagnosis. The frontend shows an honest boot-failure message. Proven by
+`test_smoke_boot_gate_offline.py` (a broken build NEVER reaches the reviewer).
 
-**Likely next work:** the real demo run (food idea) to finally exercise the menu
-extraction live. Still carried: the post-Week-8 **MODEL SWITCH** (own session), the
-**secrets-table onboarding gap** (the menu vision key depends on it — scoped-key note
-below), and a real AWS Cost Explorer shakeout.
+## 🔧 THE 11 FIXES THIS SESSION (in commit order — what broke / root cause / fix / commit)
+Driving the same restaurant build repeatedly, each run surfaced ONE blocker, each fixed
+deterministically WITH a regression test. Several share a class: a dependency/symbol/env
+value triggered by USAGE not by an import (so the AST scan misses it), a QA-environment
+placeholder that isn't format-valid, or a GUESSED symbol/name.
+
+1. **Menu dedupe** (`aef5349`) — run 461 didn't boot: FND-1 "table already defined". Cause:
+   the LLM Architect schemas its OWN `menu_items` table AND `_menu_schema()` added a second.
+   Fix: `builder._reconcile_menu_schema()` collapses any LLM `menu_items` into the single
+   deterministic one (merging extra columns); `_ARCH_SYSTEM` forbids a menu table/route.
+2. **email-validator** (`4a91170`) — run 487 booted-failed: `email-validator is not
+   installed`. Cause: a Pydantic `EmailStr` needs the extra, triggered by field TYPE (no
+   import names it) → scan missed it. Fix: `assembly.needs_email_validator()` → added to the
+   QA venv (`_install_deps`) AND the deployed image (`manifest._backend_requirements`).
+3. **Auth symbol contract** (`d45c24a`) — runs 435/513 booted-failed: `cannot import name
+   'Auth0Config'/'verify_token' from backend.app.auth`. Cause: a backend file GUESSED a name
+   auth.py never exported (it exports `get_current_user`/`get_current_admin_user`). Fix:
+   `builder.AUTH_EXPORTS`; `agents._base_prompt` injects the exact auth-exports contract into
+   every backend file's prompt (auth.py + frontend excluded), forbidding invented names.
+4. **Smoke-boot gate** (`7beaee1`) — see the section above.
+5. **response_model rule + traceback capture** (`4f2d017`) — runs 342/573 booted-failed:
+   `Invalid args for response field` (a route used a SQLAlchemy ORM model as `response_model`).
+   Fix: the Backend-Developer system prompt mandates `response_model` be a Pydantic schema
+   (or `response_model=None`), never an ORM model. SAME commit: `_smoke_boot` now captures the
+   full boot traceback into the `smoke_boot` stage.
+6. **Fernet key** (`119d48c`) — run 606 booted-failed: `Fernet key must be 32 url-safe
+   base64-encoded bytes`. Cause: the generated Stripe token store builds
+   `Fernet(STRIPE_TOKEN_ENC_KEY)` at import, and QA's curated `_TEST_ENV` value was a raw
+   32-CHAR string, not a valid Fernet key — a QA-ENVIRONMENT fault, not an app bug. Fix:
+   `_TEST_ENV["STRIPE_TOKEN_ENC_KEY"]` is a real throwaway Fernet key; `_fake_env_value`
+   hands a valid Fernet key for any discovered `*_ENC_KEY`/`*_FERNET` var.
+7. **python-multipart** (`5a2142e`) — run 661 booted-failed: `Form data requires
+   "python-multipart"`. Cause: the menu upload endpoint uses `UploadFile`/`File`/`Form`,
+   which FastAPI needs `python-multipart` for — triggered by USAGE, not an import. Fix:
+   `assembly.needs_python_multipart()` → QA venv + deployed requirements. (This was the menu
+   upload code's OWN dependency — real progress into the feature.)
+8. **Anthropic SDK / Claude** (`e4adba4`) — run 689 booted-failed: `cannot import name
+   'Claude' from 'anthropic'`. Cause: the generated vision-extraction code hallucinated the
+   client class; the real class is `Anthropic`. The MENU-3 ticket said "Anthropic Claude"
+   loosely. Fix: MENU-3 pins the EXACT SDK usage (`from anthropic import Anthropic`,
+   `client.messages.create(...)` with a base64 image block) and says there is NO `Claude`
+   class. (This was INSIDE the extraction code — deep progress.)
+9. **Menu review endpoints** (`04b8de3`) — run 718 BOOTED but 2 designed endpoints missing:
+   `/admin/menu/pending`, `/admin/menu/confirm`. Cause: `POST /admin/menu/confirm` was
+   ORPHANED — only the FRONTEND MENU-4 referenced it, so no backend ticket built it; `/pending`
+   was only loosely mentioned. Fix: MENU-3 explicitly commissions BOTH review-flow endpoints
+   as real routes; the test also guards that no backend menu endpoint is orphaned.
+10. **ALLOWED_ORIGINS** (`edf9729`) — run 773 got past building, smoke-boot, AND the Opus
+    security review, then failed QA (`environment_fault`): the app reads
+    `os.getenv('ALLOWED_ORIGINS','').split(',')` and fail-fasts if empty (a CORS hardening the
+    Opus review ADDS). Because it has a default, QA's discovery skips it. Fix: `_TEST_ENV`
+    curates `ALLOWED_ORIGINS`/`CORS_ORIGINS` with a valid loopback origin list; the APP-1
+    ticket pins the exact `ALLOWED_ORIGINS` name.
+11. **FND-1 shared Base** (`1cda1f9`, MOST RECENT) — run 801 booted, passed security, 100/109
+    QA passed; the 9 failures were `GET /menu` + `GET /reviews` → 500 "database error". Cause:
+    `models.py` called its own `declarative_base()`, separate from `database.py`'s Base →
+    models registered on a Base the engine never sees → `create_all` made NO tables. Fix:
+    FND-1 pins `from backend.app.database import Base` and forbids a second `declarative_base()`.
+
+## ⚠️ KNOWN-OPEN / worth watching
+- **Residual LLM menu backend route colliding with MENU-1.** In run 606 the LLM generated its
+  own backend menu route (`BE-1` → `routes/menu.py`) which collided with deterministic MENU-1
+  (renamed `menu_menu_1.py`). Fix 1 (schema dedupe) means this no longer CRASHES — single
+  `menu_items`, and the collision resolver + module-path pinning register MENU-1 from its
+  renamed path — but the `_ARCH_SYSTEM` prompt tightening does NOT fully stop the LLM from
+  emitting a menu backend route. NOT blocking (run 801 built `menu.py` as MENU-1's file
+  cleanly). If it recurs, the clean fix is to deterministically drop/rename any LLM menu
+  backend ticket so MENU-1 always owns `routes/menu.py`.
+- **`MENU_EXTRACTION_API_KEY` = master Anthropic key (test-only).** Fine for local testing;
+  MUST be swapped for a separate scoped/rate-limited key before any demo RECORDING so a
+  deployed app never holds the platform master key. The scoped platform-key injection into
+  deploys is built (`_has_menu_pdf` in devops/orchestrator); a per-owner key depends on the
+  still-open Week-7 secrets-onboarding gap.
+- **Menu extraction still UNPROVEN LIVE** — the app has never fully deployed, so the runtime
+  text-extract → vision-fallback → pending-review flow has never actually run. That is the
+  single remaining thing to prove.
+- Carried from before: post-Week-8 **MODEL SWITCH** (own session), the secrets-table
+  onboarding gap, a real AWS Cost Explorer shakeout.
+
+**Offline suite count is now 11** (added `test_smoke_boot_gate_offline` +
+`test_menu_onboarding_offline` to the original 9). All pass; run them all before any
+commit. The 9 "free" suites are still the regression baseline.
 
 ---
 
