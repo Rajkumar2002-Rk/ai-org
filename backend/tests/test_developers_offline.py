@@ -180,12 +180,54 @@ async def cleanup():
     return len(ids)
 
 
+def test_auth_symbol_contract():
+    """Regression: projects 435 ('Auth0Config') and 513 ('verify_token') both died
+    at boot because a backend file imported a name auth.py never exported. The auth
+    symbol contract must now pin the exact export names into every backend importer's
+    prompt (the symbol-level twin of module-path pinning)."""
+    from app.architect import builder
+
+    check("auth exports pinned to the real dependency names",
+          builder.AUTH_EXPORTS == ("get_current_user", "get_current_admin_user"))
+    at = builder._auth_ticket({"provider": "TestIDP", "tier": "basic",
+                               "mfa_required": False, "passkeys": "optional",
+                               "triggers": {}})
+    check("auth ticket exposes exactly those names",
+          all(n in at["description"] for n in builder.AUTH_EXPORTS), at["description"])
+
+    # menu_upload.py was the 513 culprit's import chain — it must now get the exact
+    # names AND be told not to invent the guessed one that broke boot.
+    p = agents._base_prompt(
+        {"id": "MENU-3", "assigned_to": "backend",
+         "filepath": "backend/app/routes/menu_upload.py",
+         "title": "menu upload", "description": "admin upload"}, [])
+    check("importer prompt pins the exact auth export names",
+          all(n in p for n in builder.AUTH_EXPORTS), p[:300])
+    check("importer prompt forbids the guessed name that broke 513 (verify_token)",
+          "verify_token" in p and "Do NOT invent" in p)
+    ps = agents._base_prompt(
+        {"id": "SEC-1", "assigned_to": "backend",
+         "filepath": "backend/app/security.py", "title": "security",
+         "description": "authorization"}, [])
+    check("security.py (the 513 file that guessed) gets the contract",
+          "AUTH CONTRACT" in ps)
+    pa = agents._base_prompt(
+        {"id": "AUTH-1", "assigned_to": "backend", "filepath": "backend/app/auth.py",
+         "title": "auth", "description": "x"}, [])
+    check("auth.py itself is NOT told to import from itself", "AUTH CONTRACT" not in pa)
+    pf = agents._base_prompt(
+        {"id": "FE-1", "assigned_to": "frontend", "filepath": "frontend/app/page.tsx",
+         "title": "ui", "description": "x"}, [])
+    check("frontend files are excluded", "AUTH CONTRACT" not in pf)
+
+
 async def main():
     original = agents.build_ticket
     removed = await cleanup()
     if removed:
         print(f"(cleaned {removed} previous synthetic project(s))")
     try:
+        test_auth_symbol_contract()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

@@ -632,6 +632,16 @@ def _entrypoint_ticket(other_ids: list[str]) -> dict:
     }
 
 
+# The EXACT importable names backend/app/auth.py exposes — pinned as a symbol-level
+# contract (the counterpart to module-PATH pinning). Every backend file that needs
+# authorization imports one of THESE names from backend.app.auth; no guessing. Two
+# live boots died on a guessed name: project 435 (`Auth0Config`) and 513
+# (`verify_token`), both "cannot import name X from backend.app.auth". Single source
+# of truth: the auth ticket exposes them; the developer prompt forbids inventing others.
+AUTH_MODULE = "backend.app.auth"
+AUTH_EXPORTS = ("get_current_user", "get_current_admin_user")
+
+
 def _auth_ticket(auth: dict) -> dict:
     """Delegated-auth ticket for the Backend Dev (POST-REVIEW DECISION 1).
 
@@ -645,9 +655,10 @@ def _auth_ticket(auth: dict) -> dict:
         f"password reset to {provider}. Validate provider-issued tokens (verify "
         f"the signature via the provider's JWKS, plus issuer and audience) on "
         f"every protected endpoint. Read all provider keys from environment "
-        f"variables. Expose FastAPI dependencies named EXACTLY `get_current_user` "
-        f"and `get_current_admin_user` from this module, so other routers import "
-        f"authorization from `backend.app.auth` — the conventional path. "
+        f"variables. Expose FastAPI dependencies named EXACTLY "
+        f"{' and '.join('`' + n + '`' for n in AUTH_EXPORTS)} from this module, so "
+        f"other routers import authorization from `{AUTH_MODULE}` — the "
+        f"conventional path. "
     )
     if auth["mfa_required"]:
         reasons = [k.replace("_", " ") for k, v in auth["triggers"].items() if v]

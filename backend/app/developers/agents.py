@@ -19,6 +19,8 @@ import logging
 import re
 
 from app import codegen
+from app.architect.builder import AUTH_EXPORTS as _AUTH_EXPORTS, \
+    AUTH_MODULE as _AUTH_MODULE
 
 logger = logging.getLogger("developers")
 
@@ -135,6 +137,25 @@ def _router_modules(existing: list[dict]) -> list[tuple[str, str]]:
     return out
 
 
+def _auth_contract() -> str:
+    """Symbol-level contract for backend/app/auth.py — the counterpart to the
+    router-path pinning below. Two live boots died because a backend file GUESSED
+    a name that auth.py never exported (435: 'Auth0Config', 513: 'verify_token').
+    Pin the exact exported names so importers never guess."""
+    exports = "\n".join(
+        f"    {n}   (FastAPI dependency)" for n in _AUTH_EXPORTS)
+    return (
+        f"AUTH CONTRACT — {_AUTH_MODULE} exports EXACTLY these importable names, "
+        f"and NO others:\n{exports}\n"
+        f"To protect an endpoint, import the EXACT name you need directly from "
+        f"{_AUTH_MODULE} (e.g. `from {_AUTH_MODULE} import {_AUTH_EXPORTS[-1]}`) and "
+        f"add it as a dependency. Do NOT invent other auth names (no verify_token, "
+        f"verify_admin, decode_token, require_auth, get_current_active_user), and do "
+        f"NOT import auth helpers from any other module — authorization lives ONLY in "
+        f"{_AUTH_MODULE}.\n"
+    )
+
+
 def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
     # Full paths, not bare filenames: the entrypoint ticket (APP-1) has to import
     # routers by module path, and paths also make duplicate-file collisions
@@ -143,6 +164,12 @@ def _base_prompt(ticket: dict, existing: list[dict], contract: str = "") -> str:
     parts = []
     if contract:
         parts.append(contract)
+
+    # Every backend file EXCEPT auth.py itself gets the auth symbol contract, so it
+    # imports the real exported names instead of guessing (the 435/513 boot deaths).
+    if ticket.get("assigned_to") == "backend" and \
+            (ticket.get("filepath") or "") != f"{_AUTH_MODULE.replace('.', '/')}.py":
+        parts.append("\n" + _auth_contract())
 
     # Hand the agent the REAL foundation code so it imports the actual models
     # and session instead of inventing its own (the cross-file drift fix).
