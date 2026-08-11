@@ -102,6 +102,11 @@ def _backend_requirements(backend_files: list[dict]) -> str:
     if qa.needs_email_validator(f.get("content") or "" for f in backend_files) \
             and "email-validator" not in extras:
         lines.append("email-validator")
+    # File/Form routes (e.g. the menu PDF upload) need python-multipart, also named
+    # by no import — so the deployed app crashes at startup without it.
+    if qa.needs_python_multipart(f.get("content") or "" for f in backend_files) \
+            and "python-multipart" not in extras:
+        lines.append("python-multipart")
     return "\n".join(lines) + "\n"
 
 

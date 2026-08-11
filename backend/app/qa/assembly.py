@@ -156,6 +156,21 @@ def needs_email_validator(contents) -> bool:
             return True
     return False
 
+
+def needs_python_multipart(contents) -> bool:
+    """FastAPI needs the separate `python-multipart` package whenever a route takes
+    form/file data (an `UploadFile` annotation, or a `File(...)` / `Form(...)`
+    default). It's triggered by that USAGE, not by any import statement, so the AST
+    scan misses it and the app dies at startup with 'Form data requires
+    "python-multipart" to be installed'. Detect the usage directly so both the QA
+    venv AND the deployed image include it. (Reproduced by project 661, 2026-08-11 —
+    the menu PDF upload endpoint.)"""
+    for c in contents:
+        if c and ("UploadFile" in c or "File(" in c or "Form(" in c
+                  or "multipart/form-data" in c):
+            return True
+    return False
+
 # NOTE: this used to be a regex. It was wrong: `import\s+([A-Za-z0-9_.,\s]+)`
 # put \s inside the character class, so a leading `import os` greedily swallowed
 # every following import line and QA tried to `pip install 'HTTPException'`.
@@ -341,6 +356,9 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
     # EmailStr needs the email-validator extra, which no import statement names.
     if needs_email_validator(written.values()) and "email-validator" not in missing:
         missing.append("email-validator")
+    # File/Form routes need python-multipart, also not named by any import.
+    if needs_python_multipart(written.values()) and "python-multipart" not in missing:
+        missing.append("python-multipart")
     if not missing:
         return []
 

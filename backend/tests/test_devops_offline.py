@@ -369,6 +369,28 @@ def test_email_validator_reqs():
     check("deployed requirements omit email-validator when no email field is used",
           "email-validator" not in reqs_none, reqs_none)
 
+    # project 661: File/Form routes (the menu PDF upload) need python-multipart,
+    # which no import statement names, so the app dies at startup with
+    # 'Form data requires "python-multipart" to be installed'.
+    check("detector: UploadFile triggers python-multipart",
+          assembly.needs_python_multipart(
+              ["async def up(file: UploadFile = File(...)): ...\n"]) is True)
+    check("detector: Form(...) triggers python-multipart",
+          assembly.needs_python_multipart(["x: str = Form(...)"]) is True)
+    check("detector: a plain JSON route does NOT trigger it",
+          assembly.needs_python_multipart(
+              ["async def create(body: ItemIn): return body\n"]) is False)
+    with_upload = _synthetic_backend()
+    with_upload[0]["content"] = ("from fastapi import APIRouter, UploadFile, File\n"
+                                 "router = APIRouter()\n"
+                                 "@router.post('/upload')\n"
+                                 "async def up(file: UploadFile = File(...)): return {}\n")
+    reqs_up = manifest._backend_requirements(with_upload)
+    check("deployed requirements include python-multipart when File/UploadFile is used",
+          "python-multipart" in reqs_up, reqs_up)
+    check("deployed requirements omit python-multipart for a plain JSON app",
+          "python-multipart" not in manifest._backend_requirements(_synthetic_backend()))
+
 
 def main():
     print("=" * 64)
