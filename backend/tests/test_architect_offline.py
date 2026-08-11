@@ -231,6 +231,13 @@ async def test_gating_suite():
         # Invariant: foundation-first.
         ids = [t.get("id") for t in bp["sprint_tickets"]]
         check("foundation tickets first (FND-1, FND-2)", ids[:2] == ["FND-1", "FND-2"])
+        # project 801: models.py must import the shared Base from the database
+        # module, never call declarative_base() itself — a second Base leaves models
+        # unregistered, so create_all makes no tables and every query 500s.
+        fnd1_desc = tk.get("FND-1", {}).get("description", "")
+        check("FND-1 pins importing the shared Base from the database module",
+              "from backend.app.database import Base" in fnd1_desc
+              and "do not call declarative_base()" in fnd1_desc.lower())
         # Invariant: delegated auth on every build, no custom hashing.
         check("exactly one AUTH-1 ticket", ids.count("AUTH-1") == 1)
         # Invariant: every build MUST commission an application entrypoint, and

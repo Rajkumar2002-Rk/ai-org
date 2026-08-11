@@ -348,7 +348,12 @@ def _foundation_tickets() -> list[dict]:
             "description": "Create backend/app/models.py defining ALL SQLAlchemy "
             "models EXACTLY as the contract's database schema specifies — same "
             "table names, same column names, same types, same relationships. "
-            "This is the single source of truth every other file imports.",
+            "IMPORT the shared declarative Base from the database module — "
+            "`from backend.app.database import Base` — and define every model on THAT "
+            "Base. Do NOT call declarative_base() here: a second Base leaves the models "
+            "unregistered on the engine's metadata, so Base.metadata.create_all() "
+            "creates NO tables and every query then fails with a database error. This "
+            "is the single source of truth every other file imports.",
             "dependencies": [],
         },
         {
