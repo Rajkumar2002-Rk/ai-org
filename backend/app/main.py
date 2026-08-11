@@ -105,8 +105,36 @@ async def _run_build(project_id: int) -> None:
         # reporting "done" would let a provider outage flow into the security
         # review as if real code had been generated.
         ok = (summary or {}).get("status") == "built"
-        await redis_client.set(_build_key(project_id), "done" if ok else "error",
-                               ex=86400)
+        build_result = "done" if ok else "error"
+        if ok:
+            # SMOKE-BOOT GATE: only code that actually STARTS proceeds to the
+            # expensive Opus security review + full QA. The boot failure is caught
+            # here for FREE (assemble + boot, no LLM) and routed straight back to
+            # the Developer stage — three live runs each paid for a full Opus review
+            # on code that then failed to boot at QA.
+            async with async_session() as db:
+                gate = PipelineStatus(project_id=project_id, stage="smoke_boot",
+                                      status="running")
+                db.add(gate)
+                await db.commit()
+                await db.refresh(gate)
+                gate_id = gate.id
+            booted, boot_err = await _smoke_boot(project_id, blueprint)
+            async with async_session() as db:
+                gate = await db.get(PipelineStatus, gate_id)
+                gate.status = "done" if booted else "error"
+                gate.completed_at = sqlfunc.now()
+                gate.error_message = None if booted else (boot_err or "")[:1000]
+                await db.commit()
+            if not booted:
+                # Distinct from a generic build error so the UI can say specifically
+                # that the app did not START and is going back to be rebuilt.
+                build_result = "boot_failed"
+                logger.warning(
+                    "Smoke-boot FAILED for project %s BEFORE the security review — "
+                    "skipping the Opus review, back to the Developer stage. Reason: %s",
+                    project_id, boot_err)
+        await redis_client.set(_build_key(project_id), build_result, ex=86400)
     except Exception:  # pragma: no cover
         logger.exception("Developer build failed for project %s", project_id)
         await redis_client.set(_build_key(project_id), "error", ex=86400)
@@ -126,6 +154,30 @@ def _qa_key(project_id: int) -> str:
 
 def _deploy_key(project_id: int) -> str:
     return f"deploy:status:{project_id}"
+
+
+async def _smoke_boot(project_id: int, blueprint: dict) -> tuple[bool, str]:
+    """Free assemble+boot check (QA's OWN mechanism, NO LLM) run right after the
+    Developer agents and BEFORE the Opus security review. Returns (booted, reason).
+    A build that cannot even start never reaches the expensive review + full QA."""
+    from app.qa import assembly
+    async with async_session() as db:
+        rows = (await db.execute(
+            select(GeneratedFile.id, GeneratedFile.ticket_id, GeneratedFile.filename,
+                   GeneratedFile.filepath, GeneratedFile.content, GeneratedFile.agent_type)
+            .where(GeneratedFile.project_id == project_id)
+            .order_by(GeneratedFile.id)
+        )).all()
+    files = [{"id": r[0], "ticket_id": r[1], "filename": r[2], "filepath": r[3],
+              "content": r[4], "agent_type": r[5]} for r in rows]
+    expected = [e.get("path") for e in (blueprint.get("api_endpoints") or [])
+                if e.get("path")]
+    env = await assembly.assemble(files, expected)
+    booted = env.ok
+    reason = "" if booted else (
+        "; ".join(f.test_name for f in env.failures) or "the app did not start")
+    await assembly.teardown(env)
+    return booted, reason
 
 
 async def _run_deploy(project_id: int) -> None:
@@ -218,6 +270,16 @@ async def _run_qa(project_id: int) -> None:
 async def _run_review(project_id: int) -> None:
     """Background job: run the Code Reviewer (general + Opus security passes)."""
     try:
+        # HARD GATE — never spend on the Opus security review unless the build
+        # passed the smoke-boot. _run_build sets build:status to "done" ONLY when
+        # the app actually starts; a boot failure leaves it "error" and routes back
+        # to the Developer stage. This is a backend guarantee, not just a frontend
+        # convention, so the review can never run on un-bootable code.
+        if (await redis_client.get(_build_key(project_id))) != "done":
+            logger.warning("Refusing the security review for project %s — the build "
+                           "did not pass the smoke-boot gate.", project_id)
+            await redis_client.set(_secure_key(project_id), "error", ex=86400)
+            return
         async with async_session() as db:
             row = (await db.execute(
                 select(Blueprint.blueprint_json)

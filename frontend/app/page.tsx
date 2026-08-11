@@ -99,7 +99,7 @@ export default function Home() {
   const [pipeline, setPipeline] = useState<
     | "idle" | "reviewing" | "review" | "designing" | "building"
     | "securing" | "secured" | "testing" | "tested"
-    | "deploying" | "live" | "deploy_failed" | "error"
+    | "deploying" | "live" | "deploy_failed" | "boot_failed" | "error"
   >("idle");
   const [review, setReview] = useState<any>(null);
   const [designExplain, setDesignExplain] = useState<any>(null);
@@ -314,6 +314,11 @@ export default function Home() {
         if (data.status === "done") {
           clearInterval(t);
           startSecure();
+        } else if (data.status === "boot_failed") {
+          // The free smoke-boot gate caught that the app doesn't start — it never
+          // reached the security review. Say so honestly.
+          setPipeline("boot_failed");
+          clearInterval(t);
         } else if (data.status === "error") {
           setPipeline("error");
           clearInterval(t);
@@ -1255,6 +1260,17 @@ export default function Home() {
                 Your app passed its tests, but we hit a snag putting it online and
                 stopped rather than launch something that isn&apos;t right. It&apos;s
                 been flagged for a final pass.
+              </div>
+            </div>
+          )}
+
+          {pipeline === "boot_failed" && (
+            <div style={s.reviewCard}>
+              <div style={s.reviewTitle}>Not ready yet</div>
+              <div style={s.designBody}>
+                It didn&apos;t start correctly, so we&apos;ve sent it back to be
+                rebuilt. We caught this early — before the full safety review — so
+                nothing was wasted.
               </div>
             </div>
           )}
