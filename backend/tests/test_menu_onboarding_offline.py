@@ -101,6 +101,12 @@ check("text" in m3 and ("vision" in m3 or "image" in m3) and "pending_review" in
       "MENU-3 spec: text-first + vision fallback + pending_review + platform key")
 check("filename" in m3 and ("max" in m3 or "size" in m3),
       "MENU-3 spec: filename-injection + file-size guardrails called out")
+# project 689: the LLM hallucinated `from anthropic import Claude`. Pin the real
+# SDK client class and forbid the made-up one.
+check("from anthropic import anthropic" in m3,
+      "MENU-3 spec: pins the real Anthropic SDK client class (from anthropic import Anthropic)")
+check("no `claude` class" in m3,
+      "MENU-3 spec: forbids the hallucinated `Claude` import class (project 689)")
 
 # --- REGRESSION: the live-run bug — LLM Architect ALSO schemas menu_items.
 # Two menu_items entries made FND-1 define the model twice ("table already
