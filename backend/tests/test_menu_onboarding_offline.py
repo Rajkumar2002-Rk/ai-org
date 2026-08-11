@@ -107,6 +107,20 @@ check("from anthropic import anthropic" in m3,
       "MENU-3 spec: pins the real Anthropic SDK client class (from anthropic import Anthropic)")
 check("no `claude` class" in m3,
       "MENU-3 spec: forbids the hallucinated `Claude` import class (project 689)")
+# project 718: the app booted but /admin/menu/pending + /admin/menu/confirm were
+# missing — the confirm endpoint was orphaned (only the frontend referenced it).
+# MENU-3 must commission BOTH review-flow backend endpoints as real routes.
+check("/admin/menu/pending" in m3 and "/admin/menu/confirm" in m3,
+      "MENU-3 spec: commissions BOTH review-flow endpoints (pending + confirm) (project 718)")
+# And no backend menu endpoint in the contract may be orphaned (unnamed by any
+# backend ticket) — that's exactly how /confirm went missing.
+_be_paths = [e["path"] for e in builder._menu_endpoints("pdf")]
+_be_text = " ".join(t["description"] for t in builder._menu_tickets("pdf")
+                    if t["assigned_to"] == "backend")
+_orphans = [p for p in _be_paths if p not in _be_text]
+check(not _orphans,
+      "no backend menu endpoint is orphaned (each named in a backend ticket): "
+      + (", ".join(_orphans) if _orphans else "all commissioned"))
 
 # --- REGRESSION: the live-run bug — LLM Architect ALSO schemas menu_items.
 # Two menu_items entries made FND-1 define the model twice ("table already

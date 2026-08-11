@@ -914,7 +914,12 @@ def _menu_tickets(menu_setup: str) -> list[dict]:
                     "type, and NEVER use the client-supplied filename in a "
                     "filesystem path or shell command. A malformed or corrupt PDF "
                     "must fail gracefully with a clear error and never crash the "
-                    "server. GET /admin/menu/pending lists the items awaiting review."
+                    "server. This ticket ALSO owns the review-flow backend, both as "
+                    "REAL routes on this router: GET /admin/menu/pending returns "
+                    "every status='pending_review' item, and POST /admin/menu/confirm "
+                    "accepts the reviewed/edited items and PUBLISHES them (set "
+                    "status='published') — the ONLY way extracted items go live. "
+                    "Implement BOTH endpoints."
                 ),
                 "dependencies": ["MENU-1"],
             },
