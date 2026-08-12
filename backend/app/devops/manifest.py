@@ -403,8 +403,15 @@ def build(files: list[dict], root: str, names: dict, *, subdomain: str,
                 saw_pkg = True
             dest = os.path.join(frontend_ctx, rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            # D4 (project 860): force the app dynamic via the root server layout so
+            # `next build` cannot die prerendering a client page that uses
+            # useSearchParams()/request-time state, which failed the whole frontend
+            # image build. Page-level force-dynamic does NOT work on Next 15 (route
+            # config is ignored in client components); the root layout is the proven
+            # fix. Same deterministic transform QA uses.
+            content = qa.force_dynamic_layout(rel, f.get("content") or "")
             with open(dest, "w", encoding="utf-8") as fh:
-                fh.write(f.get("content") or "")
+                fh.write(content)
         with open(os.path.join(frontend_ctx, "Dockerfile"), "w", encoding="utf-8") as fh:
             fh.write(_frontend_dockerfile())
         if not saw_pkg:

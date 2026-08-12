@@ -235,6 +235,68 @@ def platform_constraints_text() -> str:
     return "\n".join(f"{name}=={ver}" for name, ver in sorted(PLATFORM_PINS.items())) + "\n"
 
 
+# ---------------------------------------------------------------- Next.js prerender
+# D4 (projects 274 / 342 / 860): a generated App-Router page that is a client
+# component using `useSearchParams()` (or otherwise touching request-time state)
+# THROWS while `next build` statically prerenders it — "useSearchParams() should be
+# wrapped in a suspense boundary" -> "Error occurred prerendering page '/integrate'"
+# — which fails the whole frontend image build (project 860 died exactly here at the
+# deploy step, on Next 15).
+#
+# ⚠️ The ORIGINALLY-documented fix — inject `export const dynamic = "force-dynamic"`
+# into the PAGE files — was proven WRONG for this Next.js version (15): route-segment
+# config is IGNORED in Client Components, and every generated `page.tsx` here is
+# `"use client"`, so the injected export does nothing and `next build` still fails.
+# Verified with a real build (a client page using useSearchParams fails identically
+# WITH and WITHOUT the page-level export). Do NOT reintroduce the page-level approach.
+#
+# The mechanism that actually works (verified with a real `next build`): export
+# `dynamic = "force-dynamic"` from the ROOT SERVER `layout.tsx`. A server layout DOES
+# honour route-segment config, and the root layout's config cascades to every route,
+# so the whole app renders dynamically and no page is ever prerendered. We inject it
+# there, deterministically, wherever the frontend is materialised for a build (the
+# deploy image AND QA's opt-in `next build`).
+_LAYOUT_BASENAMES = {"layout.tsx", "layout.jsx", "layout.ts", "layout.js"}
+_FORCE_DYNAMIC_EXPORT = 'export const dynamic = "force-dynamic";'
+_HAS_DYNAMIC_RE = re.compile(r"export\s+const\s+dynamic\b")
+
+
+def _is_next_root_layout(rel: str) -> bool:
+    """The ROOT App-Router layout (`app/layout.*`) — the one whose route-segment
+    config cascades to every route. A nested segment layout (`app/admin/layout.*`)
+    is NOT the root and is left alone; forcing the root dynamic already covers it."""
+    p = "/" + (rel or "").replace("\\", "/").lstrip("/")
+    parts = [seg for seg in p.split("/") if seg]
+    return (os.path.basename(p) in _LAYOUT_BASENAMES
+            and len(parts) >= 2 and parts[-2] == "app")
+
+
+def _is_client_component(content: str) -> bool:
+    """A module whose first statement is a `"use client"` directive."""
+    head = (content or "").lstrip()
+    return head.startswith('"use client"') or head.startswith("'use client'")
+
+
+def force_dynamic_layout(rel: str, content: str) -> str:
+    """Inject `export const dynamic = "force-dynamic"` into the generated ROOT
+    Next.js layout so the whole app renders dynamically and `next build` never
+    prerenders a page (D4). Prepended at the top; ES-module imports hoist, so this
+    is valid ahead of the layout's own imports (verified with a real build).
+
+    Skips (returns content unchanged):
+      * any file that is not the root `app/layout.*`;
+      * a root layout that is itself a CLIENT component — route config is ignored
+        there, the exact reason the old page-level fix failed, so injecting would be
+        a silent no-op we must not pretend fixes the build;
+      * a layout that already exports `dynamic` (respect an explicit author choice).
+    """
+    if (not _is_next_root_layout(rel)
+            or _is_client_component(content)
+            or _HAS_DYNAMIC_RE.search(content or "")):
+        return content
+    return _FORCE_DYNAMIC_EXPORT + "\n" + (content or "")
+
+
 def needs_email_validator(contents) -> bool:
     """Pydantic's `EmailStr` (and `pydantic[email]`) require the separate
     `email-validator` package. It is triggered by the field TYPE and referenced by
@@ -375,7 +437,9 @@ def _write_files(root: str, files: list[dict]) -> tuple[dict[str, str], dict[str
             continue
         dest = os.path.join(root, rel)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        content = f.get("content") or ""
+        # D4: force the app dynamic via the root server layout so QA's opt-in
+        # `next build` (and anything reading this temp dir) matches the deploy image.
+        content = force_dynamic_layout(rel, f.get("content") or "")
         try:
             with open(dest, "w", encoding="utf-8") as fh:
                 fh.write(content)

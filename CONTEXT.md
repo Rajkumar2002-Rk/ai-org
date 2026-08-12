@@ -5,17 +5,20 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — smoke_boot gate made DETERMINISTIC; menu feature still ONE run from live (2026-08-12)
+# ⏭️ RESUME HERE — first run REACHED DEPLOY (QA fully passed); D4 deploy-build bug now fixed (2026-08-12)
 
-**Start the next session with:** "Read CONTEXT.md. The smoke_boot gate is now pinned +
-deterministic — re-run the Bella Vista restaurant idea to finally test live PDF extraction."
-The prior session got the pipeline BOOTING through QA. THIS session (2026-08-12) fixed a
-GATE-INTEGRITY hole that project 829 exposed: smoke_boot passed an un-bootable build (paying
-for the Opus review), because the throwaway QA/smoke_boot venv was NOT version-pinned and did
-not match the deploy. Two fixes landed (#12 pin the venv, #13 Pydantic v2 prompt rule), both
-with regression tests; a third defect (order.py imports a nonexistent `Item` symbol) is LOGGED
-as a D3-family follow-up. **The very next run is still expected to be the FIRST to reach a live
-deploy URL** and exercise menu PDF extraction end to end.
+**Start the next session with:** "Read CONTEXT.md. Fixes #12–#14 are in — re-run the Bella
+Vista restaurant idea; it should now reach a LIVE deploy URL and exercise menu PDF extraction."
+THIS session (2026-08-12) closed three deterministic fixes across two milestones. First a
+GATE-INTEGRITY hole (project 829): smoke_boot passed an un-bootable build (paying for the Opus
+review) because the throwaway QA/smoke_boot venv was NOT version-pinned → **fix #12** (pin the
+venv to the deploy's versions) + **fix #13** (Pydantic v2 prompt rule). Then project **860
+became the FIRST run to fully pass QA (104 tests) and reach the DEPLOY step** — where it hit the
+**D4** frontend-build bug (`next build` prerendering `/integrate`, a `useSearchParams` client
+page) → **fix #14** (force the app dynamic via the ROOT SERVER `layout.tsx`; the old page-level
+force-dynamic was DISPROVEN on Next 15 and must NOT return). A separate defect (order.py imports
+a nonexistent `Item` symbol) is LOGGED as a D3-family follow-up. **The very next run is expected
+to reach a LIVE deploy URL** and finally exercise menu PDF extraction end to end.
 
 **WHAT 829 PROVED (the gate escape, fully diagnosed — do NOT re-litigate):** generated
 `routes/order.py` used the Pydantic **v1** spelling `conlist(OrderItem, min_items=1)`, a hard
@@ -26,16 +29,18 @@ smoke_boot passed anyway (booted clean in 9s) while QA fail-booted the SAME file
 The user's first theory (re-run smoke_boot after a QA regeneration) was DISPROVEN by the
 evidence; the real fix is making the environment deterministic + identical.
 
-**EXACT CURRENT STATE (fixes #12/#13 landed, verified):** all **12 free offline suites PASS**
-(added `test_venv_pinning_offline`). An integration proof re-assembled 829's real files with the
-fix: gate `env.ok=False` (correctly REJECTS), constraint file written (`pydantic==2.10.4`), venv
-Pydantic pinned to exactly 2.10.4. Project **829 has been cleaned up** (test artifact). DB is
-CLEAN. **Backend image REBUILT** so the running server carries the fix for the next live run.
+**EXACT CURRENT STATE (fixes #12/#13/#14 landed, verified):** all **13 free offline suites PASS**
+(added `test_venv_pinning_offline` + `test_d4_force_dynamic_offline`). Fix #12 proven by an
+integration re-assemble of 829's real files (gate `env.ok=False`, venv pinned `pydantic==2.10.4`);
+fix #14 proven by `test_d4_real_build.sh` — a real `next build` on 860's actual layout+page FAILS
+without the layout fix and SUCCEEDS with it (`/integrate` becomes `ƒ` dynamic). Fixes #12/#13 and
+#14 are BOTH COMMITTED locally (two commits: "Fix #12/#13…" then "Fix #14…"). Projects **829 AND 860
+have been CLEANED UP** (DB rows cascade-deleted + 860's orphaned deploy images removed); DB otherwise
+CLEAN. **Backend image REBUILT** so the running server carries #12–#14 for the next live run.
 
-**GIT — fixes #12/#13 + tests + this CONTEXT update COMMITTED locally on master as the most
-recent commit (the "Fix #12/#13" commit), NOT yet pushed.** Its parent is `e1326ad`
-(== `origin/master`, the session-start HEAD); the FND-1 fix `1cda1f9` is `e1326ad`'s parent
-(both already pushed). So `origin/master` is 1 behind local — `git push` when ready.
+**GIT — fixes #12/#13/#14 are TWO local commits on master, NOT pushed** ("Fix #12/#13…" then
+"Fix #14…"). Base parent is `e1326ad` (== `origin/master`); FND-1 `1cda1f9` is its parent (both
+pushed). So `origin/master` is 2 behind local — `git push` when ready.
 github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`, ever**;
 never commit `.env`; keep the repo private.
 
@@ -142,7 +147,7 @@ placeholder that isn't format-valid, or a GUESSED symbol/name.
     models registered on a Base the engine never sees → `create_all` made NO tables. Fix:
     FND-1 pins `from backend.app.database import Base` and forbids a second `declarative_base()`.
 
-## 🔧 FIXES #12 / #13 (2026-08-12 — the gate-integrity session; not yet committed)
+## 🔧 FIXES #12 / #13 / #14 (2026-08-12 — the gate-integrity + first-deploy session)
 12. **Pinned + deterministic smoke_boot/QA venv** — project 829 booted clean at smoke_boot,
     passed the paid Opus review, then fail-booted at QA on the SAME files. Root cause: the
     throwaway venv is `--system-site-packages` + installs missing deps UNPINNED, so it could
@@ -163,6 +168,21 @@ placeholder that isn't format-valid, or a GUESSED symbol/name.
     Backend-Developer system prompt (`developers/agents._system`) now mandates v2 names for
     `conlist`/`constr`/`Field`/`conset` and forbids `min_items`/`max_items`. Proven by
     `test_developers_offline.test_pydantic_v2_rule` (frontend prompt excluded).
+14. **D4 force-dynamic via the ROOT SERVER layout** — project 860 was the FIRST run to fully
+    pass QA (104 tests), then failed at the DEPLOY step: `next build` threw prerendering
+    `/integrate`, a `"use client"` page using `useSearchParams()` without Suspense → the whole
+    frontend image build fails. ⚠️ The originally-documented fix (inject `export const dynamic =
+    "force-dynamic"` into the PAGE files) was DISPROVEN with a real `next build` on Next 15:
+    route-segment config is IGNORED in client components, and the pages are all `"use client"`,
+    so it does nothing. The working, real-build-proven fix: inject `export const dynamic =
+    "force-dynamic"` into the ROOT SERVER `layout.tsx` (config there cascades to every route →
+    whole app dynamic → no page is prerendered). `assembly.force_dynamic_layout(rel, content)`
+    (skips: non-root-layout, a CLIENT root layout, and a layout that already sets `dynamic`),
+    applied at BOTH build sites — the deploy `manifest` frontend write AND QA's `_write_files`
+    (so QA's opt-in `next build` matches the deploy). Proven by `test_d4_force_dynamic_offline.py`
+    (11 injection checks) + `test_d4_real_build.sh` (real `next build`: FAILS without the layout
+    fix, SUCCEEDS with it, `/integrate` becomes `ƒ` dynamic — EXCLUDED from the free suite, needs
+    Node+Docker like the live tests). Verified live against project 860's actual layout + page.
 
 ## ⚠️ KNOWN-OPEN / worth watching
 - **D3-FAMILY: order.py imports a nonexistent `Item` symbol (project 829, LOGGED not yet fixed).**
@@ -193,9 +213,11 @@ placeholder that isn't format-valid, or a GUESSED symbol/name.
 - Carried from before: post-Week-8 **MODEL SWITCH** (own session), the secrets-table
   onboarding gap, a real AWS Cost Explorer shakeout.
 
-**Offline suite count is now 12** (added `test_smoke_boot_gate_offline` +
-`test_menu_onboarding_offline` + `test_venv_pinning_offline` to the original 9). All pass;
-run them all before any commit. The 9 "free" suites are still the regression baseline.
+**Offline suite count is now 13** (added `test_smoke_boot_gate_offline` +
+`test_menu_onboarding_offline` + `test_venv_pinning_offline` + `test_d4_force_dynamic_offline`
+to the original 9). All pass; run them all before any commit. The 9 "free" suites are still the
+regression baseline. NOTE: `test_d4_real_build.sh` (D4 real `next build`) is EXCLUDED — it needs
+Node + Docker, like `test_devops_local_live`; run it from the host when touching the D4 fix.
 
 ---
 
@@ -752,11 +774,18 @@ complete, log the residual quality defects, move to Week 7.
   is [not] a valid Pydantic field type."* Fix (later): a Backend-Developer prompt
   rule — response_model must be a Pydantic schema, never an ORM model (omit it, or
   define a response schema). Same shape as the existing anti-workaround prompts.
-- **Flaky SSG prerender (D4)** (runs 274 fail / 283 pass / 342 fail on `/integrate`).
-  `next build` compiles and static-generates, but prerendering one page throws at
-  SSG export — nondeterministic. Fix (later): opt generated pages into dynamic
-  rendering (`export const dynamic = "force-dynamic"`) so `next build` stops
-  prerendering, rather than per-page patching.
+- **Flaky SSG prerender (D4)** (runs 274 fail / 283 pass / 342 fail on `/integrate`;
+  project 860 fail at deploy). `next build` compiles, then THROWS prerendering
+  `/integrate` — a `"use client"` page calling `useSearchParams()` without a Suspense
+  boundary — which fails the whole frontend image build. **RESOLVED 2026-08-12 by
+  fix #14 (see the fixes section).** ⚠️ The fix originally proposed HERE — inject
+  `export const dynamic = "force-dynamic"` into the PAGE files — was **DISPROVEN with
+  a real `next build` on Next 15**: route-segment config is IGNORED in Client
+  Components, and every generated `page.tsx` is `"use client"`, so the page-level
+  export does NOTHING and the build still fails. **Do NOT re-introduce the page-level
+  approach.** The mechanism that actually works (real-build proven) is exporting
+  `dynamic = "force-dynamic"` from the ROOT SERVER `layout.tsx`, whose config cascades
+  to every route — see fix #14.
 - **D3 residual — wrong SYMBOL from a correctly-pathed module.** The module-PATH
   family is closed (module map + conventional names); a file can still import a
   wrong *name* from the right module. Surfaces as a clear ImportError caught by QA
@@ -1322,12 +1351,11 @@ NEW defects, and the root fix for the whole family:**
   as a clearer ImportError and is caught by QA retry. Not yet closed.)
   Proven in `test_architect_offline` TEST 8 (`_contract_text` declares the exact
   slug integration path, forbids the wrong guess by name, drops the generic line).
-- **D4 — frontend prerender runtime error (SEPARATE family, still open).** With
-  globals.css fixed, `next build` compiled and static-generated, but prerendering
-  one page threw a runtime error during SSG export. This is a *code-quality* bug
-  in a generated page, not a missing file — handled separately based on what the
-  next run shows (likely a rendering-strategy decision, e.g. force-dynamic, rather
-  than per-page fixes). NOT fixed yet.
+- **D4 — frontend prerender runtime error (SEPARATE family).** With globals.css
+  fixed, `next build` compiled and static-generated, but prerendering one page threw
+  during SSG export. **RESOLVED 2026-08-12 by fix #14** — force the app dynamic via
+  the ROOT SERVER `layout.tsx` (NOT the pages: page-level force-dynamic was disproven
+  on Next 15, see the fixes section + the Week-6 D4 note).
 
 ### STEP 6 RESULT — measured cost: CLOSED (2026-07-22)
 
