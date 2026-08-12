@@ -294,22 +294,65 @@ def test_stub_function_detection():
           agents.stub_functions("def broken(:\n  return []") == [])
 
 
-def test_stub_function_gate():
-    """The build-stage gate treats a real-looking file that stubbed a core work
-    function as a STUB (retried, then fails the build) — the same 'a stub is not
-    built' rule as whole-file stubs, at function granularity."""
+def test_build_gate():
+    """The build-stage gate rejects a real-looking file that (a) stubbed a core work
+    function, (b) uses Depends(async_session) instead of Depends(get_db), or (c)
+    renamed a contract column in its model — retried, then fails the build. Same 'a
+    stub is not built' mechanism, extended to the real-code-but-wrong bugs found in 888."""
     from app.developers import orchestrator as orch
+    bp = {"database_schema": [{"table": "menu_items", "columns": [
+        {"name": "id", "type": "int"}, {"name": "name", "type": "str"},
+        {"name": "source", "type": "str"}]}]}
     built = [
         {"ticket_id": "MENU-3", "content": "def parse_menu_items(t):\n    return []\n", "status": "generated"},
+        {"ticket_id": "MENU-1", "content": "d: X = Depends(async_session)\n", "status": "generated"},
+        {"ticket_id": "FND-1", "content": ("class MenuItem(Base):\n"
+            "    __tablename__ = 'menu_items'\n"
+            "    id = Column(Integer)\n    name = Column(String)\n"
+            "    source_name = Column(String)\n"), "status": "generated"},  # renamed source->source_name
         {"ticket_id": "BE-1", "content": "def handle_order():\n    return {'ok': True}\n", "status": "generated"},
     ]
-    stubbed = orch._collect_stubs(built, 1)
-    check("gate flags the ticket with a stubbed work function",
-          [s["ticket_id"] for s in stubbed] == ["MENU-3"], str(stubbed))
-    check("that ticket is marked STUB_STATUS (feeds the retry/fail gate)",
-          built[0]["status"] == agents.STUB_STATUS)
-    check("a ticket with real logic is left untouched",
-          built[1]["status"] == "generated")
+    stubbed = orch._collect_stubs(built, bp, 1)
+    flagged = sorted(s["ticket_id"] for s in stubbed)
+    check("gate flags stub-fn, bad-session-dep, and schema-rename tickets",
+          flagged == ["FND-1", "MENU-1", "MENU-3"], str(flagged))
+    check("the clean ticket is left untouched", built[3]["status"] == "generated")
+    check("schema-rename problem names the missing contract column",
+          any("menu_items.source" in p for r in stubbed if r["ticket_id"] == "FND-1"
+              for p in r.get("gate_problems", [])), str(stubbed))
+
+
+def test_session_dependency_rule():
+    """Regression (project 888): Depends(async_session) 422'd every request. Detector
+    + Backend-Developer prompt must forbid it in favour of Depends(get_db)."""
+    check("bad_session_dependency detects Depends(async_session)",
+          agents.bad_session_dependency("db = Depends(async_session)") is True)
+    check("Depends(get_db) is NOT flagged",
+          agents.bad_session_dependency("db = Depends(get_db)") is False)
+    sysp = agents._system("backend")
+    check("backend prompt mandates Depends(get_db), forbids Depends(async_session)",
+          "Depends(get_db)" in sysp and "Depends(async_session)" in sysp, sysp)
+
+
+def test_schema_adherence():
+    """Regression (project 888): the model renamed contract column `source` to
+    `source_name`, 500ing the published GET /menu. Detector catches a missing/renamed
+    contract column; the prompt forbids renaming."""
+    schema = [{"table": "menu_items", "columns": [
+        {"name": "id", "type": "int"}, {"name": "source", "type": "str"}]}]
+    renamed = ("class MenuItem(Base):\n    __tablename__ = 'menu_items'\n"
+               "    id = Column(Integer)\n    source_name = Column(String)\n")
+    check("renamed contract column is caught (menu_items.source missing)",
+          agents.model_schema_mismatches(renamed, schema) == ["menu_items.source"])
+    correct = ("class MenuItem(Base):\n    __tablename__ = 'menu_items'\n"
+               "    id = Column(Integer)\n    source = Column(String)\n")
+    check("a model with the exact contract columns is clean",
+          agents.model_schema_mismatches(correct, schema) == [])
+    check("extra model columns are allowed (only missing contract cols flagged)",
+          agents.model_schema_mismatches(correct + "    image_url = Column(String)\n", schema) == [])
+    sysp = agents._system("backend")
+    check("backend prompt mandates exact contract column names (no rename)",
+          "schema-adherence" in sysp.lower() and "source_name" in sysp, sysp)
 
 
 def test_no_stub_prompt_rule():
@@ -333,8 +376,10 @@ async def main():
         test_response_model_rule()
         test_pydantic_v2_rule()
         test_stub_function_detection()
-        test_stub_function_gate()
+        test_build_gate()
         test_no_stub_prompt_rule()
+        test_session_dependency_rule()
+        test_schema_adherence()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

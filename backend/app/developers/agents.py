@@ -61,6 +61,23 @@ def _system(agent_type: str) -> str:
         "(removed in v2 — they raise `TypeError` at import and the app will not "
         "start). This applies to `conlist(...)`, `constr(...)`, `Field(...)` and "
         "`conset(...)`. Use `min_length=`/`max_length=` everywhere."
+        # DB-session dependency (project 888): a route used `Depends(async_session)`,
+        # so FastAPI read the sessionmaker's __call__(**local_kw) as a query param and
+        # every request 422'd. Only visible over real HTTP.
+        " CRITICAL DB-session rule: inject the database session with "
+        "`Depends(get_db)` (the async generator dependency in "
+        "backend/app/database.py). NEVER `Depends(async_session)` — that is the "
+        "sessionmaker itself; FastAPI turns its `__call__(**local_kw)` into a REQUIRED "
+        "query parameter and every request fails with 422 before your handler runs."
+        # Schema adherence (project 888): the model renamed the contract column
+        # `source` to `source_name`, so a response schema field `source` 500'd once
+        # rows existed (ResponseValidationError, 'source' Field required).
+        " CRITICAL schema-adherence rule: use the EXACT column names from the binding "
+        "contract's DATABASE SCHEMA in BOTH your SQLAlchemy models AND your Pydantic "
+        "request/response schemas — never rename a column (do NOT turn `source` into "
+        "`source_name`, `user` into `user_id`, etc.). A response-schema field that "
+        "does not match a real model attribute raises ResponseValidationError (500) "
+        "as soon as a row is serialized."
     ) if agent_type == "backend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "
@@ -334,6 +351,71 @@ def stub_functions(content: str, only_work_named: bool = True) -> list[str]:
             if not only_work_named or any(h in node.name.lower() for h in _WORK_FUNC_HINTS):
                 names.append(node.name)
     return names
+
+
+_BAD_SESSION_DEP_RE = re.compile(r"Depends\(\s*async_session\s*\)")
+
+
+def bad_session_dependency(content: str) -> bool:
+    """True if the file injects the SQLAlchemy sessionmaker DIRECTLY as a FastAPI
+    dependency — `Depends(async_session)` — instead of the `get_db` generator.
+    FastAPI introspects the sessionmaker's `__call__(self, **local_kw)` signature and
+    turns `local_kw` into a REQUIRED query parameter, so EVERY request 422s before the
+    handler runs (project 888 — invisible until a real HTTP request hit the endpoint).
+    The session dependency must be `Depends(get_db)`."""
+    return bool(_BAD_SESSION_DEP_RE.search(content or ""))
+
+
+def _model_columns(models_content: str) -> dict[str, set]:
+    """{table name -> set of column ATTRIBUTE names} for every SQLAlchemy model
+    (a class with `__tablename__`) defined in the file."""
+    out: dict[str, set] = {}
+    try:
+        tree = ast.parse(models_content or "")
+    except SyntaxError:
+        return out
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        tablename, cols = None, set()
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            tgt = stmt.targets[0]
+            if not isinstance(tgt, ast.Name):
+                continue
+            if tgt.id == "__tablename__" and isinstance(stmt.value, ast.Constant) \
+                    and isinstance(stmt.value.value, str):
+                tablename = stmt.value.value
+            elif isinstance(stmt.value, ast.Call):
+                fn = stmt.value.func
+                if (getattr(fn, "id", None) or getattr(fn, "attr", None)) in ("Column", "mapped_column"):
+                    cols.add(tgt.id)
+        if tablename:
+            out[tablename] = cols
+    return out
+
+
+def model_schema_mismatches(models_content: str, database_schema: list) -> list[str]:
+    """Contract adherence: every column the binding contract's `database_schema`
+    declares for a table MUST appear, by its EXACT name, on the generated model for
+    that table. A RENAMED column (project 888: the contract's `source` became
+    `source_name` in the model) leaves the contract name missing, which breaks any
+    response schema / query that uses the real name — a 500 that only appears once
+    rows exist. Returns 'table.column' for each declared column absent from its model.
+    A table with no matching model is skipped (that is a different, missing-file
+    problem, not a rename)."""
+    model_cols = _model_columns(models_content)
+    missing = []
+    for t in database_schema or []:
+        tname = t.get("table")
+        if tname not in model_cols:
+            continue
+        for c in (t.get("columns") or []):
+            name = c.get("name")
+            if name and name not in model_cols[tname]:
+                missing.append(f"{tname}.{name}")
+    return missing
 
 
 def _stub(agent_type: str, ticket: dict) -> dict:

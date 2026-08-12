@@ -5,9 +5,36 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — MENU EXTRACTION PROVEN on real menus; frozen working fixture (proj 888) + cost controls (2026-08-12)
+# ⏭️ RESUME HERE — MENU ONBOARDING FEATURE CLOSED: real-HTTP + real-auth end-to-end PROVEN (2026-08-12)
 
-## ⭐ LATEST (2026-08-12, evening) — extraction proven, treadmill broken, source-hardened
+## ✅ MENU ONBOARDING — CLOSING PROOF (2026-08-12, late) — full real-HTTP, real-auth lifecycle
+The feature is proven end-to-end THROUGH the deployed app over real HTTP with real auth — not by
+calling functions. A local deploy of frozen fixture **888** (app + Postgres + a **local JWKS IdP**
+standing in for Auth0, since no Auth0 tenant exists) ran the whole lifecycle with a real RS256 admin
+JWT (validated against the JWKS: signature, audience, issuer, `'admin'` permission):
+`POST /admin/menu/upload` (no/bogus token → **401**; valid token + the user's real PDF → **200, 7
+items**) → `GET /admin/menu/pending` (7 `pending_review`) → `POST /admin/menu/confirm` (7 published)
+→ public `GET /menu` (7 published; empty before confirm — the review gate holds). The stack is still
+up at `http://localhost:8899` (compose in `scratchpad/deploy888/`, token in `idp/admin_token.txt`);
+the user asked to leave it running.
+
+**TWO MORE BUGS found ONLY via the real path** (invisible to direct function calls), fixed + baked
+into 888 AND source-hardened this turn:
+- `Depends(async_session)` → every request **422** (FastAPI read the sessionmaker's
+  `__call__(**local_kw)` as a required query param). Must be `Depends(get_db)`.
+- `MenuItemResponse.source` vs model attr `source_name` → **500** on the *published* GET /menu
+  (ResponseValidationError, only once rows are serialized). The response field must match the model.
+
+**SOURCE FIXES this turn** (deterministic gate + prompt, same pattern as the stub gate):
+`agents.bad_session_dependency()` (flags `Depends(async_session)`) and
+`agents.model_schema_mismatches(models, database_schema)` (flags a model that renamed/omitted a
+contract column, e.g. `source`→`source_name`), both wired into `orchestrator._collect_stubs`
+(the build gate: flag → retry → fail). Backend-Developer `_system` gained the matching rules.
+Tests: `test_developers_offline` (`test_build_gate`, `test_session_dependency_rule`,
+`test_schema_adherence`). **All 13 free suites pass.** ⚠️ Rebuild the backend before the next real
+pipeline run so these gate checks are live.
+
+## ⭐ EARLIER (2026-08-12, evening) — extraction proven, treadmill broken, source-hardened
 The pipeline was burning ~$3/run to rediscover a NEW random LLM bug each run (801 Base, 829
 conlist, 860 D4, 888 menu-500). We stopped that:
 - **Opus review is now OPTIONAL** — `security_review_enabled` (config + `SECURITY_REVIEW_ENABLED`
@@ -35,16 +62,18 @@ conlist, 860 D4, 888 menu-500). We stopped that:
   `test_menu_onboarding_offline` (MENU-3 rule). **All 13 free suites pass.**
 
 ### ⚠️ KNOWN-OPEN after this session
-- **`source` vs `source_name`:** the deterministic menu schema column is `source`, but 888's LLM
-  models.py used `source_name` (a binding-contract deviation). 888 is internally consistent on
-  `source_name` (works); future generations should use `source`. A contract-adherence bug worth a
-  later deterministic check (D-family).
-- **888 lives only in the DB.** For a portable frozen fixture, export its generated_files+blueprint
-  to a JSON fixture in the repo (not yet done). Redeploy = `POST /pipeline/deploy` for proj 888
-  (needs a fresh skip-cert since files changed — re-run its review step with Opus off).
-- **Extraction not yet deployed via the real DevOps path / the admin upload endpoint is auth-gated**
-  — proven by calling the functions directly; a full local deploy + authenticated upload is the
-  remaining end-to-end.
+- **`source` vs `source_name`:** RESOLVED as a class by the `model_schema_mismatches` gate check
+  (future generations that rename a contract column fail the build). NOTE: 888's frozen fixture is
+  internally consistent on `source_name` (model + save + response schema all aligned this turn) and
+  works — it just differs from the contract's `source`; harmless for the fixture.
+- **888 lives only in the DB** (portable JSON export still not done — deferred by the user).
+- **Real deploy used a controlled local run + local IdP, NOT the platform DevOps path.** The DevOps
+  deploy of 888 would fail to boot without seeded `AUTH0_*` secrets (the Week-7 secrets-onboarding
+  gap) and can't easily inject a local IdP/CA. So a deploy through the actual `POST /pipeline/deploy`
+  path (with real Auth0 or seeded secrets) remains unproven; the FEATURE is proven, the platform
+  DEPLOY path for an auth-gated app is not.
+- **The `deploy888` stack is still running** (host port 8899) — tear down with
+  `docker compose -f scratchpad/deploy888/docker-compose.deploy888.yml down -v` when done.
 
 ---
 

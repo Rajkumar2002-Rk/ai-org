@@ -127,22 +127,38 @@ def _waves(tickets: list[dict]) -> list[list[dict]]:
     return waves
 
 
-def _collect_stubs(built: list, project_id: int) -> list:
-    """Return the built results that count as STUBS — a whole-file placeholder OR a
-    real-looking file that left a CORE work function unimplemented (project 888:
-    `parse_menu_items` was `return []`, so extraction did nothing while every
-    endpoint answered 200). The latter are marked STUB_STATUS in place so they flow
-    through the same retry-then-fail gate."""
+def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
+    """Return the built results the build gate rejects — a file that is not really
+    'built'. Beyond a whole-file placeholder, three real-code-but-wrong problems
+    (all found only late, some only over real HTTP) are caught here and marked
+    STUB_STATUS so they flow through the same retry-then-fail gate:
+
+      * a CORE work function left unimplemented (888: `parse_menu_items` = `return []`
+        → extraction did nothing while endpoints answered 200);
+      * `Depends(async_session)` instead of `Depends(get_db)` (888: every request 422s);
+      * a generated model that renamed a contract column (888: schema `source` became
+        `source_name` → a 500 once rows exist).
+    """
+    schema = (blueprint or {}).get("database_schema") or []
     for r in built:
         if r.get("status") == agents.STUB_STATUS:
             continue
-        stub_fns = agents.stub_functions(r.get("content") or "")
+        content = r.get("content") or ""
+        problems = []
+        stub_fns = agents.stub_functions(content)
         if stub_fns:
+            problems.append(f"placeholder work function(s) {stub_fns}")
+        if agents.bad_session_dependency(content):
+            problems.append("Depends(async_session) — must be Depends(get_db)")
+        if "__tablename__" in content:
+            miss = agents.model_schema_mismatches(content, schema)
+            if miss:
+                problems.append(f"model renamed/omitted contract column(s) {miss}")
+        if problems:
             r["status"] = agents.STUB_STATUS
-            r["stub_functions"] = stub_fns
-            logger.warning("Build %s: ticket %s left placeholder work function(s) %s "
-                           "(no real logic) — treating as a stub",
-                           project_id, r.get("ticket_id"), stub_fns)
+            r["gate_problems"] = problems
+            logger.warning("Build %s: ticket %s rejected by the build gate: %s",
+                           project_id, r.get("ticket_id"), "; ".join(problems))
     return [r for r in built if r.get("status") == agents.STUB_STATUS]
 
 
@@ -215,7 +231,7 @@ async def run(project_id: int, blueprint: dict) -> dict:
         # that is partly placeholder text has not been built, and must not flow
         # into the security review as if it had. Same rule as the driver's
         # require_done: an unknown/empty state must never read as success.
-        stubbed = _collect_stubs(built, project_id)
+        stubbed = _collect_stubs(built, blueprint, project_id)
 
         # ONE targeted retry before giving up. A stub is usually a TRANSIENT
         # single-ticket generation flake — the model returned nothing usable on
@@ -252,7 +268,7 @@ async def run(project_id: int, blueprint: dict) -> dict:
                             b["status"] = r.get("status", "generated")
                     logger.info("Build %s: ticket %s recovered on retry", project_id, tid)
                 await db.commit()
-            stubbed = _collect_stubs(built, project_id)
+            stubbed = _collect_stubs(built, blueprint, project_id)
 
         async with async_session() as db:
             st = await db.get(PipelineStatus, stage_id)
