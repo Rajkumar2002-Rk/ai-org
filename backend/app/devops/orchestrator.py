@@ -85,29 +85,32 @@ async def _tests_passed(project_id: int) -> int:
     return 0
 
 
-async def _security_gate(project_id: int) -> tuple[bool, str]:
-    """Fail-closed: prove the Opus certificate covers exactly what will deploy.
+async def _security_gate(project_id: int) -> tuple[bool, str, bool]:
+    """Fail-closed: prove the certificate covers exactly what will deploy.
 
-    Returns (certified, reason). Certified requires: a certificate EXISTS, it says
-    passed, and NO file has drifted from what it fingerprinted. Any "we can't
-    tell" resolves to NOT certified — never the reverse.
+    Returns (may_deploy, reason, skipped). `may_deploy` requires: a certificate
+    EXISTS, it says passed, and NO file has drifted from what it fingerprinted. Any
+    "we can't tell" resolves to NOT deployable — never the reverse. `skipped` is True
+    when the (passing) certificate is the debug skip cert (security_review_skipped):
+    the drift guarantee still holds, but the code was NOT security-reviewed, so the
+    caller must not label the deploy as security-certified.
     """
     raw = await redis_client.get(f"security_cert:{project_id}")
     cert = json.loads(raw) if raw else {}
     if not cert:
         return False, ("No security certificate exists for this build — it cannot "
                        "be shown to have passed security review, so it will not be "
-                       "deployed.")
+                       "deployed."), False
     if not cert.get("passed", False):
         return False, ("The security certificate for this build is not passing, so "
-                       "it will not be deployed.")
+                       "it will not be deployed."), False
     drifted = await reviewer_orchestrator.drifted_files(project_id, cert)
     if drifted:
         return False, (f"The code changed since it was security-certified "
                        f"({len(drifted)} file(s) drifted from the certificate). "
                        f"Deploying would ship code the security review never saw; "
-                       f"blocking and escalating for re-certification.")
-    return True, "certified"
+                       f"blocking and escalating for re-certification."), False
+    return True, "certified", bool(cert.get("security_review_skipped", False))
 
 
 async def _set_row(deployment_id: int, **fields) -> None:
@@ -143,7 +146,10 @@ async def run(project_id: int) -> dict:
         blueprint_id, blueprint = bp_row[0], json.loads(bp_row[1])
 
         # ---- STEP 0: fail-closed security gate ---------------------------
-        certified, reason = await _security_gate(project_id)
+        may_deploy, reason, sec_skipped = await _security_gate(project_id)
+        # A skipped review still lets a LOCAL deploy proceed (drift is proven), but it
+        # is NOT a security certification — never report it as one.
+        certified = may_deploy and not sec_skipped
         tests_passed = await _tests_passed(project_id)
 
         # ---- STEP 1: sizing + cost --------------------------------------
@@ -167,12 +173,16 @@ async def run(project_id: int) -> dict:
             await db.refresh(row)
             deployment_id = row.id
 
-        if not certified:
+        if not may_deploy:
             await _set_row(deployment_id, status="failed", error_message=reason)
             logger.error("Deploy blocked for project %s: %s", project_id, reason)
             return {"status": "blocked", "reason": reason, "run_id": run_id,
                     "deployment_id": deployment_id, "security_certified": False,
                     "tests_passed": tests_passed}
+        if sec_skipped:
+            logger.warning("Project %s deploying WITHOUT a security review "
+                           "(debug skip cert); drift is proven but the code was not "
+                           "reviewed. security_certified=False.", project_id)
 
         # ---- STEP 5 (prep): real secrets only; never fabricate config ----
         files = await _load_files(project_id)
@@ -239,7 +249,7 @@ async def run(project_id: int) -> dict:
                                server_type=res.server_type or szg.server_type)
                 return {"status": "failed", "run_id": run_id,
                         "deployment_id": deployment_id,
-                        "reason": fault.reason, "security_certified": True,
+                        "reason": fault.reason, "security_certified": certified,
                         "tests_passed": tests_passed, "auto_fixed": auto_fixed}
 
         # ---- STEP 7: health probe + one infra-only auto-fix -------------
@@ -272,7 +282,7 @@ async def run(project_id: int) -> dict:
                 await driver.teardown(req)
                 return {"status": "failed", "run_id": run_id,
                         "deployment_id": deployment_id, "reason": fault.reason,
-                        "security_certified": True, "tests_passed": tests_passed,
+                        "security_certified": certified, "tests_passed": tests_passed,
                         "auto_fixed": auto_fixed, "health_attempts": health_attempts}
 
         # ---- LIVE --------------------------------------------------------
@@ -296,7 +306,7 @@ async def run(project_id: int) -> dict:
             "live_url": res.live_url, "ssl_enabled": res.ssl_enabled,
             "ssl_type": res.ssl_type, "server_type": res.server_type,
             "monthly_cost_estimate": float(est.monthly_usd),
-            "cost_basis": est.basis, "security_certified": True,
+            "cost_basis": est.basis, "security_certified": certified,
             "tests_passed": tests_passed, "auto_fixed": auto_fixed,
             "fix_description": fix_description, "health_attempts": health_attempts,
             "target": target,

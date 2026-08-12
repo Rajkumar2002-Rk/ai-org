@@ -50,6 +50,10 @@ services:
       # injects it only into deployed apps that shipped the PDF menu feature.
       MENU_EXTRACTION_API_KEY: ${MENU_EXTRACTION_API_KEY:-}
       CODEGEN_MODE: ${CODEGEN_MODE:-real}
+      # Paid Opus security review. Default ON. Set false during a LOCAL codegen /
+      # feature-debug phase to drop each iteration from ~$3 to ~$1; ignored for an
+      # AWS deploy and the deploy is honestly marked NOT security-certified.
+      SECURITY_REVIEW_ENABLED: ${SECURITY_REVIEW_ENABLED:-true}
       # Step 5 verification: run a real `next build` against generated frontend
       # code instead of the cheap syntax-only check. Off by default — a full
       # build downloads a node toolchain and is slow.

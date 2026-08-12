@@ -296,7 +296,16 @@ async def _run_review(project_id: int) -> None:
             await redis_client.set(_secure_key(project_id), "error", ex=86400)
             return
         blueprint = json.loads(row[0])
-        certificate = await reviewer_orchestrator.run(project_id, blueprint)
+        # DEBUG COST SAVER: skip the paid Opus review during a LOCAL codegen-quality
+        # phase (~$3 -> ~$1 per iteration). Never for an AWS deploy — a real deploy is
+        # always reviewed — and the certificate is honestly marked skipped.
+        if not settings.security_review_enabled and settings.deploy_target != "aws":
+            logger.warning(
+                "SECURITY REVIEW SKIPPED for project %s — security_review_enabled=False "
+                "(local debug mode). The build is NOT security-certified.", project_id)
+            certificate = await reviewer_orchestrator.skipped_certificate(project_id)
+        else:
+            certificate = await reviewer_orchestrator.run(project_id, blueprint)
         await redis_client.set(
             f"security_cert:{project_id}", json.dumps(certificate), ex=86400
         )

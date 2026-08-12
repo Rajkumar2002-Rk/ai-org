@@ -54,6 +54,27 @@ async def drifted_files(project_id: int, cert: dict) -> list[int]:
     return sorted(int(fid) for fid, h in current.items() if recorded.get(fid) != h)
 
 
+async def skipped_certificate(project_id: int) -> dict:
+    """A NON-reviewed 'certificate' for the local codegen-debugging phase
+    (`settings.security_review_enabled == False`). It runs NO LLM and makes NO
+    security claim: `passed` is True only so the pipeline can proceed to QA/deploy
+    LOCALLY, and `security_review_skipped` is set so no reader — or the frontend, or
+    the DevOps gate — can mistake it for a real Opus certificate. It DOES carry the
+    real `file_hashes` so the drift check still guarantees the deployed bytes are the
+    ones QA saw; it just was not security-reviewed. Never produced for an AWS deploy
+    (see `main._run_review`)."""
+    return {
+        "passed": True,
+        "security_review_skipped": True,
+        "model_used": "skipped (security_review_enabled=False, debug mode)",
+        "issues_found": 0,
+        "issues_fixed": 0,
+        "files_reviewed": 0,
+        "file_hashes": await file_hashes(project_id),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def review_subset(project_id: int, blueprint: dict,
                         file_ids: list[int]) -> dict:
     """Re-run the FULL two-pass review (incl. the always-Opus security pass) on

@@ -313,14 +313,23 @@ def test_security_gate():
 
     import json as _json
     passing = _json.dumps({"passed": True, "file_hashes": {"1": "a"}})
-    ok, _ = asyncio.run(_run_case(passing, [], True))
+    ok, _reason, skipped = asyncio.run(_run_case(passing, [], True))
     check("certified when cert passes and nothing drifted", ok is True)
-    ok, _ = asyncio.run(_run_case(passing, [1, 2], False))
+    check("a real passing cert is NOT flagged skipped", skipped is False)
+    ok, _reason, _s = asyncio.run(_run_case(passing, [1, 2], False))
     check("BLOCKED when files drifted from the certificate", ok is False)
-    ok, _ = asyncio.run(_run_case(_json.dumps({"passed": False}), [], False))
+    ok, _reason, _s = asyncio.run(_run_case(_json.dumps({"passed": False}), [], False))
     check("BLOCKED when the certificate is not passing", ok is False)
-    ok, _ = asyncio.run(_run_case(None, [], False))
+    ok, _reason, _s = asyncio.run(_run_case(None, [], False))
     check("BLOCKED when there is no certificate at all (fail-closed)", ok is False)
+    # Debug skip cert: may deploy (drift proven) but flagged skipped so the deploy is
+    # never LABELLED security-certified (security_review_enabled=False path).
+    skipcert = _json.dumps({"passed": True, "security_review_skipped": True,
+                            "file_hashes": {"1": "a"}})
+    ok, _reason, skipped = asyncio.run(_run_case(skipcert, [], True))
+    check("skip cert may deploy (drift still proven)", ok is True)
+    check("skip cert is flagged skipped (deploy must not claim certification)",
+          skipped is True)
 
 
 # ------------------------------------------------------------------ H. AWS pure

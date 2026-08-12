@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # Route53); it costs money and is never touched by the offline test suite.
     deploy_target: str = "local"
 
+    # Paid Opus security review. Default ON (real pipeline runs). Set False ONLY to
+    # save money during a LOCAL codegen-quality / feature-debugging phase — each
+    # iteration then costs ~$1 (generation) instead of ~$3 (generation + Opus). The
+    # skip is IGNORED for `deploy_target == "aws"` (a real deploy is always reviewed),
+    # and the certificate it produces is honestly marked `security_review_skipped`
+    # so nothing can masquerade as certified. Re-enable before any real run/demo.
+    security_review_enabled: bool = True
+
     # Real domain for generated apps. DNS for `apps.rajkumarai.dev` is delegated
     # to the Route53 hosted zone below; per-app subdomains live under it as
     # <slug>-<suffix>.apps.rajkumarai.dev.
