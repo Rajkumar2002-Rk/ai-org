@@ -127,6 +127,25 @@ def _waves(tickets: list[dict]) -> list[list[dict]]:
     return waves
 
 
+def _collect_stubs(built: list, project_id: int) -> list:
+    """Return the built results that count as STUBS — a whole-file placeholder OR a
+    real-looking file that left a CORE work function unimplemented (project 888:
+    `parse_menu_items` was `return []`, so extraction did nothing while every
+    endpoint answered 200). The latter are marked STUB_STATUS in place so they flow
+    through the same retry-then-fail gate."""
+    for r in built:
+        if r.get("status") == agents.STUB_STATUS:
+            continue
+        stub_fns = agents.stub_functions(r.get("content") or "")
+        if stub_fns:
+            r["status"] = agents.STUB_STATUS
+            r["stub_functions"] = stub_fns
+            logger.warning("Build %s: ticket %s left placeholder work function(s) %s "
+                           "(no real logic) — treating as a stub",
+                           project_id, r.get("ticket_id"), stub_fns)
+    return [r for r in built if r.get("status") == agents.STUB_STATUS]
+
+
 async def run(project_id: int, blueprint: dict) -> dict:
     """Build all tickets. Records a pipeline_status 'building' stage.
 
@@ -196,7 +215,7 @@ async def run(project_id: int, blueprint: dict) -> dict:
         # that is partly placeholder text has not been built, and must not flow
         # into the security review as if it had. Same rule as the driver's
         # require_done: an unknown/empty state must never read as success.
-        stubbed = [r for r in built if r.get("status") == agents.STUB_STATUS]
+        stubbed = _collect_stubs(built, project_id)
 
         # ONE targeted retry before giving up. A stub is usually a TRANSIENT
         # single-ticket generation flake — the model returned nothing usable on
@@ -233,7 +252,7 @@ async def run(project_id: int, blueprint: dict) -> dict:
                             b["status"] = r.get("status", "generated")
                     logger.info("Build %s: ticket %s recovered on retry", project_id, tid)
                 await db.commit()
-            stubbed = [r for r in built if r.get("status") == agents.STUB_STATUS]
+            stubbed = _collect_stubs(built, project_id)
 
         async with async_session() as db:
             st = await db.get(PipelineStatus, stage_id)

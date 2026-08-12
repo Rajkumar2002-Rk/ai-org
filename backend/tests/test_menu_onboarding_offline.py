@@ -107,6 +107,15 @@ check("from anthropic import anthropic" in m3,
       "MENU-3 spec: pins the real Anthropic SDK client class (from anthropic import Anthropic)")
 check("no `claude` class" in m3,
       "MENU-3 spec: forbids the hallucinated `Claude` import class (project 689)")
+# project 888: the generated parse_menu_items was a placeholder `return []`, so the
+# feature extracted NOTHING while every endpoint answered 200. MENU-3 must forbid a
+# stub parser and pin the two vision-SDK bugs (response parsing + image block).
+check("never be a placeholder" in m3 and "empty list" in m3,
+      "MENU-3 spec: forbids a placeholder/stub parser that returns an empty list (project 888)")
+check("response.content[0].text" in m3 and "no `response['choices']`".lower() in m3,
+      "MENU-3 spec: pins correct Anthropic response parsing (not response['choices'])")
+check("'type': 'image'" in m3 and "'type': 'base64'" in m3,
+      "MENU-3 spec: pins a proper base64 image block (not a bare string)")
 # project 718: the app booted but /admin/menu/pending + /admin/menu/confirm were
 # missing — the confirm endpoint was orphaned (only the frontend referenced it).
 # MENU-3 must commission BOTH review-flow backend endpoints as real routes.

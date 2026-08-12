@@ -15,6 +15,7 @@ Recovery when a ticket won't pass self-review:
 Never silently fails.
 """
 import json
+import ast
 import logging
 import re
 
@@ -66,7 +67,13 @@ def _system(agent_type: str) -> str:
         f"production-quality code file for the given ticket. Stack: "
         f"{_STACK.get(agent_type, 'the project stack')} Write it in order: a "
         f"clear skeleton, then the real logic, then error handling. Include "
-        f"input validation and sensible error handling. You MUST obey the "
+        f"input validation and sensible error handling. EVERY function MUST contain "
+        f"its REAL, working implementation: NEVER leave a function the ticket asks "
+        f"for as a placeholder/stub — no bare `pass`, no `return []`/`return None` "
+        f"standing in for logic, no `# TODO`, no `raise NotImplementedError`. A "
+        f"function named for work it should do (parse/extract/process/…) that just "
+        f"returns an empty value is a BUG: it makes the feature silently do nothing "
+        f"while endpoints still answer 200. You MUST obey the "
         f"BINDING PROJECT CONTRACT given below: use its exact table/column "
         f"names and endpoint paths, import shared models/session from the "
         f"stated modules instead of redefining them, read secrets from "
@@ -249,6 +256,84 @@ def _pin_path(file: dict, ticket: dict) -> dict:
 
 
 STUB_STATUS = "stub"
+
+# Function names that carry the app's actual work — if one of these is left as a
+# placeholder, the feature silently does nothing (project 888: the generated
+# `parse_menu_items` was `return []`, so the menu extraction pipeline extracted
+# NOTHING from any menu while every endpoint returned 200). A trivial body is fine
+# for a genuine no-op helper, so we only flag functions whose NAME says they do work.
+_WORK_FUNC_HINTS = ("parse", "extract", "process", "transform", "compute", "convert",
+                    "analyze", "analyse", "generate", "build", "render", "handle")
+
+
+def _strip_docstring(body: list) -> list:
+    if body and isinstance(body[0], ast.Expr) and isinstance(
+            getattr(body[0], "value", None), ast.Constant) and isinstance(body[0].value.value, str):
+        return body[1:]
+    return body
+
+
+def _is_empty_returnish(value) -> bool:
+    """True for `return`/`return None`/`return []`/`{}`/`()`/`set()`/''/0/False —
+    i.e. a return that yields nothing meaningful."""
+    if value is None:
+        return True  # bare `return`
+    if isinstance(value, ast.Constant):
+        return value.value in (None, "", 0, False)
+    if isinstance(value, (ast.List, ast.Tuple)) and not value.elts:
+        return True
+    if isinstance(value, ast.Dict) and not value.keys:
+        return True
+    if isinstance(value, ast.Set) and not value.elts:
+        return True
+    if isinstance(value, ast.Call) and getattr(value.func, "id", None) in (
+            "list", "dict", "tuple", "set") and not value.args and not value.keywords:
+        return True
+    return False
+
+
+def _is_stub_body(node) -> bool:
+    """A function whose body (ignoring a docstring) is ONLY `pass`, a single empty
+    return, or `raise NotImplementedError` — a placeholder that does no real work."""
+    body = _strip_docstring(list(node.body))
+    if not body:
+        return True
+    if len(body) != 1:
+        return False
+    stmt = body[0]
+    if isinstance(stmt, ast.Pass):
+        return True
+    if isinstance(stmt, ast.Return):
+        return _is_empty_returnish(stmt.value)
+    if isinstance(stmt, ast.Raise):
+        exc = stmt.exc
+        name = None
+        if isinstance(exc, ast.Call):
+            name = getattr(exc.func, "id", None) or getattr(exc.func, "attr", None)
+        elif isinstance(exc, ast.Name):
+            name = exc.id
+        return name == "NotImplementedError"
+    return False
+
+
+def stub_functions(content: str, only_work_named: bool = True) -> list[str]:
+    """Names of functions that are placeholder STUBS (see `_is_stub_body`).
+
+    With `only_work_named` (default), reports only functions whose name says they do
+    real work (`_WORK_FUNC_HINTS`) — so `parse_menu_items() -> return []` is caught
+    while a legitimately trivial helper is not. Same 'a stub is not built'
+    philosophy as the whole-file stub gate, at function granularity.
+    """
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return []      # a syntax error is already its own QA finding
+    names = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _is_stub_body(node):
+            if not only_work_named or any(h in node.name.lower() for h in _WORK_FUNC_HINTS):
+                names.append(node.name)
+    return names
 
 
 def _stub(agent_type: str, ticket: dict) -> dict:

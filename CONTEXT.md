@@ -5,7 +5,48 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — first run REACHED DEPLOY (QA fully passed); D4 deploy-build bug now fixed (2026-08-12)
+# ⏭️ RESUME HERE — MENU EXTRACTION PROVEN on real menus; frozen working fixture (proj 888) + cost controls (2026-08-12)
+
+## ⭐ LATEST (2026-08-12, evening) — extraction proven, treadmill broken, source-hardened
+The pipeline was burning ~$3/run to rediscover a NEW random LLM bug each run (801 Base, 829
+conlist, 860 D4, 888 menu-500). We stopped that:
+- **Opus review is now OPTIONAL** — `security_review_enabled` (config + `SECURITY_REVIEW_ENABLED`
+  in compose/.env, currently **false**). Skips the paid review for LOCAL debugging (~$3→~$1/run);
+  ignored for AWS; the cert is honestly marked `security_review_skipped` and the deploy is
+  reported NOT certified. Committed `1e61728`. **Re-enable (set true) before any real run/demo.**
+- **FROZEN WORKING FIXTURE = project 888** (a menu app, kept in the DB — do NOT delete). Its
+  generated code was hand-fixed to a genuinely working state with ZERO further paid runs:
+  stripped the buggy order/stripe models+routes (a duplicate `Index('ix_orders_account_id')` +
+  `index=True` made `create_all` roll back ALL tables → every read 500'd), and BAKED IN real
+  extraction. It now boots, `GET /menu`→200, and end-to-end EXTRACTS+SAVES: 7/7 dishes from a real
+  PDF persisted as `pending_review`.
+- **MENU EXTRACTION PROVEN on the user's REAL menus** (`menu_upload.py` was a STUB —
+  `parse_menu_items` was literally `return []`, vision had a fake model + wrong format + OpenAI-
+  style response parsing, save used `source=` not `source_name`). With real code: TEXT path
+  (pdfplumber→Claude parse) = 7/7 dishes exact; VISION path (fixed Anthropic image block, model
+  `claude-haiku-4-5`) = 7/7 from a photo exact; corrupt files fail gracefully. Names+prices 100%.
+- **SOURCE-HARDENED (this is the durable win, uncommitted until this turn's commit):** a
+  deterministic **stub-function gate** — `agents.stub_functions()` (AST: a work-named function
+  whose whole body is `pass`/empty-return/`NotImplementedError` is a stub) wired into
+  `developers.orchestrator._collect_stubs` so a stubbed `parse_/extract_` function is treated as a
+  stub (retry→fail), same as a whole-file stub. Plus prompt rules: the Backend-Developer `_system`
+  forbids placeholder functions, and MENU-3 pins real parsing + correct `response.content[0].text`
+  + a proper base64 image block. Tests: `test_developers_offline` (stub detection + gate + prompt),
+  `test_menu_onboarding_offline` (MENU-3 rule). **All 13 free suites pass.**
+
+### ⚠️ KNOWN-OPEN after this session
+- **`source` vs `source_name`:** the deterministic menu schema column is `source`, but 888's LLM
+  models.py used `source_name` (a binding-contract deviation). 888 is internally consistent on
+  `source_name` (works); future generations should use `source`. A contract-adherence bug worth a
+  later deterministic check (D-family).
+- **888 lives only in the DB.** For a portable frozen fixture, export its generated_files+blueprint
+  to a JSON fixture in the repo (not yet done). Redeploy = `POST /pipeline/deploy` for proj 888
+  (needs a fresh skip-cert since files changed — re-run its review step with Opus off).
+- **Extraction not yet deployed via the real DevOps path / the admin upload endpoint is auth-gated**
+  — proven by calling the functions directly; a full local deploy + authenticated upload is the
+  remaining end-to-end.
+
+---
 
 **Start the next session with:** "Read CONTEXT.md. Fixes #12–#14 are in — re-run the Bella
 Vista restaurant idea; it should now reach a LIVE deploy URL and exercise menu PDF extraction."

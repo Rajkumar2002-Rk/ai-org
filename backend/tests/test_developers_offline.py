@@ -256,6 +256,73 @@ def test_pydantic_v2_rule():
           "min_items" not in agents._system("frontend"))
 
 
+def test_stub_function_detection():
+    """Regression (project 888): the generated menu_upload.py looked complete but its
+    core `parse_menu_items` was a placeholder `return []`, so extraction pulled 0
+    items from every menu while endpoints answered 200. The deterministic detector
+    must catch a work-named function whose whole body is a stub."""
+    stubs = {
+        "return []": "def parse_menu_items(t):\n    return []\n",
+        "return None": "def extract_items(x):\n    return None\n",
+        "bare return": "def parse_data(x):\n    return\n",
+        "pass": "def process_thing(x):\n    pass\n",
+        "NotImplementedError": "def extract_text(x):\n    raise NotImplementedError\n",
+        "docstring only": 'def parse_all(x):\n    """does it"""\n',
+        "docstring + return []": 'def parse_x(t):\n    """p"""\n    return []\n',
+        "return {}": "def build_map(x):\n    return {}\n",
+    }
+    for label, src in stubs.items():
+        check(f"stub caught: {label}", len(agents.stub_functions(src)) == 1, str(agents.stub_functions(src)))
+
+    real = ("def parse_menu_items(t):\n"
+            "    items = []\n"
+            "    for line in t.splitlines():\n"
+            "        items.append(line)\n"
+            "    return items\n")
+    check("real parse function is NOT flagged", agents.stub_functions(real) == [])
+    cond = ("def extract(t):\n"
+            "    if not t:\n"
+            "        return []\n"
+            "    return do_parse(t)\n")
+    check("empty-return as a GUARD (not sole body) is NOT flagged", agents.stub_functions(cond) == [])
+    helper = "def default_settings():\n    return {}\n"
+    check("trivial NON-work-named helper is not flagged by default",
+          agents.stub_functions(helper) == [])
+    check("...but IS flagged when only_work_named=False",
+          agents.stub_functions(helper, only_work_named=False) == ["default_settings"])
+    check("syntax error yields no false stub (it's a separate finding)",
+          agents.stub_functions("def broken(:\n  return []") == [])
+
+
+def test_stub_function_gate():
+    """The build-stage gate treats a real-looking file that stubbed a core work
+    function as a STUB (retried, then fails the build) — the same 'a stub is not
+    built' rule as whole-file stubs, at function granularity."""
+    from app.developers import orchestrator as orch
+    built = [
+        {"ticket_id": "MENU-3", "content": "def parse_menu_items(t):\n    return []\n", "status": "generated"},
+        {"ticket_id": "BE-1", "content": "def handle_order():\n    return {'ok': True}\n", "status": "generated"},
+    ]
+    stubbed = orch._collect_stubs(built, 1)
+    check("gate flags the ticket with a stubbed work function",
+          [s["ticket_id"] for s in stubbed] == ["MENU-3"], str(stubbed))
+    check("that ticket is marked STUB_STATUS (feeds the retry/fail gate)",
+          built[0]["status"] == agents.STUB_STATUS)
+    check("a ticket with real logic is left untouched",
+          built[1]["status"] == "generated")
+
+
+def test_no_stub_prompt_rule():
+    """The Developer system prompt forbids placeholder/stub functions — same
+    category as the response_model and Pydantic v2 rules."""
+    for at in ("backend", "frontend"):
+        sysp = agents._system(at)
+        check(f"{at} prompt forbids placeholder stubs (return []/pass/TODO)",
+              "placeholder" in sysp.lower() and "return []" in sysp, at)
+        check(f"{at} prompt flags a work function returning empty as a bug",
+              "silently do nothing" in sysp, at)
+
+
 async def main():
     original = agents.build_ticket
     removed = await cleanup()
@@ -265,6 +332,9 @@ async def main():
         test_auth_symbol_contract()
         test_response_model_rule()
         test_pydantic_v2_rule()
+        test_stub_function_detection()
+        test_stub_function_gate()
+        test_no_stub_prompt_rule()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

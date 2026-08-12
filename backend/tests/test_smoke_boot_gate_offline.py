@@ -113,6 +113,13 @@ async def main_test() -> None:
     main.reviewer_orchestrator.run = fake_reviewer_run
     qa_assembly.teardown = fake_teardown
 
+    # This suite tests the smoke-boot gate -> security-review flow, so the review
+    # must be ON regardless of the ambient SECURITY_REVIEW_ENABLED debug flag (which
+    # is set to false during local codegen debugging).
+    from app.config import settings as _settings
+    _orig_sre = _settings.security_review_enabled
+    _settings.security_review_enabled = True
+
     # ---------------- BROKEN build: the app does not boot ----------------
     _FAKE_TB = (
         "Traceback (most recent call last):\n  ... fastapi/utils.py line 98 ...\n"
@@ -163,6 +170,7 @@ async def main_test() -> None:
           reviewer_calls["n"] == 1)
     await _cleanup(pid2)
 
+    _settings.security_review_enabled = _orig_sre
     print(f"\n{PASS} passed, {FAIL} failed")
     if FAIL == 0:
         print("RESULT: ALL CHECKS PASSED ✓")
