@@ -5,7 +5,46 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — MENU ONBOARDING FEATURE CLOSED: real-HTTP + real-auth end-to-end PROVEN (2026-08-12)
+# ⏭️ RESUME HERE — Full measurement run: 14 fixes held (clean QA + real Opus); deploy hit a NEW frontend-truncation bug, now gated (2026-08-12)
+
+## 📏 MEASUREMENT RUN (project 1007, Bella Vista + PDF menu, Quick plan) — the cleanest run yet
+Ran ONE full paid pipeline with the real Opus review back ON and the scoped extraction key live,
+to measure whether all fixes hold together. Result — stage by stage:
+- BA → PI → Architect ✅ (menu tickets MENU-1..4; `menu_items` uses `source`)
+- Build ✅ 15/15 files, **no stubs** — all build-gate checks clean (no stub fn, no
+  `Depends(async_session)`, no schema rename)
+- smoke_boot ✅ · security_review ✅ **real Opus PASSED** (66/69 fixed, real cert) ·
+  QA ✅ **79/79 passed, 0 failed** — FULLY CLEAN, no menu 500. **First run ever with a clean QA +
+  a real passing Opus review with every fix active.** None of the fixed bug classes recurred.
+- deploy ❌ **FAILED** at the frontend `next build`: MENU-4 `admin/menu/review/page.tsx` was
+  **TRUNCATED** (LLM output cut off mid-JSX; `styles`/`inputStyle` undefined). NOT one of the 14
+  fixes, NOT the AUTH0 gap — a NEW "generated-code quality tail" bug. It exposed a QA GAP: QA's
+  real `next build` is opt-in and OFF (`qa_frontend_full_build=false`), so a truncated .tsx sailed
+  through QA (79/79) and only died at deploy. Cost ≈ $2.6–4.
+
+## 🔧 FIX #15 — deterministic frontend truncation/parse gate (this closes the 1007 blocker)
+No Node at build time, so we parse frontend files STRUCTURALLY in Python:
+`agents.frontend_incomplete(rel, content)` strips comments/strings/template-literals/regex, then
+checks `{}()[]` balance + unterminated strings → flags a truncated/invalid `.tsx/.ts/.jsx/.js`.
+Wired into BOTH: (1) the build gate `orchestrator._collect_stubs` (flag → retry → fail, before the
+review/deploy) and (2) QA's ALWAYS-ON static check `level1._check_frontend` (a truncated file now
+FAILS QA, not four stages later at deploy). Validated: flags 1007's EXACT file, ZERO false
+positives on the platform's own frontend + 1007's other pages. Tests:
+`test_developers_offline.test_frontend_completeness_gate` +
+`test_qa_offline.test_frontend_truncation_caught_statically`, both using the real 1007 file
+(`backend/tests/fixtures/truncated_review_page_1007.tsx`). All 13 free suites pass. Backend REBUILT
+so the gate is live for the next measurement run.
+
+### Still open (candidate future fixes)
+- **The real DevOps-path deploy of an auth-gated app** is still unproven end-to-end (Week-7
+  secrets-onboarding gap: no `AUTH0_*` seeded → the app fail-fasts at boot). The FEATURE is proven
+  (via the local-IdP deploy); the platform deploy path for auth-gated apps is not.
+- **`security_review_enabled=true` (real Opus back ON)**; scoped `MENU_EXTRACTION_API_KEY` is live +
+  distinct from the master key. Project 1007 cleaned up after fix #15 verified.
+
+---
+
+# (prior top section) MENU ONBOARDING FEATURE CLOSED: real-HTTP + real-auth end-to-end PROVEN (2026-08-12)
 
 ## ✅ MENU ONBOARDING — CLOSING PROOF (2026-08-12, late) — full real-HTTP, real-auth lifecycle
 The feature is proven end-to-end THROUGH the deployed app over real HTTP with real auth — not by

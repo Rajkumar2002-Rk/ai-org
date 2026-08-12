@@ -366,6 +366,43 @@ def test_no_stub_prompt_rule():
               "silently do nothing" in sysp, at)
 
 
+def test_frontend_completeness_gate():
+    """Regression (project 1007): the generated admin/menu/review/page.tsx was
+    TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
+    build + QA (whose real next build is opt-in/off) and only died at the deploy's
+    next build. The build gate must catch an incomplete/unbalanced frontend file."""
+    import os
+    from app.developers import orchestrator as orch
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "truncated_review_page_1007.tsx")
+    truncated = open(fx, encoding="utf-8").read()
+
+    check("1007's EXACT truncated review page is flagged",
+          agents.frontend_incomplete("frontend/app/admin/menu/review/page.tsx", truncated) is not None,
+          str(agents.frontend_incomplete("x.tsx", truncated)))
+    check("a complete .tsx is NOT flagged", agents.frontend_incomplete(
+        "frontend/app/page.tsx",
+        "export default function P(){ return <div>{[1,2].map(x=>(<span key={x}/>))}</div>; }") is None)
+    check("unterminated string is flagged (truncation)",
+          agents.frontend_incomplete("a.tsx", 'const x = "oops') is not None)
+    check("unterminated block comment is flagged",
+          agents.frontend_incomplete("a.ts", "const x = 1;\n/* not closed") is not None)
+    check("a non-JS file (.css) is ignored",
+          agents.frontend_incomplete("frontend/app/globals.css", "body {") is None)
+    check("a regex with delimiters does NOT false-flag a complete file",
+          agents.frontend_incomplete("a.ts", "const r = /[({]/g; const y = (1);") is None)
+
+    built = [
+        {"ticket_id": "MENU-4", "filepath": "frontend/app/admin/menu/review/page.tsx",
+         "content": truncated, "status": "generated"},
+        {"ticket_id": "FE-1", "filepath": "frontend/app/page.tsx",
+         "content": "export default function P(){ return <div/>; }", "status": "generated"},
+    ]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("build gate flags the truncated frontend ticket (retry -> fail)",
+          [s["ticket_id"] for s in stubbed] == ["MENU-4"], str(stubbed))
+    check("the complete frontend ticket is left untouched", built[1]["status"] == "generated")
+
+
 async def main():
     original = agents.build_ticket
     removed = await cleanup()
@@ -380,6 +417,7 @@ async def main():
         test_no_stub_prompt_rule()
         test_session_dependency_rule()
         test_schema_adherence()
+        test_frontend_completeness_gate()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

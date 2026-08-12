@@ -418,6 +418,124 @@ def model_schema_mismatches(models_content: str, database_schema: list) -> list[
     return missing
 
 
+# ---------------------------------------------------------------- frontend completeness
+# TRUNCATION (project 1007): the generated `admin/menu/review/page.tsx` was cut off
+# mid-JSX (LLM output hit its length limit), leaving `styles`/`inputStyle` undefined
+# and the component unclosed — invalid TSX. It passed the build and QA (whose full
+# `next build` is opt-in and off) and only died at the deploy's real `next build`.
+# There is no Node toolchain at build time, so instead of SWC/tsc we parse the file
+# STRUCTURALLY in Python: strip comments / strings / template-literals / regex
+# literals, then check that {}()[] are balanced and no string/comment is left open.
+# A truncated file leaves unclosed openers or an unterminated string — caught here,
+# before the security review, deploy, or a human ever sees it.
+_FRONTEND_CODE_EXT = (".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs")
+_REGEX_PREV_CHARS = set("([{,;=:?!&|^~%*+-<>")
+_REGEX_PREV_WORDS = {"return", "typeof", "instanceof", "in", "of", "case", "do",
+                     "else", "yield", "await", "void", "delete", "throw", "new"}
+
+
+def _regex_context(out: list) -> bool:
+    """Is a `/` here the start of a regex literal (vs a division operator)? Standard
+    heuristic: regex follows an operator/opening-delimiter or a regex-context keyword;
+    division follows a value/identifier/closing-delimiter."""
+    j = len(out) - 1
+    while j >= 0 and out[j] in " \t\r\n":
+        j -= 1
+    if j < 0:
+        return True
+    c = out[j]
+    if c in _REGEX_PREV_CHARS:
+        return True
+    if c.isalnum() or c == "_":
+        k = j
+        while k >= 0 and (out[k].isalnum() or out[k] == "_"):
+            k -= 1
+        return "".join(out[k + 1:j + 1]) in _REGEX_PREV_WORDS
+    return False
+
+
+def _strip_code(src: str) -> tuple[str, bool]:
+    """(structural code with comments/strings/template-literals/regex removed, ok).
+    ok is False if the source ended INSIDE an unterminated string or block comment —
+    itself a truncation signal."""
+    out: list[str] = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if c == "/" and nxt == "/":
+            i += 2
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and nxt == "*":
+            i += 2
+            while i < n and not (src[i] == "*" and i + 1 < n and src[i + 1] == "/"):
+                i += 1
+            if i >= n:
+                return "".join(out), False           # unterminated block comment
+            i += 2
+            continue
+        if c in ("'", '"', "`"):
+            i += 1
+            while i < n and src[i] != c:
+                i += 2 if src[i] == "\\" else 1
+            if i >= n:
+                return "".join(out), False           # unterminated string/template
+            i += 1
+            continue
+        if c == "/" and _regex_context(out):
+            start = i
+            i += 1
+            in_class, closed = False, False
+            while i < n and src[i] != "\n":
+                ch = src[i]
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == "[":
+                    in_class = True
+                elif ch == "]":
+                    in_class = False
+                elif ch == "/" and not in_class:
+                    i += 1
+                    closed = True
+                    break
+                i += 1
+            if not closed:                            # not a regex after all -> division
+                out.append("/")
+                i = start + 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out), True
+
+
+def frontend_incomplete(rel: str, content: str) -> str | None:
+    """Reason string if a generated JS-family frontend file (`rel` ends .tsx/.ts/...)
+    looks TRUNCATED or structurally invalid — an unterminated string/comment or
+    unbalanced {}()[] (project 1007's cut-off review page). None for a complete file
+    or a non-JS file. Deterministic, no Node needed."""
+    if not rel.endswith(_FRONTEND_CODE_EXT):
+        return None
+    code, ok = _strip_code(content or "")
+    if not ok:
+        return "truncated — ends inside an unterminated string or comment"
+    close_of = {"}": "{", ")": "(", "]": "["}
+    opens = {"{", "(", "["}
+    stack = []
+    for ch in code:
+        if ch in opens:
+            stack.append(ch)
+        elif ch in close_of and stack and stack[-1] == close_of[ch]:
+            stack.pop()
+        # a stray closer with no opener is ignored (regex/edge tolerance)
+    if stack:
+        return (f"truncated/incomplete — {len(stack)} unclosed "
+                f"{'/'.join(sorted(set(stack)))} at end of file")
+    return None
+
+
 def _stub(agent_type: str, ticket: dict) -> dict:
     """Placeholder when generation produced NOTHING usable — the LLM was
     unavailable (e.g. a provider quota outage) or returned nothing on every

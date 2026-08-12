@@ -581,6 +581,34 @@ async def test_frontend_checks_not_gated_on_backend_boot():
         settings.qa_frontend_full_build = prev
 
 
+async def test_frontend_truncation_caught_statically():
+    """Regression (project 1007): the generated admin/menu/review/page.tsx was
+    truncated mid-JSX. It passed QA (whose real `next build` is opt-in and OFF) and
+    only died four stages later at the deploy's `next build`. QA's ALWAYS-ON static
+    check must now FAIL a truncated/invalid interface file — no Node required."""
+    print("\n=== G: a truncated frontend file FAILS QA statically (project 1007) ===")
+    import os
+    from app.qa import level1
+    from app.qa.assembly import TestEnv
+
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "truncated_review_page_1007.tsx")
+    truncated = open(fx, encoding="utf-8").read()
+    env = TestEnv()
+    env.ok = True
+    env.files = {
+        "frontend/app/admin/menu/review/page.tsx": truncated,               # 1007's cut-off file
+        "frontend/app/page.tsx": "export default function P(){ return <div/>; }",  # complete
+    }
+    out = await level1.run_static(env)   # qa_frontend_full_build stays OFF (default)
+    parse = [o for o in out if "complete & parseable" in o.name]
+    trunc = [o for o in parse if "review/page.tsx" in o.name]
+    good = [o for o in parse if "app/page.tsx" in o.name and "review" not in o.name]
+    check("the truncated review page FAILS the static parse check (no next build needed)",
+          bool(trunc) and trunc[0].passed is False, str([(o.name, o.passed) for o in parse]))
+    check("a complete page PASSES the parse check",
+          bool(good) and good[0].passed is True, str([(o.name, o.passed) for o in parse]))
+
+
 def test_env_provides_provider_config():
     print("\n=== F: test env supplies provider config (no false 'bug') ===")
     for key in ("AUTH0_DOMAIN", "AUTH0_API_AUDIENCE", "STRIPE_CLIENT_ID",
@@ -610,6 +638,7 @@ async def main():
     await test_missing_certificate_fails_closed()
     test_env_autodiscovery()
     await test_frontend_checks_not_gated_on_backend_boot()
+    await test_frontend_truncation_caught_statically()
     test_env_provides_provider_config()
     test_entrypoint_ticket_forbids_workarounds()
 

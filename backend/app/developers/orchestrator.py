@@ -137,13 +137,16 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
         → extraction did nothing while endpoints answered 200);
       * `Depends(async_session)` instead of `Depends(get_db)` (888: every request 422s);
       * a generated model that renamed a contract column (888: schema `source` became
-        `source_name` → a 500 once rows exist).
+        `source_name` → a 500 once rows exist);
+      * a TRUNCATED/invalid frontend file (1007: `admin/menu/review/page.tsx` was cut
+        off mid-JSX → the deploy's `next build` failed four stages later).
     """
     schema = (blueprint or {}).get("database_schema") or []
     for r in built:
         if r.get("status") == agents.STUB_STATUS:
             continue
         content = r.get("content") or ""
+        rel = r.get("filepath") or r.get("filename") or ""
         problems = []
         stub_fns = agents.stub_functions(content)
         if stub_fns:
@@ -154,6 +157,9 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
             miss = agents.model_schema_mismatches(content, schema)
             if miss:
                 problems.append(f"model renamed/omitted contract column(s) {miss}")
+        fe = agents.frontend_incomplete(rel, content)
+        if fe:
+            problems.append(f"frontend file {fe}")
         if problems:
             r["status"] = agents.STUB_STATUS
             r["gate_problems"] = problems

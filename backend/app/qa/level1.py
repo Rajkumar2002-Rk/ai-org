@@ -231,12 +231,25 @@ _UI_EXT = (".tsx", ".ts", ".jsx", ".js")
 
 def _check_frontend(env: TestEnv) -> list[TestOutcome]:
     """Static checks on generated UI files: do imports point at files that were
-    actually generated, and do pages export a component?"""
+    actually generated, do pages export a component, and is each file COMPLETE (not
+    truncated/invalid) — the last catches project 1007's cut-off review page WITHOUT
+    needing the opt-in `next build`, so a truncated .tsx fails QA, not the deploy."""
+    from app.developers.agents import frontend_incomplete  # local: avoid import cycle
     results: list[TestOutcome] = []
     ui = {r: c for r, c in env.files.items()
           if r.startswith(("frontend/", "mobile/")) and r.endswith(_UI_EXT)}
 
     for rel, content in ui.items():
+        # Completeness/parse: a truncated or unbalanced JS/TS file breaks `next build`.
+        incomplete = frontend_incomplete(rel, content)
+        if incomplete:
+            results.append(TestOutcome(
+                f"{rel} — complete & parseable", 1, False,
+                f"The generated interface file is {incomplete} — `next build` "
+                f"would fail to compile it.", rel))
+        else:
+            results.append(TestOutcome(f"{rel} — complete & parseable", 1, True, "", rel))
+
         # Relative / alias imports must resolve to a real generated file. This is
         # the cross-file drift bug the binding contract exists to prevent.
         broken = []
