@@ -151,6 +151,90 @@ _PACKAGE_ALIASES = {
 }
 
 
+# ---------------------------------------------------------------- version pinning
+# GATE-INTEGRITY (project 829, 2026-08-12): smoke_boot PASSED an app whose
+# `conlist(OrderItem, min_items=1)` cannot import under Pydantic v2, then QA
+# fail-booted the SAME files — because the throwaway venv's dependency versions
+# were not pinned and not guaranteed to match either the deployed image or each
+# other. A gate that boots under a DIFFERENT Pydantic than the deploy (or than QA)
+# can green-light un-bootable code and waste the paid Opus review. The platform's
+# OWN `requirements.txt` is the tested, known-good pin set the backend container is
+# built from; make it the SINGLE source of truth that both the QA/smoke_boot venv
+# (via a pip --constraint file) and the deployed image (`manifest`) install from.
+def _canon(name: str) -> str:
+    """PEP 503-ish canonical package key: no extras, lower-case, `_`->`-`."""
+    return (name or "").split("[")[0].strip().lower().replace("_", "-")
+
+
+def _find_requirements_txt() -> str | None:
+    """The platform's pinned requirements.txt — `/app/requirements.txt` in the
+    container (COPYed before the app), and the repo's `backend/requirements.txt`
+    when tests mount the source at /app. Resolve from this module's location so it
+    works in both without a hard-coded path."""
+    here = os.path.dirname(os.path.abspath(__file__))          # .../app/qa
+    candidates = [
+        os.path.join(here, "..", "..", "requirements.txt"),    # /app/requirements.txt
+        os.path.join(here, "..", "..", "..", "requirements.txt"),
+        os.path.join(here, "..", "..", "..", "backend", "requirements.txt"),
+    ]
+    for c in candidates:
+        p = os.path.abspath(c)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _load_platform_pins() -> dict[str, str]:
+    """Parse requirements.txt into {canonical package name -> exact version}.
+    Only `==` pins are taken (that is all requirements.txt uses); comments,
+    blanks and any non-`==` line are ignored. Empty dict if the file is absent
+    (pinning then degrades to today's unpinned behaviour rather than crashing)."""
+    path = _find_requirements_txt()
+    pins: dict[str, str] = {}
+    if not path:
+        logger.warning("requirements.txt not found; dependency pins unavailable")
+        return pins
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].strip()
+                if not line or "==" not in line:
+                    continue
+                name, _, ver = line.partition("==")
+                ver = ver.strip()
+                if name and ver:
+                    pins[_canon(name)] = ver
+    except OSError as exc:  # pragma: no cover - defensive
+        logger.warning("could not read %s: %s", path, exc)
+    return pins
+
+
+# Loaded ONCE at import — the container's requirements.txt is immutable at runtime.
+PLATFORM_PINS: dict[str, str] = _load_platform_pins()
+
+
+def pin_spec(pkg: str) -> str:
+    """Pin a pip requirement (which may carry extras, e.g. `uvicorn[standard]`) to
+    the platform version, preserving the extras: `uvicorn[standard]` ->
+    `uvicorn[standard]==0.34.0`. A package the platform does not pin is returned
+    unchanged. Used by BOTH the QA venv install and the DevOps manifest so the two
+    can never diverge on a platform package."""
+    if "==" in pkg or ">=" in pkg or "<" in pkg:   # already version-qualified
+        return pkg
+    ver = PLATFORM_PINS.get(_canon(pkg))
+    return f"{pkg}=={ver}" if ver else pkg
+
+
+def platform_constraints_text() -> str:
+    """Body of a pip `--constraint` file pinning EVERY platform package to its
+    exact version. A constraint file may not carry extras, so keys are bare
+    canonical names (`uvicorn==0.34.0`, not `uvicorn[standard]==...`). Constraints
+    only take effect for packages pip actually touches, so this never forces an
+    unused package to install — it just forbids a platform package (Pydantic above
+    all) from drifting while the missing extras resolve."""
+    return "\n".join(f"{name}=={ver}" for name, ver in sorted(PLATFORM_PINS.items())) + "\n"
+
+
 def needs_email_validator(contents) -> bool:
     """Pydantic's `EmailStr` (and `pydantic[email]`) require the separate
     `email-validator` package. It is triggered by the field TYPE and referenced by
@@ -348,7 +432,14 @@ def _venv_python(venv_dir: str) -> str:
 
 
 def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
-    """Install third-party imports the platform doesn't already provide."""
+    """Install third-party imports the platform doesn't already provide.
+
+    Every install goes through a pip `--constraint` file pinning the platform
+    stack (`platform_constraints_text()`), and each missing package is itself
+    pinned to the platform version where we know one (`pin_spec`). This makes the
+    throwaway venv boot under the SAME dependency versions as the deployed image
+    and as every other assemble() — so smoke_boot can never green-light code that
+    only "boots" because it happened to get an older Pydantic (project 829)."""
     wanted: set[str] = set()
     for rel, content in written.items():
         if rel.endswith(".py"):
@@ -366,11 +457,30 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
     # File/Form routes need python-multipart, also not named by any import.
     if needs_python_multipart(written.values()) and "python-multipart" not in missing:
         missing.append("python-multipart")
+
+    # A --constraint file pins the platform stack even when a MISSING package's
+    # transitive deps would otherwise pull a different Pydantic/etc. into the venv.
+    # It is written unconditionally so the SAME environment is asserted whether or
+    # not there is anything to install.
+    constraints_path = os.path.join(venv_dir, "platform-constraints.txt")
+    try:
+        with open(constraints_path, "w", encoding="utf-8") as fh:
+            fh.write(platform_constraints_text())
+    except OSError:  # pragma: no cover - defensive
+        constraints_path = None
+
     if not missing:
         return []
 
-    code, out = _run([py, "-m", "pip", "install", "--no-input", "--disable-pip-version-check",
-                      *missing], timeout=settings.qa_install_timeout)
+    # Pin each missing package to the platform version where we have one; unknown
+    # extras (pdfplumber, python-jose, …) install latest but cannot move a pinned
+    # platform package because of the constraint file.
+    to_install = [pin_spec(m) for m in missing]
+    cmd = [py, "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
+    if constraints_path:
+        cmd += ["--constraint", constraints_path]
+    cmd += to_install
+    code, out = _run(cmd, timeout=settings.qa_install_timeout)
     if code != 0:
         # A dependency that cannot be installed is very often a HALLUCINATED
         # import — exactly the class of bug QA exists to catch.

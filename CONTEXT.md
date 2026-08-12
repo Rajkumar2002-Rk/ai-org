@@ -5,27 +5,39 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Pipeline reached DEPLOY-readiness; menu feature ONE run from live (2026-08-11)
+# ⏭️ RESUME HERE — smoke_boot gate made DETERMINISTIC; menu feature still ONE run from live (2026-08-12)
 
-**Start the next session with:** "Read CONTEXT.md. The pipeline now reliably reaches QA —
-re-run the Bella Vista restaurant idea to finally test live PDF extraction." This session
-turned the pipeline from "dies at boot every run" into one that BOOTS, passes the Opus
-security review, and runs the full QA suite. **Eleven deterministic fixes** were found and
-committed by driving the SAME restaurant build over and over — each run got exactly one
-blocker further. **The very next run is expected to be the FIRST to reach a live deploy
-URL** and finally exercise the menu PDF extraction end to end.
+**Start the next session with:** "Read CONTEXT.md. The smoke_boot gate is now pinned +
+deterministic — re-run the Bella Vista restaurant idea to finally test live PDF extraction."
+The prior session got the pipeline BOOTING through QA. THIS session (2026-08-12) fixed a
+GATE-INTEGRITY hole that project 829 exposed: smoke_boot passed an un-bootable build (paying
+for the Opus review), because the throwaway QA/smoke_boot venv was NOT version-pinned and did
+not match the deploy. Two fixes landed (#12 pin the venv, #13 Pydantic v2 prompt rule), both
+with regression tests; a third defect (order.py imports a nonexistent `Item` symbol) is LOGGED
+as a D3-family follow-up. **The very next run is still expected to be the FIRST to reach a live
+deploy URL** and exercise menu PDF extraction end to end.
 
-**EXACT CURRENT STATE (last run = project 801):** building ✅ → smoke_boot ✅ →
-security_review ✅ (Opus PASSED) → QA ran **100 of 109 tests PASSED**. All 9 failures
-traced to ONE root cause: generated `models.py` called its own `declarative_base()`
-separate from `database.py`'s Base, so `create_all` built NO tables and every read
-endpoint (`GET /menu`, `GET /reviews`) 500'd. **That Base bug is now fixed (`1cda1f9`).**
-With one shared Base the tables exist, the reads work, and QA should pass → deploy → live
-URL. DB is CLEAN (max project id 435; every test project deleted).
+**WHAT 829 PROVED (the gate escape, fully diagnosed — do NOT re-litigate):** generated
+`routes/order.py` used the Pydantic **v1** spelling `conlist(OrderItem, min_items=1)`, a hard
+`TypeError` at import under Pydantic v2. Hard evidence showed the bug was in the ONE-AND-ONLY
+version of order.py (id 1767, never regenerated) — so it was NOT "regenerated after the gate".
+smoke_boot passed anyway (booted clean in 9s) while QA fail-booted the SAME files: the venv was
+`--system-site-packages` + UNPINNED, so it could boot under a different Pydantic than QA/deploy.
+The user's first theory (re-run smoke_boot after a QA regeneration) was DISPROVEN by the
+evidence; the real fix is making the environment deterministic + identical.
 
-**GIT — everything COMMITTED AND PUSHED.** `HEAD == origin/master == 1cda1f9`, 0 ahead.
-github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`,
-ever**; never commit `.env`; keep the repo private.
+**EXACT CURRENT STATE (fixes #12/#13 landed, verified):** all **12 free offline suites PASS**
+(added `test_venv_pinning_offline`). An integration proof re-assembled 829's real files with the
+fix: gate `env.ok=False` (correctly REJECTS), constraint file written (`pydantic==2.10.4`), venv
+Pydantic pinned to exactly 2.10.4. Project **829 has been cleaned up** (test artifact). DB is
+CLEAN. **Backend image REBUILT** so the running server carries the fix for the next live run.
+
+**GIT — fixes #12/#13 + tests + this CONTEXT update COMMITTED locally on master as the most
+recent commit (the "Fix #12/#13" commit), NOT yet pushed.** Its parent is `e1326ad`
+(== `origin/master`, the session-start HEAD); the FND-1 fix `1cda1f9` is `e1326ad`'s parent
+(both already pushed). So `origin/master` is 1 behind local — `git push` when ready.
+github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`, ever**;
+never commit `.env`; keep the repo private.
 
 **KEYS/CONFIG (verified live this session):** OpenAI ✅ + Anthropic ✅ + Gemini ✅ all
 funded. `.env`: `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`, `MENU_EXTRACTION_API_KEY=SET`
@@ -124,13 +136,44 @@ placeholder that isn't format-valid, or a GUESSED symbol/name.
     Opus review ADDS). Because it has a default, QA's discovery skips it. Fix: `_TEST_ENV`
     curates `ALLOWED_ORIGINS`/`CORS_ORIGINS` with a valid loopback origin list; the APP-1
     ticket pins the exact `ALLOWED_ORIGINS` name.
-11. **FND-1 shared Base** (`1cda1f9`, MOST RECENT) — run 801 booted, passed security, 100/109
+11. **FND-1 shared Base** (`1cda1f9`) — run 801 booted, passed security, 100/109
     QA passed; the 9 failures were `GET /menu` + `GET /reviews` → 500 "database error". Cause:
     `models.py` called its own `declarative_base()`, separate from `database.py`'s Base →
     models registered on a Base the engine never sees → `create_all` made NO tables. Fix:
     FND-1 pins `from backend.app.database import Base` and forbids a second `declarative_base()`.
 
+## 🔧 FIXES #12 / #13 (2026-08-12 — the gate-integrity session; not yet committed)
+12. **Pinned + deterministic smoke_boot/QA venv** — project 829 booted clean at smoke_boot,
+    passed the paid Opus review, then fail-booted at QA on the SAME files. Root cause: the
+    throwaway venv is `--system-site-packages` + installs missing deps UNPINNED, so it could
+    boot under a different Pydantic than QA/deploy — a gate that green-lights un-bootable code.
+    (The bug was in the single, original `order.py`; NOT a regeneration — proven from stored
+    content + timestamps.) Fix: the platform's own tested `backend/requirements.txt` is now the
+    SINGLE pin source consumed by BOTH the QA/smoke_boot venv and the deploy image.
+    `assembly.PLATFORM_PINS` / `pin_spec()` / `platform_constraints_text()`; `_install_deps`
+    writes a pip `--constraint` file so a platform package (Pydantic above all) can never drift
+    while missing extras install, and pins each missing pkg via `pin_spec`. `manifest.
+    _backend_requirements` pins every requirement from the SAME source. Both gate and QA go
+    through the one `assembly.assemble`, so they are identical by construction. Proven by
+    `test_venv_pinning_offline.py` (30 checks: identical deploy⇄gate pins, constraint carries no
+    extras, and under the pinned Pydantic `conlist(min_items=1)` raises while `min_length` works)
+    + an integration re-assemble of 829's real files (gate `env.ok=False`, venv pinned 2.10.4).
+13. **Pydantic v2 prompt rule** — the 829 defect itself: `conlist(OrderItem, min_items=1)` is
+    v1; v2 renamed it `min_length`/`max_length` and a v1 name is a hard import `TypeError`. The
+    Backend-Developer system prompt (`developers/agents._system`) now mandates v2 names for
+    `conlist`/`constr`/`Field`/`conset` and forbids `min_items`/`max_items`. Proven by
+    `test_developers_offline.test_pydantic_v2_rule` (frontend prompt excluded).
+
 ## ⚠️ KNOWN-OPEN / worth watching
+- **D3-FAMILY: order.py imports a nonexistent `Item` symbol (project 829, LOGGED not yet fixed).**
+  `routes/order.py` did `from backend.app.models import Order, Item`, but models.py exports
+  `Order`/`StripeAccount`/`MenuItem` — no `Item` (the pydantic `OrderItem` is defined locally in
+  order.py). This is the SAME wrong-symbol class as the D3 residual: a correct module path, a
+  guessed NAME. It surfaces as a clean `ImportError` the gate now catches deterministically (it
+  was the boot error in the 829 integration re-assemble). Real, separate defect worth fixing —
+  candidate fixes: extend the binding-contract prompt to inject the exact models exports (like
+  `AUTH_EXPORTS` does for auth), and/or a deterministic check that generated imports resolve to
+  real exported symbols. NOT blocking the gate-integrity fix.
 - **Residual LLM menu backend route colliding with MENU-1.** In run 606 the LLM generated its
   own backend menu route (`BE-1` → `routes/menu.py`) which collided with deterministic MENU-1
   (renamed `menu_menu_1.py`). Fix 1 (schema dedupe) means this no longer CRASHES — single
@@ -150,9 +193,9 @@ placeholder that isn't format-valid, or a GUESSED symbol/name.
 - Carried from before: post-Week-8 **MODEL SWITCH** (own session), the secrets-table
   onboarding gap, a real AWS Cost Explorer shakeout.
 
-**Offline suite count is now 11** (added `test_smoke_boot_gate_offline` +
-`test_menu_onboarding_offline` to the original 9). All pass; run them all before any
-commit. The 9 "free" suites are still the regression baseline.
+**Offline suite count is now 12** (added `test_smoke_boot_gate_offline` +
+`test_menu_onboarding_offline` + `test_venv_pinning_offline` to the original 9). All pass;
+run them all before any commit. The 9 "free" suites are still the regression baseline.
 
 ---
 

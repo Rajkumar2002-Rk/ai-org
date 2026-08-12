@@ -238,6 +238,24 @@ def test_response_model_rule():
           "response_model" not in agents._system("frontend"))
 
 
+def test_pydantic_v2_rule():
+    """Regression (project 829): the generated order.py used the Pydantic v1
+    spelling `conlist(OrderItem, min_items=1)`, which raises TypeError at import
+    under Pydantic v2 and stopped the whole app from booting. The Backend Developer
+    system prompt must pin the v2 argument names so no backend file emits v1."""
+    from app.developers import agents
+
+    sys_be = agents._system("backend")
+    check("backend prompt: pins Pydantic v2 (min_length/max_length)",
+          "min_length" in sys_be and "max_length" in sys_be, sys_be)
+    check("backend prompt: forbids the v1 names that broke 829 (min_items/max_items)",
+          "min_items" in sys_be and "max_items" in sys_be, sys_be)
+    check("backend prompt: names conlist explicitly (the 829 call site)",
+          "conlist" in sys_be)
+    check("frontend prompt does NOT carry the backend Pydantic rule",
+          "min_items" not in agents._system("frontend"))
+
+
 async def main():
     original = agents.build_ticket
     removed = await cleanup()
@@ -246,6 +264,7 @@ async def main():
     try:
         test_auth_symbol_contract()
         test_response_model_rule()
+        test_pydantic_v2_rule()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

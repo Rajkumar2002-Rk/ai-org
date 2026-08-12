@@ -52,6 +52,14 @@ def _system(agent_type: str) -> str:
         "there at app startup with 'Invalid args for response field'. Define a "
         "Pydantic response schema for what you return, or set response_model=None "
         "and do not annotate the return type with an ORM model."
+        # Pydantic v2 rule (project 829): `conlist(Item, min_items=1)` crashes the
+        # app at import with "conlist() got an unexpected keyword argument
+        # 'min_items'" — v2 renamed those arguments. Any v1 spelling breaks boot.
+        " CRITICAL Pydantic rule: this stack is Pydantic v2. Length constraints use "
+        "`min_length` / `max_length`, NEVER the v1 names `min_items` / `max_items` "
+        "(removed in v2 — they raise `TypeError` at import and the app will not "
+        "start). This applies to `conlist(...)`, `constr(...)`, `Field(...)` and "
+        "`conset(...)`. Use `min_length=`/`max_length=` everywhere."
     ) if agent_type == "backend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "
