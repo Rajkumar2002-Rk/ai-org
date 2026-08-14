@@ -35,12 +35,41 @@ positives on the platform's own frontend + 1007's other pages. Tests:
 (`backend/tests/fixtures/truncated_review_page_1007.tsx`). All 13 free suites pass. Backend REBUILT
 so the gate is live for the next measurement run.
 
+### 📏 SECOND measurement run (project 1038, 2026-08-13) — the quality tail, in full
+Fresh full run with all 15 fixes + real Opus + scoped key. Build ✅ (22 files, no gate rejections —
+**#15 held, no truncation**), smoke_boot ✅, Opus ✅ (real, 106/115 fixed), then **QA FAILED** on a
+CASCADE of NEW one-off bugs — none of the 15: (1) `menu_upload.py` imported an invented
+`require_admin` (auth exports `get_current_admin_user`) → boot fail (a **D3 wrong-symbol**; fix #3's
+PROMPT rule is non-deterministic and didn't stop it); (2) after hand-fixing that, 12× 500 on a buggy
+`/api/analytics/*` feature; (3) after stripping that, 10× 500 on `/admin/stripe/*` and the **QA retry
+loop regenerated files and broke the boot entirely**. Verdict: **the 15 fixes hold, but a FRESH
+generation trips over DIFFERENT random LLM bugs each run** (1007 = frontend truncation; 1038 = wrong
+symbol + buggy analytics/stripe). Cost ≈ $5–6. 1038 deleted. **This is exactly why the frozen fixture
+exists** — a fresh-pipeline live URL is gated by codegen quality, not by any missing fix.
+
+### 🟢 RELIABLE LIVE DEMO = the frozen 888 deploy (UP NOW)
+Per the user's call, the frozen 888 fixture is the reliable live demo (a fresh-generation live URL is
+NOT needed — 888 already proved it end to end). Stack is **UP at http://localhost:8899**
+(`scratchpad/deploy888/`: app + Postgres + local JWKS IdP). Public site `GET /menu` (no auth) serves
+7 real dishes, extracted from the real PDF via the SCOPED key and published through the review gate.
+A fresh **30-day** admin JWT is in `deploy888/idp/admin_token.txt`. ⚠️ The stack lives in the SESSION
+scratchpad (ephemeral) — for a permanent demo, relocate `deploy888/` out of the scratchpad. Bring it
+back up with `docker compose -f scratchpad/deploy888/docker-compose.deploy888.yml up -d --build`,
+then re-upload the PDF + confirm to repopulate (the `down -v` teardown wipes the menu DB).
+
 ### Still open (candidate future fixes)
+- **FIX #16 (logged, NOT tonight) — deterministic auth-symbol / import-resolution gate.** Would have
+  caught 1038's `require_admin`: verify every `from backend.app.X import Y` in a generated backend
+  file resolves to a REAL exported symbol of X (auth via `AUTH_EXPORTS`, others via the file's own
+  defs) → flag at the build gate (retry → fail), same pattern as `model_schema_mismatches`. Converts
+  fix #3's prompt rule into a hard gate and closes the D3 "wrong symbol from a correct module" family.
+  Worthwhile hardening. (The analytics/stripe runtime 500s are app-LOGIC quality — much harder to
+  gate deterministically; that tail is why the frozen fixture is the demo path.)
 - **The real DevOps-path deploy of an auth-gated app** is still unproven end-to-end (Week-7
   secrets-onboarding gap: no `AUTH0_*` seeded → the app fail-fasts at boot). The FEATURE is proven
   (via the local-IdP deploy); the platform deploy path for auth-gated apps is not.
 - **`security_review_enabled=true` (real Opus back ON)**; scoped `MENU_EXTRACTION_API_KEY` is live +
-  distinct from the master key. Project 1007 cleaned up after fix #15 verified.
+  distinct from the master key. Projects 1007 + 1038 cleaned up.
 
 ---
 
