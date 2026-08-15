@@ -418,6 +418,198 @@ def model_schema_mismatches(models_content: str, database_schema: list) -> list[
     return missing
 
 
+# ---------------------------------------------------------------- symbol resolution (FIX #16)
+# IMPORT RESOLUTION (projects 1038): a fresh generation wrote
+# `from backend.app.auth import require_admin`, but auth.py exports only
+# `get_current_user` / `get_current_admin_user` — the app dies at boot on
+# `ImportError: cannot import name 'require_admin'`. Fix #3's PROMPT rule asks the
+# LLM not to guess auth names; a prompt is non-deterministic and did not stop it.
+# This gate is the deterministic counterpart: for every generated backend `.py`,
+# each `from <in-project module> import <symbol>` MUST resolve to a real export of
+# that module — auth against the authoritative AUTH_EXPORTS contract, every other
+# in-project module against an AST scan of its OWN generated defs. Same 'a guessed
+# symbol is a build failure' philosophy as the schema-adherence gate above.
+#
+# HARD REQUIREMENT — zero false positives on valid code. A `from M import Y` is
+# flagged ONLY when M is unambiguously an in-project module whose full export set we
+# can enumerate AND Y is neither an export, a submodule of M, nor a dunder. Anything
+# uncertain — a third-party/stdlib module (OUT OF SCOPE for #16, deferred to a later
+# dependency-validation slice that runs where the package is installed), a module
+# that star-imports (opaque), an unparseable module, or a relative import — is
+# treated as resolvable and never flagged.
+_AUTH_ALIASES = frozenset({_AUTH_MODULE, _AUTH_MODULE.split(".", 1)[1]})  # backend.app.auth + app.auth
+
+
+def _dotted_aliases(filepath: str) -> tuple[list[str], bool]:
+    """(dotted module paths this file answers to, is_package). A file is registered
+    under BOTH its `backend.app.…` and `app.…` spellings because generated code uses
+    the former and the platform's own code uses the latter. An `__init__.py` maps to
+    its PACKAGE path (the trailing `.__init__` dropped)."""
+    if not filepath.endswith(".py"):
+        return [], False
+    dotted = filepath[:-3].replace("/", ".")
+    is_pkg = dotted.endswith(".__init__")
+    if is_pkg:
+        dotted = dotted[: -len(".__init__")]
+    aliases = {dotted}
+    if dotted.startswith("backend.app"):
+        aliases.add(dotted[len("backend.") :])           # backend.app.x -> app.x
+    elif dotted.startswith("app.") or dotted == "app":
+        aliases.add("backend." + dotted)                 # app.x -> backend.app.x
+    return sorted(aliases), is_pkg
+
+
+def _collect_module_names(body: list, names: set) -> bool:
+    """Collect module-level BOUND names from a list of statements, descending through
+    top-level control flow (if/try/for/while/with) but NOT into function/class bodies
+    (their locals are not module exports). Returns False if the module is OPAQUE — it
+    contains a star import, so its real export set is unknowable and callers must not
+    flag anything imported from it."""
+    ok = True
+    for node in body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                for nm in ast.walk(tgt):
+                    if isinstance(nm, ast.Name):
+                        names.add(nm.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                names.add((a.asname or a.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" for a in node.names):
+                ok = False                                # star import -> opaque
+            else:
+                for a in node.names:
+                    names.add(a.asname or a.name)
+        elif isinstance(node, (ast.If, ast.For, ast.While, ast.With, ast.AsyncFor,
+                               ast.AsyncWith)):
+            ok = _collect_module_names(node.body, names) and ok
+            ok = _collect_module_names(getattr(node, "orelse", []), names) and ok
+        elif isinstance(node, ast.Try):
+            ok = _collect_module_names(node.body, names) and ok
+            ok = _collect_module_names(node.orelse, names) and ok
+            ok = _collect_module_names(node.finalbody, names) and ok
+            for h in node.handlers:
+                ok = _collect_module_names(h.body, names) and ok
+    return ok
+
+
+def _module_exports(content: str) -> set | None:
+    """The set of names importable from a module's source, or None if the module is
+    OPAQUE (unparseable, or star-imports). None means 'cannot enumerate -> never
+    flag imports from here'."""
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return None
+    names: set = set()
+    return names if _collect_module_names(tree.body, names) else None
+
+
+def build_symbol_index(project_files: list[dict]) -> dict:
+    """Build the in-project symbol index once for a whole build, then reuse it for
+    every file (see `import_symbol_mismatches`). Structure:
+      - modules: dotted module path -> source content (both spellings; __init__ maps
+        to its package path)
+      - all_paths: every dotted module/package path that exists (for submodule imports)
+      - auth_present: whether an auth.py was actually generated
+    """
+    modules: dict[str, str] = {}
+    all_paths: set[str] = set()
+    auth_present = False
+    for f in project_files:
+        fp = (f.get("filepath") or f.get("filename") or "")
+        if not fp.endswith(".py"):
+            continue
+        aliases, _is_pkg = _dotted_aliases(fp)
+        content = f.get("content") or ""
+        for a in aliases:
+            modules[a] = content
+            all_paths.add(a)
+        if any(a in _AUTH_ALIASES for a in aliases):
+            auth_present = True
+    return {"modules": modules, "all_paths": all_paths, "auth_present": auth_present}
+
+
+def import_symbol_mismatches(content: str, filepath: str, index: dict) -> list[dict]:
+    """Structured findings for every `from <in-project module> import <symbol>` in a
+    generated backend `.py` whose symbol does NOT resolve to a real export of that
+    module. Deterministic; zero false positives (see the module docstring above).
+
+    Each finding: {file, line, module, symbol, available} — machine-readable so the
+    bounded retry can build a precise repair prompt (see `repair_instructions`)."""
+    if not filepath.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return []                                         # syntax is its own finding
+    modules = index.get("modules", {})
+    all_paths = index.get("all_paths", set())
+    auth_present = index.get("auth_present", False)
+    self_aliases = set(_dotted_aliases(filepath)[0])
+    findings: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level:                                    # relative import -> skip (safe)
+            continue
+        mod = node.module or ""
+        # AUTH: authoritative contract, regardless of auth.py's own generated content —
+        # but only when an auth module was actually generated for this app.
+        if mod in _AUTH_ALIASES and auth_present:
+            for a in node.names:
+                y = a.name
+                if y == "*" or y.startswith("__") or y in _AUTH_EXPORTS:
+                    continue
+                findings.append({"file": filepath, "line": node.lineno, "module": mod,
+                                 "symbol": y, "available": list(_AUTH_EXPORTS)})
+            continue
+        if mod not in modules or mod in self_aliases:
+            continue                                      # out-of-project / self -> skip
+        exports = _module_exports(modules[mod])
+        if exports is None:
+            continue                                      # opaque -> never flag
+        for a in node.names:
+            y = a.name
+            if y == "*" or y.startswith("__"):
+                continue
+            if y in exports:
+                continue
+            if f"{mod}.{y}" in all_paths:                 # `from pkg import submodule`
+                continue
+            findings.append({"file": filepath, "line": node.lineno, "module": mod,
+                             "symbol": y, "available": sorted(exports)})
+    return findings
+
+
+def repair_instructions(result: dict) -> str:
+    """Turn a gate result's structured `symbol_repairs` into a precise, bounded repair
+    prompt for the Developer agent's retry — a targeted IMPORT_RESOLUTION_FAILURE
+    ticket, NOT the blind 'take a different approach' regenerate that churned other
+    files into a non-booting state on projects 1038/1039. Empty string if none."""
+    repairs = result.get("symbol_repairs") or []
+    if not repairs:
+        return ""
+    parts = ["\n=== IMPORT_RESOLUTION_FAILURE — repair ONLY this file, do not touch "
+             "any other file ==="]
+    for r in repairs:
+        avail = ", ".join(r.get("available") or []) or "(none — the module exports nothing)"
+        parts.append(
+            f"\nModule: {r['module']}\n"
+            f"Requested symbol (does NOT exist): {r['symbol']}  (line {r.get('line')})\n"
+            f"Available symbols in that module: {avail}\n"
+            f"Repair: import one of the available symbols above, or implement the needed "
+            f"behaviour INLINE in this file. Do NOT invent a symbol the module does not "
+            f"export, and do NOT modify the imported module."
+        )
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------- frontend completeness
 # TRUNCATION (project 1007): the generated `admin/menu/review/page.tsx` was cut off
 # mid-JSX (LLM output hit its length limit), leaving `styles`/`inputStyle` undefined
@@ -553,12 +745,19 @@ def _stub(agent_type: str, ticket: dict) -> dict:
 
 
 async def build_ticket(
-    ticket: dict, model: str, existing: list[dict], contract: str = ""
+    ticket: dict, model: str, existing: list[dict], contract: str = "", repair: str = ""
 ) -> dict:
     """Run the 5-step process for one ticket. Returns a file dict with a
-    'status' of 'generated' or 'needs_review'."""
+    'status' of 'generated' or 'needs_review'.
+
+    `repair` (optional) is a targeted, structured repair instruction from the build
+    gate — e.g. an IMPORT_RESOLUTION_FAILURE (fix #16). When present it is prepended
+    to the prompt for every attempt of THIS invocation, so a re-generation fixes the
+    exact deterministic finding instead of blindly rewriting the file."""
     agent_type = ticket.get("assigned_to", "backend")
     prompt = _base_prompt(ticket, existing, contract)
+    if repair:
+        prompt += repair
     last: dict | None = None
 
     for attempt in range(1, MAX_TRIES + 1):

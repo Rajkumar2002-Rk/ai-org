@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-13) — 15 fixes DONE; PIVOT to a "Code Integrity Engine"; START with FIX #16 ONLY (plan-first, get approval before coding)
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-15) — 15 fixes + FIX #16 (Symbol Resolution Gate) DONE; Code Integrity Engine underway; NEXT = the deferred dependency-validation slice (PdfReadError class), plan-first
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -20,12 +20,14 @@ QA. Three real paid end-to-end runs (1007/1038/1039) then proved a hard truth: *
 fixes all hold, but each fresh generation still trips over a DIFFERENT one-off LLM
 codegen bug, and the QA retry loop makes it worse.** The next chapter is an
 architectural pivot — a **Code Integrity Engine** that validates code DURING Developer
-generation, not only at the end. **Start narrow: build FIX #16 (a Symbol Resolution
-Gate) ONLY, plan-first.**
+generation, not only at the end. The first slice — **FIX #16, a deterministic Symbol
+Resolution Gate — is now DONE and live** (§1a). **Next narrow slice: the deferred
+third-party dependency-validation gate (the `PdfReadError` class), plan-first (§5).**
 
 ## 1. CURRENT STATE (all verified this session)
-- **15 deterministic fixes COMPLETE, verified in the running backend, all 13 free offline
-  suites pass, committed + pushed** (HEAD `e7824ca` == origin/master, clean tree).
+- **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) COMPLETE, verified in the
+  running backend, all 13 free offline suites pass, committed** (Fix #16 is the latest
+  commit on `master`; §1a has the detail).
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -40,10 +42,47 @@ Gate) ONLY, plan-first.**
   `DEPLOY_TARGET=local`. All keys live (OpenAI/Anthropic/Gemini); **`MENU_EXTRACTION_API_KEY`
   = a SCOPED Anthropic key, distinct from the master** (user created it in the Anthropic
   console; wired via `.env` + `docker-compose.yml`). `.env` is gitignored — never commit it.
-- **FIX #16 (auth-symbol / import-resolution gate) = the NEXT PRIORITY, NOT BUILT.** It is
-  the first concrete piece of the Code Integrity Engine (see §4/§5).
-- Backend + frontend rebuilt from HEAD this session; both up. Projects 1007/1038/1039 were
-  test artifacts and are all CLEANED UP. DB otherwise clean.
+- **FIX #16 (Symbol Resolution Gate) = DONE + LIVE.** First concrete piece of the Code
+  Integrity Engine; the deferred third-party dependency-validation slice is the NEXT scoped
+  task (§5).
+- Backend rebuilt this session so Fix #16 is live in `ai-org-backend-1` (verified: the three
+  new gate symbols import in the running container). Frontend unchanged. DB clean (no leftover
+  synthetic test projects).
+
+## 1a. FIX #16 — SYMBOL RESOLUTION GATE (DONE + verified 2026-08-15)
+Deterministic build-gate check: for every generated backend `.py`, each
+`from <in-project module> import <symbol>` MUST resolve to a real export of that module.
+Directly kills the 1038 `require_admin` class ("correct module path, guessed name") that
+fix #3's non-deterministic PROMPT rule could not stop.
+- **Where:** augments `developers/orchestrator._collect_stubs` (the existing build gate), NOT
+  per-file generation — the whole file set is present there, so a complete in-project symbol
+  table is available. Reuses the established flag → bounded-retry → fail pattern. Insertion
+  point confirmed to NOT collide with the deployment-layer `DeploymentSnapshot`/Auto-fix Safe
+  Mode (a different lifecycle); keeps using the build gate's own in-memory/DB transaction.
+- **How:** `agents.build_symbol_index(files)` builds the index once; `agents.
+  import_symbol_mismatches(content, filepath, index)` returns STRUCTURED findings
+  ({file, line, module, symbol, available}). Auth is validated against the authoritative
+  `AUTH_EXPORTS` contract; every other in-project module against an AST scan of its OWN
+  top-level defs/classes/assigns + re-exported names. `agents.repair_instructions(result)`
+  renders a precise IMPORT_RESOLUTION_FAILURE ticket, and `build_ticket(..., repair=...)`
+  feeds it into the bounded retry — a TARGETED repair, the direct antidote to the blind
+  regenerate-and-hope that churned 1038/1039 into a non-booting state.
+- **Zero-false-positive design (the hard requirement, met):** third-party/stdlib modules
+  (OUT OF SCOPE — deferred, see §5), opaque modules (star imports), submodule imports
+  (`from pkg import submodule`), re-exports, and relative imports are ALL treated as
+  resolvable and never flagged. Proven: **0 findings across the platform's own 64 backend
+  modules AND project 888's real working generated files** (auth/database/main/models/menu/
+  menu_upload/security). Bonus true-positive on real generated code: it correctly catches
+  888's 3 ORPHANED order/stripe files' dangling `Order`/`Product`/`StripeAccount` imports
+  (dead code the 888 hand-fix stripped from models.py/main.py).
+- **Tests (all green; 13/13 offline suites pass):** in `test_developers_offline.py` —
+  `test_import_symbol_resolution_gate` (flags `require_admin`, names available symbols, leaves
+  valid siblings alone, gate rejects only the bad ticket + attaches structured repair),
+  `test_import_symbol_zero_false_positives` (the 64-module + 888 corpus proof above), and
+  `scenario_symbol_repair_retry` (end-to-end through the REAL orchestrator: bad import → gate →
+  structured repair → retry converges → `built`). Fixtures: the captured 1038 bug
+  `tests/fixtures/menu_upload_require_admin_1038.py`, and 888's 10 real backend files exported
+  to `tests/fixtures/gen888/` as the false-positive corpus.
 
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
@@ -136,30 +175,39 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP — FIX #16 (SYMBOL RESOLUTION GATE) ONLY. PLAN FIRST. GET APPROVAL BEFORE CODING.
-Do NOT build Level 2/3 validators or the whole engine at once. Tonight's scope for next
-session is a SINGLE narrow slice:
-1. **Inspect the current Developer generation/write path FIRST** — read
-   `backend/app/developers/agents.py` (`build_ticket`, `_generate`, `_self_review`, the write
-   of `content`) and `backend/app/developers/orchestrator.py` (the wave scheduler, where files
-   are written to `generated_files`, and `_collect_stubs` runs). Understand exactly WHERE a
-   file's content becomes final and where the existing gate runs.
-2. **Propose the EXACT insertion point** for the Symbol Resolution Gate (fix #16): the check =
-   for every generated backend `.py`, verify each `from backend.app.X import Y` resolves to a
-   real exported symbol of module X (auth via the existing `AUTH_EXPORTS`; other in-project
-   modules via an AST scan of their generated defs). Same deterministic pattern as
-   `model_schema_mismatches`. Decide: augment `_collect_stubs` (post-build gate) vs. move it
-   INTO per-file generation (the "during execution" thesis) — recommend, but confirm with the user.
-3. **Get approval on that plan BEFORE writing code.** Then implement fix #16 + a regression test
-   using the REAL captured bugs (`require_admin`, `PdfReadError` — both are wrong-symbol imports),
-   run all offline suites, rebuild, and only then consider L1/L3.
-This staged approach is a HARD constraint the user set: fix #16 alone, plan-approved first.
+## 5. EXPLICIT NEXT STEP — the DEFERRED third-party DEPENDENCY-VALIDATION slice. PLAN FIRST. GET APPROVAL BEFORE CODING.
+FIX #16 (in-project Symbol Resolution Gate) is DONE (§1a). The next SINGLE narrow slice is the
+piece deliberately deferred out of #16: **third-party / dependency-API symbol resolution — the
+`PdfReadError` class.**
+- **The bug (project 1039):** the QA retry loop regenerated `menu_upload.py` to
+  `from pypdf import PdfReadError`, but that name is NOT a top-level pypdf symbol (it lives in
+  `pypdf.errors`) → the app no longer boots. Same "guessed name" family as 1038, but the module
+  is a THIRD-PARTY package, not an in-project one.
+- **Why it was NOT folded into #16 (verified this session):** `pypdf` is a DEPLOY/QA-venv
+  dependency and is **NOT importable in the platform backend process** — so the build gate that
+  runs #16 cannot introspect it without risking false positives. Forcing a third-party check
+  there would be fragile. The RIGHT home is a gate that runs **inside the QA/assembly venv**
+  (`qa/assembly.py`), where the generated app's real dependencies ARE installed and each
+  `from <pkg> import <symbol>` can be resolved by actually importing the installed package /
+  inspecting it (e.g. `importlib`/`inspect`), matching the installed version.
+- **Scope for that session:** for every generated backend `.py`, for each `from <pkg> import Y`
+  where `<pkg>` is a real installed third-party package in the assembled venv, verify `Y` exists
+  on that package (skip if the package isn't importable → no false positive, exactly as #16 skips
+  out-of-project modules). Regression-test against the REAL captured 1039 bug (`PdfReadError`),
+  prove zero false positives on the platform's + 888's real third-party imports, then wire it as
+  a QA static check (Level-2 of the engine). Do NOT expand into type/route/full-contract
+  validators in the same slice — one slice, plan-approved first (the same HARD constraint).
 
-## 6. GIT — everything COMMITTED AND PUSHED
-As of this handoff: `HEAD == origin/master == e7824ca` (0 ahead / 0 behind, clean tree) — plus
-this CONTEXT update, which is committed + pushed as the final act of the session.
-github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`, ever**;
-never commit `.env`; keep the repo private.
+**Design principles (unchanged, now proven twice):** deterministic (no LLM); each validator
+regression-tested against a REAL captured bug fixture; ZERO false positives on valid code, proven
+against the platform's own code + 888's real files BEFORE wiring; bounded, re-validated repair via
+the `_collect_stubs` flag → retry → fail pattern; evolve toward the checkpoint/re-validate model.
+
+## 6. GIT
+Fix #16 is committed to `master` (message begins "Fix #16: deterministic symbol-resolution
+gate…"), plus this CONTEXT update. Not yet pushed at handoff time unless a later step pushed it —
+check `git status`. github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no
+`Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
 
 ---
 
@@ -218,13 +266,13 @@ back up with `docker compose -f scratchpad/deploy888/docker-compose.deploy888.ym
 then re-upload the PDF + confirm to repopulate (the `down -v` teardown wipes the menu DB).
 
 ### Still open (candidate future fixes)
-- **FIX #16 (logged, NOT tonight) — deterministic auth-symbol / import-resolution gate.** Would have
-  caught 1038's `require_admin`: verify every `from backend.app.X import Y` in a generated backend
-  file resolves to a REAL exported symbol of X (auth via `AUTH_EXPORTS`, others via the file's own
-  defs) → flag at the build gate (retry → fail), same pattern as `model_schema_mismatches`. Converts
-  fix #3's prompt rule into a hard gate and closes the D3 "wrong symbol from a correct module" family.
-  Worthwhile hardening. (The analytics/stripe runtime 500s are app-LOGIC quality — much harder to
-  gate deterministically; that tail is why the frozen fixture is the demo path.)
+- **FIX #16 — deterministic in-project symbol-resolution gate: ✅ DONE (2026-08-15), see §1a.**
+  Catches 1038's `require_admin` at the build gate; verified 0 false positives on 64 real platform
+  modules + 888's real files; structured-repair retry integrated. Closed the D3 "wrong symbol from a
+  correct in-project module" family. (The analytics/stripe runtime 500s remain app-LOGIC quality —
+  much harder to gate deterministically; that tail is why the frozen fixture is the demo path.)
+  NEXT scoped slice = the third-party dependency-validation gate (`PdfReadError` class), to run in
+  the QA/assembly venv — see §5.
 - **The real DevOps-path deploy of an auth-gated app** is still unproven end-to-end (Week-7
   secrets-onboarding gap: no `AUTH0_*` seeded → the app fail-fasts at boot). The FEATURE is proven
   (via the local-IdP deploy); the platform deploy path for auth-gated apps is not.

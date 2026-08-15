@@ -139,9 +139,16 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
       * a generated model that renamed a contract column (888: schema `source` became
         `source_name` → a 500 once rows exist);
       * a TRUNCATED/invalid frontend file (1007: `admin/menu/review/page.tsx` was cut
-        off mid-JSX → the deploy's `next build` failed four stages later).
+        off mid-JSX → the deploy's `next build` failed four stages later);
+      * an import of a symbol a real in-project module does NOT export (fix #16 —
+        1038: `from backend.app.auth import require_admin`, but auth exports only
+        get_current_user/get_current_admin_user → ImportError at boot). The failure
+        is attached STRUCTURALLY (`symbol_repairs`) so the retry can repair it precisely.
     """
     schema = (blueprint or {}).get("database_schema") or []
+    # Build the in-project symbol table ONCE from the whole file set, then resolve
+    # every backend file's imports against it (fix #16).
+    sym_index = agents.build_symbol_index(built)
     for r in built:
         if r.get("status") == agents.STUB_STATUS:
             continue
@@ -160,6 +167,11 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
         fe = agents.frontend_incomplete(rel, content)
         if fe:
             problems.append(f"frontend file {fe}")
+        sym = agents.import_symbol_mismatches(content, rel, sym_index)
+        if sym:
+            r["symbol_repairs"] = sym
+            problems.append("unresolved import symbol(s) " + ", ".join(
+                f"{s['module']}.{s['symbol']}" for s in sym))
         if problems:
             r["status"] = agents.STUB_STATUS
             r["gate_problems"] = problems
@@ -250,11 +262,18 @@ async def run(project_id: int, blueprint: dict) -> dict:
         if stubbed:
             by_ticket = {t.get("id"): t for t in tickets}
             retry_ids = [str(r.get("ticket_id")) for r in stubbed]
+            # A structured, targeted repair per stubbed ticket where the gate produced
+            # one (fix #16). Blank for the other gate classes — build_ticket then falls
+            # back to its ordinary retry guidance. This is what keeps a repair BOUNDED
+            # and precise instead of the blind regenerate that broke 1038/1039.
+            repair_by_ticket = {str(r.get("ticket_id")): agents.repair_instructions(r)
+                                for r in stubbed}
             logger.warning("Build %s: %d stubbed ticket(s) %s — one retry pass "
                            "before aborting", project_id, len(stubbed), retry_ids)
             retry_tickets = [by_ticket[i] for i in retry_ids if i in by_ticket]
             retry_results = await asyncio.gather(*[
-                agents.build_ticket(t, _model_for(t, routing), built, contract)
+                agents.build_ticket(t, _model_for(t, routing), built, contract,
+                                    repair_by_ticket.get(str(t.get("id")), ""))
                 for t in retry_tickets
             ])
             async with async_session() as db:

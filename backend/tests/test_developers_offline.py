@@ -87,7 +87,7 @@ async def scenario_all_good():
     print("\n=== S1: every ticket generates real code -> built ===")
     pid = await _make_project()
 
-    async def _bt(ticket, model, existing, contract=""):
+    async def _bt(ticket, model, existing, contract="", repair=""):
         return _good(ticket)
 
     agents.build_ticket = _bt
@@ -103,7 +103,7 @@ async def scenario_one_stub():
     print("\n=== S2: ONE ticket produces only a stub -> build_failed ===")
     pid = await _make_project()
 
-    async def _bt(ticket, model, existing, contract=""):
+    async def _bt(ticket, model, existing, contract="", repair=""):
         # BE-1 is the ticket the 'provider' failed on: real build_ticket returns
         # the STUB_STATUS placeholder in exactly this case (last is None).
         if ticket["id"] == "BE-1":
@@ -138,7 +138,7 @@ async def scenario_stub_recovers_on_retry():
 
     calls: dict[str, int] = {}
 
-    async def _bt(ticket, model, existing, contract=""):
+    async def _bt(ticket, model, existing, contract="", repair=""):
         # BE-1 flakes on the FIRST attempt (transient), succeeds on the retry.
         if ticket["id"] == "BE-1":
             calls["BE-1"] = calls.get("BE-1", 0) + 1
@@ -403,6 +403,204 @@ def test_frontend_completeness_gate():
     check("the complete frontend ticket is left untouched", built[1]["status"] == "generated")
 
 
+def test_import_symbol_resolution_gate():
+    """FIX #16 regression (project 1038): a fresh generation wrote
+    `from backend.app.auth import require_admin`, but auth exports only
+    get_current_user/get_current_admin_user -> ImportError at boot. The
+    symbol-resolution gate must catch a `from <in-project module> import <symbol>`
+    whose symbol the module does not export — auth via AUTH_EXPORTS, other modules
+    via an AST scan of their own defs — and flag ONLY that, retried then failed."""
+    import os
+    from app.developers import orchestrator as orch
+
+    auth = {"filepath": "backend/app/auth.py",
+            "content": ("def get_current_user():\n    return {}\n"
+                        "def get_current_admin_user():\n    return {}\n")}
+    models = {"filepath": "backend/app/models.py",
+              "content": ("class MenuItem(Base):\n    __tablename__ = 'menu_items'\n"
+                          "    id = Column(Integer)\n")}
+    database = {"filepath": "backend/app/database.py",
+                "content": ("Base = object\n"
+                            "async def get_db():\n    yield None\n"
+                            "def async_session():\n    return None\n")}
+
+    fx = os.path.join(os.path.dirname(__file__), "fixtures",
+                      "menu_upload_require_admin_1038.py")
+    bad = open(fx, encoding="utf-8").read()
+    index = agents.build_symbol_index([auth, models, database,
+                                       {"filepath": "backend/app/routes/menu_upload.py",
+                                        "content": bad}])
+
+    found = agents.import_symbol_mismatches(bad, "backend/app/routes/menu_upload.py", index)
+    syms = [f["symbol"] for f in found]
+    check("1038's `require_admin` is flagged as unresolved", syms == ["require_admin"], str(found))
+    check("the finding names the module it was imported from",
+          found and found[0]["module"] == "backend.app.auth", str(found))
+    check("the finding lists the REAL available auth symbols",
+          found and set(found[0]["available"]) ==
+          {"get_current_user", "get_current_admin_user"}, str(found))
+    check("valid sibling imports (get_db, MenuItem) are NOT flagged",
+          "get_db" not in syms and "MenuItem" not in syms, str(syms))
+
+    # A corrected import resolves cleanly — no residual false positive.
+    good = bad.replace("import require_admin", "import get_current_admin_user") \
+              .replace("Depends(require_admin)", "Depends(get_current_admin_user)")
+    idx2 = agents.build_symbol_index([auth, models, database,
+                                      {"filepath": "backend/app/routes/menu_upload.py",
+                                       "content": good}])
+    check("the corrected file resolves with zero findings",
+          agents.import_symbol_mismatches(good, "backend/app/routes/menu_upload.py", idx2) == [],
+          str(agents.import_symbol_mismatches(good, "backend/app/routes/menu_upload.py", idx2)))
+
+    # Other-module scan (not auth): a guessed name from models.py is caught too.
+    guesser = {"filepath": "backend/app/routes/order.py",
+               "content": "from backend.app.models import MenuItem, Product\n"}
+    idx3 = agents.build_symbol_index([models, guesser])
+    g = agents.import_symbol_mismatches(guesser["content"], "backend/app/routes/order.py", idx3)
+    check("a non-existent symbol from a real in-project module (models.Product) is caught",
+          [f["symbol"] for f in g] == ["Product"], str(g))
+
+    # The gate (the real _collect_stubs) rejects it and attaches the structured repair.
+    built = [auth, models, database,
+             {"ticket_id": "MENU-3", "filepath": "backend/app/routes/menu_upload.py",
+              "content": bad, "status": "generated"},
+             {"ticket_id": "OK-1", "filepath": "backend/app/routes/menu.py",
+              "content": "from backend.app.models import MenuItem\nrouter = 1\n",
+              "status": "generated"}]
+    for f in (auth, models, database):
+        f.setdefault("status", "generated")
+    stubbed = orch._collect_stubs(built, {}, 1)
+    ids = sorted(s.get("ticket_id") for s in stubbed if s.get("ticket_id"))
+    check("gate rejects ONLY the ticket with the bad import", ids == ["MENU-3"], str(ids))
+    m3 = next(s for s in built if s.get("ticket_id") == "MENU-3")
+    check("the rejected ticket carries STUB_STATUS", m3["status"] == agents.STUB_STATUS)
+    check("the rejected ticket carries the structured symbol_repairs",
+          m3.get("symbol_repairs") and m3["symbol_repairs"][0]["symbol"] == "require_admin",
+          str(m3.get("symbol_repairs")))
+    check("the clean menu ticket is left untouched",
+          next(s for s in built if s.get("ticket_id") == "OK-1")["status"] == "generated")
+
+    # The structured repair renders a precise, bounded IMPORT_RESOLUTION_FAILURE ticket.
+    rt = agents.repair_instructions(m3)
+    check("repair text is an IMPORT_RESOLUTION_FAILURE naming the bad + available symbols",
+          "IMPORT_RESOLUTION_FAILURE" in rt and "require_admin" in rt
+          and "get_current_admin_user" in rt, rt)
+    check("repair text scopes the fix to this file only",
+          "repair ONLY this file" in rt.lower() or "only this file" in rt.lower(), rt)
+
+
+def test_import_symbol_zero_false_positives():
+    """HARD REQUIREMENT: zero false positives on real, working code. Run the
+    symbol-resolution detector across (a) the platform's OWN backend (64 real modules,
+    nested packages, package-root/submodule imports, re-exports) and (b) project 888's
+    WORKING generated file set. Neither may produce a single finding. As a bonus TRUE
+    positive on real generated code, 888's ORPHANED order/stripe files (dead code the
+    hand-fix stripped from models.py/main.py) DO have dangling imports and must be caught."""
+    import os
+    import glob
+
+    # (a) The platform's own backend — every import in it resolves (the app runs).
+    app_dir = os.path.join(os.path.dirname(__file__), "..", "app")
+    platform = []
+    for path in glob.glob(os.path.join(app_dir, "**", "*.py"), recursive=True):
+        rel = "backend/" + os.path.relpath(path, os.path.join(app_dir, "..")).replace(os.sep, "/")
+        platform.append({"filepath": rel, "content": open(path, encoding="utf-8").read()})
+    pidx = agents.build_symbol_index(platform)
+    plat_findings = []
+    for f in platform:
+        plat_findings += agents.import_symbol_mismatches(f["content"], f["filepath"], pidx)
+    check(f"ZERO false positives across the platform's own {len(platform)} backend modules",
+          plat_findings == [], str(plat_findings[:6]))
+
+    # (b) Project 888's real generated files, split into working vs orphaned.
+    gdir = os.path.join(os.path.dirname(__file__), "fixtures", "gen888")
+    if not os.path.isdir(gdir):
+        check("888 fixture corpus present", False, f"missing {gdir}")
+        return
+    g888 = []
+    for path in sorted(glob.glob(os.path.join(gdir, "*.py"))):
+        rel = os.path.basename(path).replace("__", "/")
+        g888.append({"filepath": rel, "content": open(path, encoding="utf-8").read()})
+    gidx = agents.build_symbol_index(g888)
+
+    # The 3 orphaned files the 888 hand-fix stripped from models.py/main.py.
+    orphaned = {"backend/app/routes/order.py", "backend/app/routes/order_be_2.py",
+                "backend/app/routes/stripe.py"}
+    working_findings, orphan_findings = [], []
+    for f in g888:
+        found = agents.import_symbol_mismatches(f["content"], f["filepath"], gidx)
+        (orphan_findings if f["filepath"] in orphaned else working_findings).extend(found)
+    check("ZERO false positives across 888's WORKING generated files "
+          "(auth/database/main/models/menu/menu_upload/security)",
+          working_findings == [], str(working_findings))
+    check("bonus: the detector DOES catch 888's orphaned order/stripe dangling imports "
+          "(Order/Product/StripeAccount not in the stripped models.py)",
+          {f["symbol"] for f in orphan_findings} >= {"Order", "Product", "StripeAccount"},
+          str(sorted({f["symbol"] for f in orphan_findings})))
+
+
+async def scenario_symbol_repair_retry():
+    print("\n=== S4: a bad-import file is REPAIRED via the structured retry -> built ===")
+    pid = await _make_project()
+
+    # A blueprint whose BE-1 (routes/menu.py) imports a bad auth symbol on the first
+    # attempt; FND-1 provides the real auth exports; APP-1 is a clean entrypoint.
+    bp = {"sprint_tickets": [
+        {"id": "FND-1", "title": "auth", "assigned_to": "backend",
+         "filepath": "backend/app/auth.py", "description": "x", "dependencies": []},
+        {"id": "BE-1", "title": "routes", "assigned_to": "backend",
+         "filepath": "backend/app/routes/menu.py", "description": "x", "dependencies": ["FND-1"]},
+        {"id": "APP-1", "title": "entrypoint", "assigned_to": "backend",
+         "filepath": "backend/app/main.py", "description": "x", "dependencies": ["FND-1"]}],
+        "llm_routing": {}, "database_schema": [], "api_endpoints": []}
+    async with async_session() as db:
+        row = await db.get(Blueprint, (await db.execute(
+            select(Blueprint.id).where(Blueprint.project_id == pid))).scalar_one())
+        row.blueprint_json = json.dumps(bp)
+        await db.commit()
+
+    seen_repair: dict[str, str] = {}
+    calls: dict[str, int] = {}
+
+    def _auth_file():
+        return ("def get_current_user():\n    return {}\n"
+                "def get_current_admin_user():\n    return {}\n")
+
+    async def _bt(ticket, model, existing, contract="", repair=""):
+        tid = ticket["id"]
+        calls[tid] = calls.get(tid, 0) + 1
+        if tid == "FND-1":
+            content = _auth_file()
+        elif tid == "BE-1":
+            seen_repair[f"call{calls[tid]}"] = repair
+            if calls[tid] == 1:      # first attempt: the 1038 bad import
+                content = "from backend.app.auth import require_admin\nrouter = 1\n"
+            else:                    # retry: repaired to a real export
+                content = "from backend.app.auth import get_current_admin_user\nrouter = 1\n"
+        else:
+            content = "app = 1\n"
+        return {"filename": ticket["filepath"].rpartition("/")[2],
+                "filepath": ticket["filepath"], "content": content,
+                "agent_type": "backend", "ticket_id": tid, "status": "generated"}
+
+    agents.build_ticket = _bt
+    summary = await orch.run(pid, bp)
+    print(f"    summary={summary}   BE-1 calls={calls.get('BE-1')}")
+    check("BE-1 was retried once (bad import -> gate -> retry)", calls.get("BE-1") == 2, str(calls))
+    check("the FIRST attempt got NO repair text", seen_repair.get("call1") == "")
+    check("the RETRY received a structured IMPORT_RESOLUTION_FAILURE repair",
+          "IMPORT_RESOLUTION_FAILURE" in (seen_repair.get("call2") or "")
+          and "require_admin" in (seen_repair.get("call2") or ""), seen_repair.get("call2"))
+    check("the repair converged -> status 'built'", summary["status"] == "built", str(summary))
+    check("no surviving stubs", summary["stubbed"] == [], str(summary))
+
+    async with async_session() as db:
+        row = (await db.execute(select(GeneratedFile.content).where(
+            GeneratedFile.project_id == pid, GeneratedFile.ticket_id == "BE-1"))).first()
+    check("BE-1's file now imports a REAL auth export, not require_admin",
+          row and "get_current_admin_user" in row[0] and "require_admin" not in row[0], str(row))
+
+
 async def main():
     original = agents.build_ticket
     removed = await cleanup()
@@ -418,9 +616,12 @@ async def main():
         test_session_dependency_rule()
         test_schema_adherence()
         test_frontend_completeness_gate()
+        test_import_symbol_resolution_gate()
+        test_import_symbol_zero_false_positives()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()
+        await scenario_symbol_repair_retry()
     finally:
         agents.build_ticket = original
         await cleanup()
