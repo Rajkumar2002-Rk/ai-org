@@ -5,7 +5,167 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️ RESUME HERE — Full measurement run: 14 fixes held (clean QA + real Opus); deploy hit a NEW frontend-truncation bug, now gated (2026-08-12)
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-13) — 15 fixes DONE; PIVOT to a "Code Integrity Engine"; START with FIX #16 ONLY (plan-first, get approval before coding)
+
+> This block is the AUTHORITATIVE resume point. Everything below it is supporting
+> detail/history. A fresh session with zero memory of the prior conversation should be
+> able to execute from here. Read this whole block first.
+
+## 0. ONE-PARAGRAPH ORIENTATION
+This platform is an autonomous "AI engineering org": a BA agent interviews the user →
+Product Intelligence → Architect (blueprint) → Developer agents (generate the app's
+code) → smoke_boot → Opus security review → QA (ephemeral boot + tests) → DevOps deploy.
+Over many sessions we hardened it with **15 deterministic fixes** so it reliably reaches
+QA. Three real paid end-to-end runs (1007/1038/1039) then proved a hard truth: **the 15
+fixes all hold, but each fresh generation still trips over a DIFFERENT one-off LLM
+codegen bug, and the QA retry loop makes it worse.** The next chapter is an
+architectural pivot — a **Code Integrity Engine** that validates code DURING Developer
+generation, not only at the end. **Start narrow: build FIX #16 (a Symbol Resolution
+Gate) ONLY, plan-first.**
+
+## 1. CURRENT STATE (all verified this session)
+- **15 deterministic fixes COMPLETE, verified in the running backend, all 13 free offline
+  suites pass, committed + pushed** (HEAD `e7824ca` == origin/master, clean tree).
+  The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
+  readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
+  smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
+  Anthropic SDK class, menu review endpoints, ALLOWED_ORIGINS, FND-1 shared Base),
+  **#12** pin the QA/smoke_boot venv to the deploy's exact versions, **#13** Pydantic-v2
+  prompt rule, **#14** D4 force-dynamic via the ROOT SERVER layout, **#15** deterministic
+  frontend truncation/parse gate. Plus three build-gate detectors added alongside #14/#15:
+  **stub-function gate**, **`Depends(get_db)` (not `async_session`)**, **schema-adherence
+  (model columns must match the contract)** — all wired into
+  `developers/orchestrator._collect_stubs` (flag → retry → fail) and QA static checks.
+- **Config live:** `SECURITY_REVIEW_ENABLED=true` (real Opus ON), `CODEGEN_MODE=real`,
+  `DEPLOY_TARGET=local`. All keys live (OpenAI/Anthropic/Gemini); **`MENU_EXTRACTION_API_KEY`
+  = a SCOPED Anthropic key, distinct from the master** (user created it in the Anthropic
+  console; wired via `.env` + `docker-compose.yml`). `.env` is gitignored — never commit it.
+- **FIX #16 (auth-symbol / import-resolution gate) = the NEXT PRIORITY, NOT BUILT.** It is
+  the first concrete piece of the Code Integrity Engine (see §4/§5).
+- Backend + frontend rebuilt from HEAD this session; both up. Projects 1007/1038/1039 were
+  test artifacts and are all CLEANED UP. DB otherwise clean.
+
+## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
+All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
+real Opus ON, scoped key. **All three cleanly passed: BA → PI → Architect → Build (no gate
+rejections) → smoke_boot → real Opus security review PASSED.** So the 15 fixes genuinely
+HOLD TOGETHER on real paid runs. Each then died AFTER that on a DIFFERENT one-off codegen bug:
+
+| Run | Died at | The new bug (NOT one of the 15) |
+| --- | --- | --- |
+| **1007** | deploy | Generated `admin/menu/review/page.tsx` was **TRUNCATED** mid-JSX (LLM output cut off) → `next build` syntax error. (QA passed 79/79 — its real `next build` is opt-in/off.) → led to **fix #15**. |
+| **1038** | QA | `menu_upload.py` imported invented `require_admin` (auth exports `get_current_admin_user`) — **D3 wrong-symbol**; then 12× 500 on a buggy unrequested `/api/analytics/*` feature; then 10× 500 on `/admin/stripe/*`; the retry loop then broke the boot. |
+| **1039** | QA | 10× 500 on `/admin/stripe/*` (the deferred payment feature); then the retry loop regenerated `menu_upload.py` to `from pypdf import PdfReadError` (**not a top-level pypdf symbol** — it's in `pypdf.errors`) → app no longer boots. |
+
+**⭐ KEY DIAGNOSIS (this is the real root cause, not bad luck):** the QA **retry loop can
+regenerate a file and INTRODUCE a NEW bug faster than it fixes the original** — it is not
+converging. On 1038 and 1039, hand-fixing one bug triggered a QA re-run whose retry loop
+churned other files into a non-booting state. So: end-of-pipeline gates + a blind
+regenerate-and-retry loop cannot guarantee a clean app. **Validation must move EARLIER —
+into Developer generation itself — and repair must be BOUNDED and re-validated.** That is
+the entire motivation for the Code Integrity Engine (§4).
+
+Cost ≈ $2.6–5 per run (generation + real Opus). Recommendation given + accepted: **stop
+fresh-run roulette; build the durable fix (#16 first).**
+
+## 3. RECORDABLE DEMO — project 888, FULLY WORKING & LIVE RIGHT NOW (separate from fresh-run work)
+The demo does NOT depend on a clean fresh run. **Project 888 is a frozen, hand-verified
+fixture** proving the menu-onboarding feature end to end, and it is **running now**:
+- Stack in `scratchpad/deploy888/` (⚠️ SESSION SCRATCHPAD = ephemeral; relocate for permanence):
+  **`site`** (nginx, a polished Bella Vista menu page) on **http://localhost:8890**,
+  **`app`** (FastAPI backend) on **http://localhost:8899**, **`postgres`**, **`idp`** (a local
+  JWKS server standing in for Auth0). Relaunch: `docker compose -f
+  scratchpad/deploy888/docker-compose.deploy888.yml up -d --build` (a `down -v` wipes the
+  menu DB → re-upload the PDF + confirm to repopulate).
+- **What it proves, all real:** real backend; **real menu PDF extraction** (text path via
+  pdfplumber→Claude parse, vision fallback via a real Anthropic image/document call, model
+  `claude-haiku-4-5`, using the SCOPED key); **real auth** (RS256 admin JWT validated against
+  the local JWKS — sig/aud/iss/`admin` permission); the **review gate** (nothing publishes
+  until confirmed); a **real published public menu** (7 dishes from the user's real PDF); and
+  a **polished frontend** at :8890 that fetches `GET /menu` LIVE from the backend (CORS wired;
+  footer prints the data source — proof it isn't hardcoded). Raw-JSON proof URL:
+  `http://localhost:8899/menu`. Admin JWT (30-day) in `deploy888/idp/admin_token.txt`.
+- The demo's `menu_upload.py`/`menu.py`/`models.py`/`main.py` were HAND-FIXED in 888's DB
+  fixture to a working state (real parse, fixed vision, `source_name`+`created_at`, `get_db`,
+  images+scanned-PDF support, order/stripe stripped). It is a fixture, not a fresh generation.
+
+## 4. THE NEW PLAN — "CODE INTEGRITY ENGINE" (architectural pivot in how reliability is ensured)
+**Thesis (grounded in §2's diagnosis):** stop relying only on end-of-pipeline validation
+(QA/Opus) + a blind retry loop. Insert **deterministic validation DURING Developer agent
+execution** — as each file is generated/written — with **bounded, re-validated repair** and
+**transactional checkpoints** so a repair can never leave the build worse than before.
+
+**⚠️ HONEST GAP FOR THE NEXT SESSION:** the user said a "full spec" for this was given this
+session. That detailed spec text is **NOT in the captured context** (long session; context
+was summarized) — it was NOT recorded verbatim and MUST be re-shared by the user or
+reconstructed at the start of the next session. Do NOT invent spec details. What IS reliably
+captured is the component OUTLINE the user enumerated, plus the design principles from §2:
+
+- **Three validation levels** (level names/exact scope to be confirmed from the real spec;
+  working understanding): **L1** single-file structural/syntactic integrity (parses, complete,
+  balanced — generalizes fix #15's truncation check + a syntax/parse check per file);
+  **L2** symbol resolution (every imported/referenced name resolves to something that actually
+  exists — imports resolve to real exported symbols; **FIX #16 is the first slice of L2**);
+  **L3** cross-file / contract validation (files agree with each other and with the Architect's
+  binding contract — extends the existing schema-adherence + module-map ideas across the whole
+  app).
+- **Symbol resolution** — build a symbol table of what each generated module actually exports
+  (functions/classes/vars) and validate every `from X import Y` / usage against it; catches the
+  `require_admin` (1038) and `PdfReadError` (1039) classes deterministically.
+- **Cross-file / contract validation** — the generated code must satisfy the blueprint's
+  `database_schema`, `api_endpoints`, and generated module map (paths + exported symbols).
+- **Structured failure objects** — validators return typed, machine-readable failures (file,
+  location, kind, offending symbol, suggested fix) — NOT free-text — so a repair step can act
+  precisely and a measurement harness can aggregate them.
+- **Bounded repair loops** — a fixed max number of targeted repair attempts per finding, each
+  followed by RE-VALIDATION; never an open-ended regenerate-and-hope (this is the direct
+  antidote to the 1038/1039 retry-churn root cause).
+- **Transactional checkpoints** — snapshot the build state before a repair; if a repair does
+  not strictly improve validation (or breaks something), ROLL BACK to the checkpoint. A repair
+  must never make the build worse (this is exactly what the QA retry loop violated).
+- **Measurement methodology** — a defined way to measure validator effectiveness (e.g., replay
+  captured buggy fixtures like 1007's truncated page / 1038's `require_admin` / 1039's
+  `PdfReadError`, count catch-rate + false-positive-rate on known-good files) so each level is
+  proven the way every prior fix was (regression tests on real captured bugs).
+
+**Design principles that ARE firmly established (from this whole session, safe to rely on):**
+deterministic (no LLM) validators; run at BUILD time (no Node in the backend container — use
+Python AST/structural checks, not SWC/tsc, exactly as fix #15 does); zero false positives on
+valid code (validate against the platform's own frontend + real generated files before wiring);
+each validator regression-tested against a REAL captured bug fixture; wire into the existing
+`developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
+that loop toward the checkpoint/re-validate model above.
+
+## 5. EXPLICIT NEXT STEP — FIX #16 (SYMBOL RESOLUTION GATE) ONLY. PLAN FIRST. GET APPROVAL BEFORE CODING.
+Do NOT build Level 2/3 validators or the whole engine at once. Tonight's scope for next
+session is a SINGLE narrow slice:
+1. **Inspect the current Developer generation/write path FIRST** — read
+   `backend/app/developers/agents.py` (`build_ticket`, `_generate`, `_self_review`, the write
+   of `content`) and `backend/app/developers/orchestrator.py` (the wave scheduler, where files
+   are written to `generated_files`, and `_collect_stubs` runs). Understand exactly WHERE a
+   file's content becomes final and where the existing gate runs.
+2. **Propose the EXACT insertion point** for the Symbol Resolution Gate (fix #16): the check =
+   for every generated backend `.py`, verify each `from backend.app.X import Y` resolves to a
+   real exported symbol of module X (auth via the existing `AUTH_EXPORTS`; other in-project
+   modules via an AST scan of their generated defs). Same deterministic pattern as
+   `model_schema_mismatches`. Decide: augment `_collect_stubs` (post-build gate) vs. move it
+   INTO per-file generation (the "during execution" thesis) — recommend, but confirm with the user.
+3. **Get approval on that plan BEFORE writing code.** Then implement fix #16 + a regression test
+   using the REAL captured bugs (`require_admin`, `PdfReadError` — both are wrong-symbol imports),
+   run all offline suites, rebuild, and only then consider L1/L3.
+This staged approach is a HARD constraint the user set: fix #16 alone, plan-approved first.
+
+## 6. GIT — everything COMMITTED AND PUSHED
+As of this handoff: `HEAD == origin/master == e7824ca` (0 ahead / 0 behind, clean tree) — plus
+this CONTEXT update, which is committed + pushed as the final act of the session.
+github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`, ever**;
+never commit `.env`; keep the repo private.
+
+---
+
+# 📚 SESSION DETAIL / HISTORY (the handoff above is the authoritative resume point; below is supporting detail, most-recent first)
+
+# Full measurement run: 14 fixes held (clean QA + real Opus); deploy hit a NEW frontend-truncation bug, now gated (2026-08-12)
 
 ## 📏 MEASUREMENT RUN (project 1007, Bella Vista + PDF menu, Quick plan) — the cleanest run yet
 Ran ONE full paid pipeline with the real Opus review back ON and the scoped extraction key live,
