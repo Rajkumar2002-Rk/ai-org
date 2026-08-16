@@ -142,8 +142,11 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
         off mid-JSX → the deploy's `next build` failed four stages later);
       * an import of a symbol a real in-project module does NOT export (fix #16 —
         1038: `from backend.app.auth import require_admin`, but auth exports only
-        get_current_user/get_current_admin_user → ImportError at boot). The failure
-        is attached STRUCTURALLY (`symbol_repairs`) so the retry can repair it precisely.
+        get_current_user/get_current_admin_user → ImportError at boot);
+      * a backend `.py` that does not PARSE at all (fix #17 — 1071: `order_be_3.py` put a
+        non-default parameter after a defaulted one → hard SyntaxError, app never boots).
+      The failure is attached STRUCTURALLY (`syntax_error` / `symbol_repairs`) so the
+      retry can repair it precisely.
     """
     schema = (blueprint or {}).get("database_schema") or []
     # Build the in-project symbol table ONCE from the whole file set, then resolve
@@ -155,6 +158,13 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
         content = r.get("content") or ""
         rel = r.get("filepath") or r.get("filename") or ""
         problems = []
+        # Syntax FIRST — an unparseable file blocks every other check (and the other
+        # AST detectors already no-op on a SyntaxError), so it must own the finding.
+        syn = agents.python_syntax_error(content, rel)
+        if syn:
+            r["syntax_error"] = syn
+            problems.append(
+                f"python syntax error (line {syn.get('line')}): {syn.get('message')}")
         stub_fns = agents.stub_functions(content)
         if stub_fns:
             problems.append(f"placeholder work function(s) {stub_fns}")

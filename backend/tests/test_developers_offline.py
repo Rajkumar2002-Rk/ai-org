@@ -539,6 +539,128 @@ def test_import_symbol_zero_false_positives():
           str(sorted({f["symbol"] for f in orphan_findings})))
 
 
+def test_python_syntax_gate():
+    """FIX #17 regression (project 1071): a fresh generation of routes/order_be_3.py put a
+    non-default parameter after a defaulted one -> hard Python SyntaxError at import, so
+    the app never booted (caught only late, at smoke_boot). The build gate must catch an
+    unparseable backend .py, attach a STRUCTURED finding, retry with a targeted repair,
+    then fail. Zero false positives BY CONSTRUCTION: valid Python parses, invalid does not."""
+    import os
+    import glob
+    from app.developers import orchestrator as orch
+
+    # 1071's EXACT captured file (parameter-ordering SyntaxError).
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "order_be_3_param_order_1071.py")
+    bad = open(fx, encoding="utf-8").read()
+    syn = agents.python_syntax_error(bad, "backend/app/routes/order_be_3.py")
+    check("1071's EXACT param-ordering file is flagged as a syntax error", syn is not None, str(syn))
+    check("the finding names the offending line + message",
+          syn and syn["line"] == 18 and "default" in (syn.get("message") or ""), str(syn))
+
+    # Other real syntax errors are caught; valid / non-.py are NOT.
+    check("unclosed paren is flagged",
+          agents.python_syntax_error("def f(:\n    return 1\n", "a.py") is not None)
+    check("bad indentation is flagged",
+          agents.python_syntax_error("def f():\nreturn 1\n", "a.py") is not None)
+    check("a valid backend .py is NOT flagged",
+          agents.python_syntax_error("def f(a, b=1):\n    return a + b\n", "a.py") is None)
+    check("a non-.py file is ignored (frontend truncation is fix #15's job)",
+          agents.python_syntax_error("const x = (", "frontend/app/page.tsx") is None)
+
+    # Zero-false-positive proof: every real platform + 888 Python file parses.
+    app_dir = os.path.join(os.path.dirname(__file__), "..", "app")
+    plat = [(p, open(p, encoding="utf-8").read())
+            for p in glob.glob(os.path.join(app_dir, "**", "*.py"), recursive=True)]
+    plat_syn = [p for p, c in plat if agents.python_syntax_error(c, "backend/app/x.py")]
+    check(f"ZERO false positives across the platform's own {len(plat)} backend modules",
+          plat_syn == [], str(plat_syn[:6]))
+    gdir = os.path.join(os.path.dirname(__file__), "fixtures", "gen888")
+    g_syn = [os.path.basename(p) for p in glob.glob(os.path.join(gdir, "*.py"))
+             if agents.python_syntax_error(open(p, encoding="utf-8").read(), "backend/app/x.py")]
+    check("ZERO false positives across 888's real generated files", g_syn == [], str(g_syn))
+
+    # Gate integration: _collect_stubs rejects the broken file, attaches structured
+    # syntax_error, leaves clean files untouched.
+    built = [
+        {"ticket_id": "BE-3", "filepath": "backend/app/routes/order_be_3.py",
+         "content": bad, "status": "generated"},
+        {"ticket_id": "FND-1", "filepath": "backend/app/models.py",
+         "content": "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n    id = Column(Integer)\n",
+         "status": "generated"},
+    ]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("gate rejects ONLY the syntax-broken ticket",
+          [s["ticket_id"] for s in stubbed] == ["BE-3"], str([s["ticket_id"] for s in stubbed]))
+    be3 = next(s for s in built if s["ticket_id"] == "BE-3")
+    check("the rejected ticket carries STUB_STATUS", be3["status"] == agents.STUB_STATUS)
+    check("the rejected ticket carries the structured syntax_error",
+          be3.get("syntax_error") and be3["syntax_error"]["line"] == 18, str(be3.get("syntax_error")))
+    check("the clean model ticket is left untouched", built[1]["status"] == "generated")
+
+    # The structured repair renders a precise, bounded SYNTAX_ERROR ticket.
+    rt = agents.repair_instructions(be3)
+    check("repair text is a SYNTAX_ERROR naming the file + line + message",
+          "SYNTAX_ERROR" in rt and "order_be_3.py" in rt and "line 18" in rt, rt)
+    check("repair text scopes the fix to this file only", "only this file" in rt.lower(), rt)
+    check("repair text gives the param-ordering guidance",
+          "without a default" in rt and "with a default" in rt, rt)
+
+
+async def scenario_syntax_repair_retry():
+    print("\n=== S5: a syntax-broken backend file is REPAIRED via the structured retry -> built ===")
+    pid = await _make_project()
+
+    bp = {"sprint_tickets": [
+        {"id": "FND-1", "title": "models", "assigned_to": "backend",
+         "filepath": "backend/app/models.py", "description": "x", "dependencies": []},
+        {"id": "BE-3", "title": "order update", "assigned_to": "backend",
+         "filepath": "backend/app/routes/order_be_3.py", "description": "x", "dependencies": ["FND-1"]},
+        {"id": "APP-1", "title": "entrypoint", "assigned_to": "backend",
+         "filepath": "backend/app/main.py", "description": "x", "dependencies": ["FND-1"]}],
+        "llm_routing": {}, "database_schema": [], "api_endpoints": []}
+    async with async_session() as db:
+        row = await db.get(Blueprint, (await db.execute(
+            select(Blueprint.id).where(Blueprint.project_id == pid))).scalar_one())
+        row.blueprint_json = json.dumps(bp)
+        await db.commit()
+
+    seen_repair: dict[str, str] = {}
+    calls: dict[str, int] = {}
+
+    async def _bt(ticket, model, existing, contract="", repair=""):
+        tid = ticket["id"]
+        calls[tid] = calls.get(tid, 0) + 1
+        if tid == "BE-3":
+            seen_repair[f"call{calls[tid]}"] = repair
+            if calls[tid] == 1:   # first attempt: the 1071 param-ordering SyntaxError
+                content = ("def f(\n    order_id: int = 1,\n    order_update,\n):\n    return order_id\n")
+            else:                 # retry: parameters reordered -> parses
+                content = ("def f(\n    order_update,\n    order_id: int = 1,\n):\n    return order_id\n")
+        elif tid == "FND-1":
+            content = "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n    id = Column(Integer)\n"
+        else:
+            content = "app = 1\n"
+        return {"filename": ticket["filepath"].rpartition("/")[2],
+                "filepath": ticket["filepath"], "content": content,
+                "agent_type": "backend", "ticket_id": tid, "status": "generated"}
+
+    agents.build_ticket = _bt
+    summary = await orch.run(pid, bp)
+    print(f"    summary={summary}   BE-3 calls={calls.get('BE-3')}")
+    check("BE-3 was retried once (syntax error -> gate -> retry)", calls.get("BE-3") == 2, str(calls))
+    check("the FIRST attempt got NO repair text", seen_repair.get("call1") == "")
+    check("the RETRY received a structured SYNTAX_ERROR repair",
+          "SYNTAX_ERROR" in (seen_repair.get("call2") or ""), seen_repair.get("call2"))
+    check("the repair converged -> status 'built'", summary["status"] == "built", str(summary))
+    check("no surviving stubs", summary["stubbed"] == [], str(summary))
+
+    async with async_session() as db:
+        row = (await db.execute(select(GeneratedFile.content).where(
+            GeneratedFile.project_id == pid, GeneratedFile.ticket_id == "BE-3"))).first()
+    check("BE-3's file now PARSES (real Python)",
+          row and agents.python_syntax_error(row[0], "backend/app/routes/order_be_3.py") is None, str(row))
+
+
 async def scenario_symbol_repair_retry():
     print("\n=== S4: a bad-import file is REPAIRED via the structured retry -> built ===")
     pid = await _make_project()
@@ -618,10 +740,12 @@ async def main():
         test_frontend_completeness_gate()
         test_import_symbol_resolution_gate()
         test_import_symbol_zero_false_positives()
+        test_python_syntax_gate()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()
         await scenario_symbol_repair_retry()
+        await scenario_syntax_repair_retry()
     finally:
         agents.build_ticket = original
         await cleanup()

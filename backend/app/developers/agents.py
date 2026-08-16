@@ -587,26 +587,73 @@ def import_symbol_mismatches(content: str, filepath: str, index: dict) -> list[d
     return findings
 
 
+# ---------------------------------------------------------------- syntax / AST (FIX #17)
+# SYNTAX (project 1071): a fresh generation of `routes/order_be_3.py` put a non-default
+# parameter (`order_update: OrderUpdateRequest`) AFTER a defaulted one
+# (`order_id: int = Path(...)`) — a hard Python `SyntaxError` at import, so the app never
+# boots. Only smoke_boot caught it, after the WHOLE build, and only routed to a blind
+# retry. This gate makes an unparseable backend file a first-class build-gate finding
+# with a targeted, bounded repair — the most fundamental Level-1 check of the Code
+# Integrity Engine. Zero false positives BY CONSTRUCTION: valid Python parses, invalid
+# does not (`ast.parse` is exactly what the interpreter uses).
+
+
+def python_syntax_error(content: str, filepath: str) -> dict | None:
+    """Structured finding if a generated PYTHON file does not parse, else None. Only
+    for `.py` files — frontend `.tsx` truncation is handled structurally by
+    `frontend_incomplete` (fix #15); there is no Node toolchain here for real TS syntax.
+    Returns {file, line, offset, message, text} — machine-readable so the bounded retry
+    can build a precise SYNTAX_ERROR repair (see `repair_instructions`)."""
+    if not filepath.endswith(".py"):
+        return None
+    try:
+        ast.parse(content or "")
+        return None
+    except SyntaxError as e:
+        return {"file": filepath, "line": e.lineno, "offset": e.offset,
+                "message": e.msg, "text": (e.text or "").rstrip()}
+
+
 def repair_instructions(result: dict) -> str:
-    """Turn a gate result's structured `symbol_repairs` into a precise, bounded repair
-    prompt for the Developer agent's retry — a targeted IMPORT_RESOLUTION_FAILURE
-    ticket, NOT the blind 'take a different approach' regenerate that churned other
-    files into a non-booting state on projects 1038/1039. Empty string if none."""
-    repairs = result.get("symbol_repairs") or []
-    if not repairs:
-        return ""
-    parts = ["\n=== IMPORT_RESOLUTION_FAILURE — repair ONLY this file, do not touch "
-             "any other file ==="]
-    for r in repairs:
-        avail = ", ".join(r.get("available") or []) or "(none — the module exports nothing)"
+    """Turn a gate result's structured findings into a precise, bounded repair prompt for
+    the Developer agent's retry — a targeted SYNTAX_ERROR / IMPORT_RESOLUTION_FAILURE
+    ticket, NOT the blind 'take a different approach' regenerate that churned other files
+    into a non-booting state on projects 1038/1039. Empty string if there is nothing
+    structured to repair."""
+    parts: list[str] = []
+
+    # SYNTAX_ERROR (fix #17) — first, because an unparseable file blocks everything else.
+    syn = result.get("syntax_error")
+    if syn:
+        loc = f"line {syn.get('line')}" + (f", col {syn['offset']}" if syn.get("offset") else "")
+        offending = f"\nOffending source: {syn['text']}" if syn.get("text") else ""
         parts.append(
-            f"\nModule: {r['module']}\n"
-            f"Requested symbol (does NOT exist): {r['symbol']}  (line {r.get('line')})\n"
-            f"Available symbols in that module: {avail}\n"
-            f"Repair: import one of the available symbols above, or implement the needed "
-            f"behaviour INLINE in this file. Do NOT invent a symbol the module does not "
-            f"export, and do NOT modify the imported module."
+            "\n=== SYNTAX_ERROR — repair ONLY this file, do not touch any other file ===\n"
+            f"File: {syn['file']}\n"
+            f"Python could not parse this file ({loc}): {syn.get('message')}"
+            f"{offending}\n"
+            "Repair: fix the syntax so the file parses. For a 'parameter without a default "
+            "follows parameter with a default' error, reorder the function signature so "
+            "every parameter WITHOUT a default comes before any parameter WITH a default "
+            "(or give the offending parameter a default, e.g. FastAPI `Body(...)`). Keep "
+            "the file's behaviour and its public names unchanged."
         )
+
+    # IMPORT_RESOLUTION_FAILURE (fix #16).
+    repairs = result.get("symbol_repairs") or []
+    if repairs:
+        parts.append("\n=== IMPORT_RESOLUTION_FAILURE — repair ONLY this file, do not "
+                     "touch any other file ===")
+        for r in repairs:
+            avail = ", ".join(r.get("available") or []) or "(none — the module exports nothing)"
+            parts.append(
+                f"\nModule: {r['module']}\n"
+                f"Requested symbol (does NOT exist): {r['symbol']}  (line {r.get('line')})\n"
+                f"Available symbols in that module: {avail}\n"
+                f"Repair: import one of the available symbols above, or implement the needed "
+                f"behaviour INLINE in this file. Do NOT invent a symbol the module does not "
+                f"export, and do NOT modify the imported module."
+            )
     return "\n".join(parts)
 
 

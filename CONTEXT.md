@@ -5,11 +5,12 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-15) — 15 fixes + FIX #16 (Symbol Resolution Gate) DONE; Code Integrity Engine underway; NEXT = the deferred dependency-validation slice (PdfReadError class), plan-first
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-16) — 15 fixes + FIX #16 + FIX #17 DONE & COMMITTED/PUSHED; measurement run 1105 got further than ever (died at BUILD on a non-convergent syntax repair, no $ wasted); NEXT (decided) = hand-fix 1105's order_be_3.py + RESUME 1105 smoke_boot→Opus→QA→deploy, THEN build FIX #18 (in-loop syntax re-validation)
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
-> able to execute from here. Read this whole block first.
+> able to execute from here. Read this whole block first. **START at §5 — the exact
+> next actions for run 1105 are there.**
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -20,14 +21,20 @@ QA. Three real paid end-to-end runs (1007/1038/1039) then proved a hard truth: *
 fixes all hold, but each fresh generation still trips over a DIFFERENT one-off LLM
 codegen bug, and the QA retry loop makes it worse.** The next chapter is an
 architectural pivot — a **Code Integrity Engine** that validates code DURING Developer
-generation, not only at the end. The first slice — **FIX #16, a deterministic Symbol
-Resolution Gate — is now DONE and live** (§1a). **Next narrow slice: the deferred
-third-party dependency-validation gate (the `PdfReadError` class), plan-first (§5).**
+generation, not only at the end. Two slices are now DONE + live: **FIX #16 (Symbol
+Resolution Gate, §1a)** and **FIX #17 (backend syntax/AST gate, §1b)**. A full-scope
+measurement run (**1105** — Bella Vista with menu PDF + online ordering + Stripe + Auth0)
+then got FURTHER than any prior run: it died at the BUILD gate, cheaply, when FIX #17
+correctly caught a param-ordering `SyntaxError` but the **bounded repair did not converge**
+(the agent regenerated the same error). **Decided next step (§5): hand-fix that one file,
+RESUME 1105 through smoke_boot→Opus→QA→deploy to finally learn if the full app reaches a
+live URL, THEN build FIX #18 (in-loop syntax re-validation during generation) so the class
+self-heals.**
 
 ## 1. CURRENT STATE (all verified this session)
-- **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) COMPLETE, verified in the
-  running backend, all 13 free offline suites pass, committed** (Fix #16 is the latest
-  commit on `master`; §1a has the detail).
+- **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) + FIX #17 (backend
+  syntax/AST gate) COMPLETE, verified live in the running backend, all 13 free offline
+  suites pass, committed + pushed** (§1a/§1b have the detail).
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -42,12 +49,16 @@ third-party dependency-validation gate (the `PdfReadError` class), plan-first (�
   `DEPLOY_TARGET=local`. All keys live (OpenAI/Anthropic/Gemini); **`MENU_EXTRACTION_API_KEY`
   = a SCOPED Anthropic key, distinct from the master** (user created it in the Anthropic
   console; wired via `.env` + `docker-compose.yml`). `.env` is gitignored — never commit it.
-- **FIX #16 (Symbol Resolution Gate) = DONE + LIVE.** First concrete piece of the Code
-  Integrity Engine; the deferred third-party dependency-validation slice is the NEXT scoped
-  task (§5).
-- Backend rebuilt this session so Fix #16 is live in `ai-org-backend-1` (verified: the three
-  new gate symbols import in the running container). Frontend unchanged. DB clean (no leftover
-  synthetic test projects).
+- **FIX #16 + FIX #17 = DONE + LIVE + PUSHED.** Two concrete pieces of the Code Integrity
+  Engine. Backend rebuilt so both gates are live in `ai-org-backend-1` (verified by import +
+  by real run 1105). **DECIDED NEXT STEP is in §5** (resume 1105, then Fix #18).
+- Backend rebuilt this session so Fix #16 + Fix #17 are live in `ai-org-backend-1` (verified:
+  the new gate symbols import in the running container AND Fix #17 fired on real run 1105).
+  Frontend unchanged.
+- **DB: project 1105 is DELIBERATELY LEFT IN THE DB** (status build_failed) — it is the run
+  we will hand-fix + resume next session (§5). Do NOT delete it. Project 1071 (the earlier
+  measurement run, Fix #17's fixture source) was CLEANED UP after its `order_be_3.py` was
+  captured to `backend/tests/fixtures/order_be_3_param_order_1071.py`.
 
 ## 1a. FIX #16 — SYMBOL RESOLUTION GATE (DONE + verified 2026-08-15)
 Deterministic build-gate check: for every generated backend `.py`, each
@@ -83,6 +94,35 @@ fix #3's non-deterministic PROMPT rule could not stop.
   structured repair → retry converges → `built`). Fixtures: the captured 1038 bug
   `tests/fixtures/menu_upload_require_admin_1038.py`, and 888's 10 real backend files exported
   to `tests/fixtures/gen888/` as the false-positive corpus.
+
+## 1b. FIX #17 — BACKEND SYNTAX/AST GATE (DONE + verified live 2026-08-16)
+Deterministic build-gate check: every generated backend `.py` MUST parse (`ast.parse`).
+Kills the 1071/1105 class — a fresh generation of `routes/order_be_3.py` put a NON-default
+param (`status_update: OrderStatusUpdateRequest`) AFTER a defaulted one
+(`order_id: int = Path(...)`) → hard Python `SyntaxError` at import, app never boots.
+Previously caught only at smoke_boot (after the whole build); now caught at the build gate.
+- **Where:** same slot as fix #16 — `developers/orchestrator._collect_stubs`. Runs the syntax
+  check FIRST (an unparseable file blocks every other AST detector, and the others already
+  no-op on `SyntaxError`).
+- **How:** `agents.python_syntax_error(content, filepath)` → `None` or STRUCTURED
+  `{file, line, offset, message, text}` (`.py` only). `agents.repair_instructions` extended to
+  render a `SYNTAX_ERROR` repair (file + line + message + offending line + param-ordering
+  guidance), fed via the existing `build_ticket(repair=...)` bounded retry.
+- **Zero false positives BY CONSTRUCTION:** valid Python parses, invalid does not. Proven:
+  `None` across the platform's own 64 backend modules AND 888's real `gen888` files.
+- **Tests (13/13 offline suites pass):** `test_python_syntax_gate` (flags 1071's exact bug +
+  unclosed-paren/bad-indent, ignores valid/non-`.py`, the zero-FP corpus proof, gate
+  integration + structured `syntax_error`, `SYNTAX_ERROR` repair text) and
+  `scenario_syntax_repair_retry` (end-to-end through the REAL orchestrator: broken file → gate
+  → structured repair → retry converges → `built`). Fixture: `tests/fixtures/
+  order_be_3_param_order_1071.py` (the exact captured 1071 file).
+- **⚠️ KNOWN LIMITATION (measured on run 1105, the entire reason for FIX #18):** the DETECTION
+  is deterministic and perfect, but the bounded REPAIR does not always converge. On 1105 the
+  developer agent regenerated the SAME param-ordering error even WITH the `SYNTAX_ERROR` repair
+  in its prompt, so the build failed cleanly (non-convergent). Root cause: `build_ticket`'s own
+  3-attempt loop only re-generates on **self-review** (a lenient LLM check that does NOT
+  validate syntax), and the orchestrator does only ONE gate-retry pass — so BE-3 effectively
+  got two fresh, syntax-UNVALIDATED generations. FIX #18 closes this (see §5).
 
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
@@ -175,39 +215,72 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP — the DEFERRED third-party DEPENDENCY-VALIDATION slice. PLAN FIRST. GET APPROVAL BEFORE CODING.
-FIX #16 (in-project Symbol Resolution Gate) is DONE (§1a). The next SINGLE narrow slice is the
-piece deliberately deferred out of #16: **third-party / dependency-API symbol resolution — the
-`PdfReadError` class.**
-- **The bug (project 1039):** the QA retry loop regenerated `menu_upload.py` to
-  `from pypdf import PdfReadError`, but that name is NOT a top-level pypdf symbol (it lives in
-  `pypdf.errors`) → the app no longer boots. Same "guessed name" family as 1038, but the module
-  is a THIRD-PARTY package, not an in-project one.
-- **Why it was NOT folded into #16 (verified this session):** `pypdf` is a DEPLOY/QA-venv
-  dependency and is **NOT importable in the platform backend process** — so the build gate that
-  runs #16 cannot introspect it without risking false positives. Forcing a third-party check
-  there would be fragile. The RIGHT home is a gate that runs **inside the QA/assembly venv**
-  (`qa/assembly.py`), where the generated app's real dependencies ARE installed and each
-  `from <pkg> import <symbol>` can be resolved by actually importing the installed package /
-  inspecting it (e.g. `importlib`/`inspect`), matching the installed version.
-- **Scope for that session:** for every generated backend `.py`, for each `from <pkg> import Y`
-  where `<pkg>` is a real installed third-party package in the assembled venv, verify `Y` exists
-  on that package (skip if the package isn't importable → no false positive, exactly as #16 skips
-  out-of-project modules). Regression-test against the REAL captured 1039 bug (`PdfReadError`),
-  prove zero false positives on the platform's + 888's real third-party imports, then wire it as
-  a QA static check (Level-2 of the engine). Do NOT expand into type/route/full-contract
-  validators in the same slice — one slice, plan-approved first (the same HARD constraint).
+## 5. EXPLICIT NEXT STEP (DECIDED with the user 2026-08-16) — resume run 1105, THEN Fix #18, THEN the deferred dependency slice
+Do these IN ORDER. Steps A/B are a HAND-FIX + RESUME of the existing failed run (no new fresh
+generation); step C is the durable platform fix (plan-first).
 
-**Design principles (unchanged, now proven twice):** deterministic (no LLM); each validator
-regression-tested against a REAL captured bug fixture; ZERO false positives on valid code, proven
-against the platform's own code + 888's real files BEFORE wiring; bounded, re-validated repair via
-the `_collect_stubs` flag → retry → fail pattern; evolve toward the checkpoint/re-validate model.
+### A. HAND-FIX run 1105's one syntax error (deterministic, unambiguous)
+Project **1105** is in the DB, status `build_failed`, with 21 generated files — ALL valid EXCEPT
+`backend/app/routes/order_be_3.py` (ticket BE-3), which has the param-ordering `SyntaxError` at
+line ~18: a non-default param (`status_update: OrderStatusUpdateRequest`) follows the defaulted
+`order_id: int = Path(...)`. Fix = reorder the signature so `status_update` comes BEFORE
+`order_id` (or give it a `Body(...)` default). Edit the `generated_files.content` row directly:
+`UPDATE generated_files SET content=... WHERE project_id=1105 AND ticket_id='BE-3';` then verify
+`ast.parse` succeeds. Also flip that row's status to `generated` if needed, and the project.status
+back to `built` / clear the build PipelineStatus error so the next stage will run. (Cross-check
+the other 20 files still parse; on run 1105 they did — only BE-3 was broken. FIX #16 was CLEAN,
+no unresolved imports; no truncation this run.)
 
-## 6. GIT
-Fix #16 is committed to `master` (message begins "Fix #16: deterministic symbol-resolution
-gate…"), plus this CONTEXT update. Not yet pushed at handoff time unless a later step pushed it —
-check `git status`. github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no
-`Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
+### B. RESUME 1105 through the rest of the pipeline (the real question: does the FULL app deploy?)
+Drive the pipeline HTTP endpoints in order against the running backend (`localhost:8000`), polling
+each `*-status`:
+`POST /pipeline/build` is NOT needed again if you patched the DB and marked it built — go straight
+to smoke_boot via the normal path. The stages are: **smoke_boot → `POST /pipeline/secure` (real
+Opus) → `POST /pipeline/qa` → `POST /pipeline/deploy`** (+ `GET /pipeline/1105/{security,qa,deploy}
+-status`). This finally tests whether the FULL-SCOPE app (menu-PDF extraction + online ordering +
+Stripe Connect + Auth0/2FA) can reach a LIVE URL — never yet proven end-to-end. Watch the MAIN
+backend container logs. Expect the historically-buggy LLM-generated ordering/stripe code to be the
+risk surface (888's duplicate-Index, 1038/1039's stripe/analytics 500s live in this exact area).
+
+### C. THEN build FIX #18 — in-loop syntax re-validation during generation (the durable convergence fix)
+This is the fix for the §1b limitation run 1105 exposed. PLAN-FIRST, get approval, same rigor.
+- **What:** validate syntax INSIDE `developers/agents.build_ticket`'s own generation loop — after
+  each attempt, if the file is a backend `.py` and `agents.python_syntax_error` flags it, treat
+  that attempt as failed, append the structured `SYNTAX_ERROR` to the prompt, and retry within the
+  MAX_TRIES loop. Today that loop only re-generates on the lenient LLM `_self_review`, which does
+  NOT check syntax — so a syntactically-broken file passes review and is returned unchanged. This
+  gives up to ~3 SYNTAX-VALIDATED attempts per file (× the orchestrator's gate-retry), each seeing
+  "your output did not parse, here is the exact error" — the "validate DURING generation" step of
+  the Code Integrity Engine, and the direct antidote to the non-convergence measured on 1105.
+- **Principle guard:** the validator still must NOT rewrite app code itself — the DEVELOPER AGENT
+  performs the repair; the deterministic check just gates + re-verifies (detect → agent repairs →
+  verify). Regression-test that a file which is syntactically broken on attempt 1 and fixed on
+  attempt 2 is returned as `generated`; keep zero false positives.
+
+### D. LATER (unchanged) — the deferred third-party DEPENDENCY-VALIDATION slice (`PdfReadError`)
+Still queued after Fix #18. **The bug (1039):** the QA retry loop wrote `from pypdf import
+PdfReadError`, but that name lives in `pypdf.errors`, not top-level pypdf → boot fail. NOT foldable
+into #16: `pypdf` is a DEPLOY/QA-venv dependency, NOT importable in the platform process, so the
+build gate can't introspect it without false positives. RIGHT home = a gate INSIDE the QA/assembly
+venv (`qa/assembly.py`) where the app's real deps are installed; for each `from <pkg> import Y`
+with `<pkg>` importable, verify `Y` exists (skip if not importable → no false positive).
+Regression-test against the real 1039 `PdfReadError`; prove zero FP on platform + 888 real
+third-party imports; one slice, plan-approved first.
+
+**Design principles (unchanged, now proven three times — #15/#16/#17):** deterministic (no LLM);
+each validator regression-tested against a REAL captured bug fixture; ZERO false positives on valid
+code, proven against the platform's own code + 888's real files BEFORE wiring; bounded,
+re-validated repair via the `_collect_stubs` flag → retry → fail pattern; evolve toward the
+checkpoint/re-validate model. **Measured caveat from 1105: detection is solved; REPAIR CONVERGENCE
+is the current frontier (Fix #18).**
+
+## 6. GIT — everything COMMITTED + PUSHED at handoff
+`Fix #16` (`90169ee`) is on `origin/master`. `Fix #17` + this CONTEXT update are committed as the
+final act of THIS session and PUSHED (verify: `git status` clean, `git log origin/master -1`).
+github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`, ever**; never
+commit `.env`; keep the repo private. **Nothing is left running that spends money** — all pipeline
+stages are manually triggered; run 1105 is halted at build_failed; the only live containers are the
+idle platform stack + the local deploy888 demo (no idle LLM spend).
 
 ---
 
