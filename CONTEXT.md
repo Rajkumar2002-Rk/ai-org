@@ -5,12 +5,12 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-16) — 15 fixes + FIX #16 + FIX #17 DONE & COMMITTED/PUSHED; measurement run 1105 got further than ever (died at BUILD on a non-convergent syntax repair, no $ wasted); NEXT (decided) = hand-fix 1105's order_be_3.py + RESUME 1105 smoke_boot→Opus→QA→deploy, THEN build FIX #18 (in-loop syntax re-validation)
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-16 late) — 15 fixes + FIX #16 + FIX #17 DONE/PUSHED; run 1105 REACHED A GENUINELY-LIVE URL (first ever, with hand-fixes); NEXT (decided, PLAN-FIRST) = the durable fix — gate QA's OWN file-regeneration path with Fix #16/#17 + bounded re-validated repair (supersedes the old Fix #18)
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
 > able to execute from here. Read this whole block first. **START at §5 — the exact
-> next actions for run 1105 are there.**
+> next step (the QA-loop gating fix) is there; §1c has the full run-1105 result.**
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -24,12 +24,14 @@ architectural pivot — a **Code Integrity Engine** that validates code DURING D
 generation, not only at the end. Two slices are now DONE + live: **FIX #16 (Symbol
 Resolution Gate, §1a)** and **FIX #17 (backend syntax/AST gate, §1b)**. A full-scope
 measurement run (**1105** — Bella Vista with menu PDF + online ordering + Stripe + Auth0)
-then got FURTHER than any prior run: it died at the BUILD gate, cheaply, when FIX #17
-correctly caught a param-ordering `SyntaxError` but the **bounded repair did not converge**
-(the agent regenerated the same error). **Decided next step (§5): hand-fix that one file,
-RESUME 1105 through smoke_boot→Opus→QA→deploy to finally learn if the full app reaches a
-live URL, THEN build FIX #18 (in-loop syntax re-validation during generation) so the class
-self-heals.**
+then went the FULL distance: build (FIX #17 caught + we hand-fixed a syntax bug) → smoke_boot
+→ **real Opus PASSED** → QA → deploy → **a GENUINELY-LIVE HTTPS URL** — the first fresh
+full-scope generation ever to serve. It required significant HAND-WORK (§1c) around the
+known Week-7 secrets gap AND several NEW codegen/loop bugs. **The decisive lesson: QA's OWN
+retry loop regenerates files through a path that runs NEITHER Fix #16 NOR Fix #17, and it
+re-introduced both classes. So the next fix (§5, PLAN-FIRST) is to gate QA's regeneration
+path with the same deterministic checks + bounded re-validated repair — this SUPERSEDES the
+narrow Fix #18.**
 
 ## 1. CURRENT STATE (all verified this session)
 - **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) + FIX #17 (backend
@@ -124,6 +126,62 @@ Previously caught only at smoke_boot (after the whole build); now caught at the 
   validate syntax), and the orchestrator does only ONE gate-retry pass — so BE-3 effectively
   got two fresh, syntax-UNVALIDATED generations. FIX #18 closes this (see §5).
 
+## 1c. RUN 1105 — RESUMED HAND-FIX → **FIRST GENUINELY-LIVE FULL-SCOPE URL** (2026-08-16 late)
+The Option-3 resume of run 1105 (Bella Vista: menu PDF + ordering + Stripe + Auth0/2FA, 21
+files, Production plan). It went the whole distance and SERVED — but only with meaningful
+hand-work. **The sequence, and every intervention, in order:**
+1. **Hand-fixed `order_be_3.py`** (reordered params — the Fix #17 class). Verified `ast.parse`.
+2. **smoke_boot ✅ clean** (ran `main._smoke_boot` directly on the DB files — the honest gate).
+3. **Real Opus security review ✅ PASSED** (`claude-opus-4-8`, 21 files, 89/99 fixed, real cert).
+4. **QA ❌ 14/16** — and here is THE finding: **QA's own retry loop (`files_rewritten_by_qa: 6`,
+   `root_cause_agent: developer_rework`) regenerated 6 files and RE-INTRODUCED two gate-class
+   bugs through a path that runs NEITHER Fix #16 NOR Fix #17:** `order_be_3.py` (syntax, Fix #17
+   class — later self-corrected by another QA rewrite) and **`stripe.py` importing
+   `StripeOAuthState` from models — a symbol that doesn't exist (Fix #16 class).** This is the
+   CONTEXT §2 root cause reproduced precisely: the QA loop churns files into a non-booting state.
+5. **Hand-fixed the QA churn:** added the `StripeOAuthState` SQLAlchemy model to `models.py`
+   (QA invented the import but never added the model). Re-`_recertify`'d ONLY the 1 drifted file
+   (`models.py`, id 2363) via `qa.orchestrator._recertify(1105, bp, {2363})` → Opus re-reviewed
+   it, cert re-fingerprinted, **drift = 0**. (Deploy is fail-closed on cert drift — this is the
+   honest way past it: re-review the hand-edit, don't bypass.)
+6. **Deploy ✅ built + stood up a real HTTPS stack** (Caddy + Next.js frontend + Postgres +
+   backend), reported `live`, `security_certified: true`. Live URL: **https://localhost:47899**.
+7. **The deployed backend then crash-looped** on a CHAIN of the **Week-7 secrets gap** — the
+   deploy path seeds NONE of these, and the generated code (correctly) fail-fasts on each:
+   `AUTH0_DOMAIN/CLIENT_ID/AUDIENCE` (auth.py), `STRIPE_CLIENT_ID/SECRET_KEY/TOKEN_ENC_KEY`
+   (stripe.py), `ENCRYPTION_KEY` (security.py, must be a valid base64-32/Fernet key),
+   `ALLOWED_ORIGINS` (main.py, the CORS hardening Opus adds). I **hand-seeded all of them**
+   (dummy presence-satisfying values; real Fernet keys for the two enc keys) by recreating the
+   backend container with an `--env-file`. **The stack also had NO Redis**, but the generated
+   `security.py` needs it (FastAPI-Limiter) — I **added a `redis:7` container** on the stack
+   network (`REDIS_URL=redis://redis:6379`).
+8. **Two NEW codegen bugs surfaced at runtime (the "app-logic quality tail"):**
+   - **DDL bug:** `models.py` uses `server_default='CURRENT_TIMESTAMP'` as a STRING → Postgres
+     casts the literal → `create_all` fails → **no tables** → every DB endpoint 500s. The
+     `_devops_bootstrap.py` even has a buggy sync-on-async `create_all(bind=eng)` fallback. I
+     **created the tables by hand** with the default corrected to `text('CURRENT_TIMESTAMP')`.
+   - **Deploy health-check hole:** the deploy reported `live` (+ `tests_passed: 14`) by probing
+     the Caddy/frontend EDGE while the backend crash-looped — it never hit a backend route.
+9. **RESULT — genuinely live** at **https://localhost:47899**: backend `GET /menu` → 200 `[]`
+   (empty — no PDF uploaded; upload needs a real/local-IdP admin token, none seeded),
+   `/health` → 200, `/admin/menu/pending` → **401** (auth gate works), `/docs`+`/openapi.json`
+   → 200 (full API: menu/orders/stripe/admin). Frontend pages render: `/order`, `/admin/menu`,
+   `/admin/menu/review`, `/settings` → 200. (Caddy routes `/api/* /docs /openapi.json /health`
+   → backend:8000, everything else → frontend:3000. Note: the frontend has NO root `/` page →
+   `GET /` = 404; that's a generated-frontend gap, not a deploy fault.)
+
+**HONEST TAKEAWAYS for the platform (what 1105 proved):**
+- ✅ The Code Integrity gates (Fix #16/#17) + hand-fixes got a fresh full-scope app all the way to
+  a live, security-certified, HTTPS deploy — the furthest ever.
+- ❌ **QA's retry loop is an UNGATED regeneration path** — it re-introduced both gate classes. THE
+  next fix (§5). ❌ **Week-7 secrets onboarding** is still fully open and now shown to block a real
+  deploy across auth+stripe+encryption+CORS+redis. ❌ **New deterministic-catchable bugs** the
+  gates don't yet cover: the `server_default='CURRENT_TIMESTAMP'` DDL bug (a create_all failure —
+  catchable by actually creating tables in smoke_boot/QA), the async `create_all(bind=eng)`
+  bootstrap fallback, and the deploy health-check probing only the edge.
+- The 1105 stack was left UP for the user to view, then torn down (see §6). It is NOT a frozen
+  fixture like 888 — it required live hand-seeding of secrets + tables to serve.
+
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
 real Opus ON, scoped key. **All three cleanly passed: BA → PI → Architect → Build (no gate
@@ -215,49 +273,41 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP (DECIDED with the user 2026-08-16) — resume run 1105, THEN Fix #18, THEN the deferred dependency slice
-Do these IN ORDER. Steps A/B are a HAND-FIX + RESUME of the existing failed run (no new fresh
-generation); step C is the durable platform fix (plan-first).
+## 5. EXPLICIT NEXT STEP (DECIDED with the user 2026-08-16 late) — GATE QA's OWN regeneration path. PLAN-FIRST, get approval before coding.
+Run 1105 is DONE (§1c: reached a live URL via hand-fixes). The next SINGLE fix is the durable
+answer to the decisive 1105 finding: **QA's file-regeneration/repair loop is an UNGATED path that
+re-introduced both the Fix #16 (wrong-symbol import: `stripe.py`→`StripeOAuthState`) and Fix #17
+(syntax: `order_be_3.py`) classes.** This SUPERSEDES the narrow "Fix #18" (which only re-validated
+inside `build_ticket`); the real hole is broader.
 
-### A. HAND-FIX run 1105's one syntax error (deterministic, unambiguous)
-Project **1105** is in the DB, status `build_failed`, with 21 generated files — ALL valid EXCEPT
-`backend/app/routes/order_be_3.py` (ticket BE-3), which has the param-ordering `SyntaxError` at
-line ~18: a non-default param (`status_update: OrderStatusUpdateRequest`) follows the defaulted
-`order_id: int = Path(...)`. Fix = reorder the signature so `status_update` comes BEFORE
-`order_id` (or give it a `Body(...)` default). Edit the `generated_files.content` row directly:
-`UPDATE generated_files SET content=... WHERE project_id=1105 AND ticket_id='BE-3';` then verify
-`ast.parse` succeeds. Also flip that row's status to `generated` if needed, and the project.status
-back to `built` / clear the build PipelineStatus error so the next stage will run. (Cross-check
-the other 20 files still parse; on run 1105 they did — only BE-3 was broken. FIX #16 was CLEAN,
-no unresolved imports; no truncation this run.)
+### THE FIX — wrap QA's regeneration with the same deterministic gates + bounded re-validated repair
+- **Where:** `qa/orchestrator.py` — the QA repair loop that calls the developer agents to rewrite a
+  file (`root_cause_agent: developer_rework`/`developer_fix`; it sets `files_rewritten_by_qa`). Find
+  the exact point a QA-regenerated file is written back, and gate it there.
+- **What:** after QA regenerates a backend file, run the SAME deterministic checks already built —
+  `agents.python_syntax_error` (Fix #17) + `agents.import_symbol_mismatches` against a fresh
+  `agents.build_symbol_index` of the CURRENT file set (Fix #16) — BEFORE accepting the rewrite. On a
+  failure, feed `agents.repair_instructions(...)` back into a BOUNDED re-generation (re-validated
+  each attempt), exactly like `_collect_stubs`. A rewrite that does not pass the gates must NOT
+  become the new file content (transactional: reject, don't churn siblings into a worse state).
+- **Also strongly consider (same session or next):** the two NEW deterministic-catchable bugs 1105
+  surfaced — (a) the `server_default='CURRENT_TIMESTAMP'` STRING DDL bug (make smoke_boot/QA actually
+  CREATE TABLES so a create_all failure is caught, not just "uvicorn started"); (b) the async
+  `create_all(bind=eng)` bootstrap fallback in the deploy `_devops_bootstrap.py`; (c) the deploy
+  health-check probing only the Caddy edge — it must hit a BACKEND route (e.g. `/health`) so a
+  crash-looping backend can never report `live`.
+- **Principle guard (unchanged):** deterministic detect → DEVELOPER AGENT repairs → deterministic
+  verify; the gate never rewrites app code itself; bounded attempts then fail cleanly. Regression-
+  test with the REAL 1105 captured cases (`order_be_3` syntax + `stripe.py`→`StripeOAuthState`);
+  ZERO false positives on the platform's own code + 888's real files. One slice, plan-approved first.
 
-### B. RESUME 1105 through the rest of the pipeline (the real question: does the FULL app deploy?)
-Drive the pipeline HTTP endpoints in order against the running backend (`localhost:8000`), polling
-each `*-status`:
-`POST /pipeline/build` is NOT needed again if you patched the DB and marked it built — go straight
-to smoke_boot via the normal path. The stages are: **smoke_boot → `POST /pipeline/secure` (real
-Opus) → `POST /pipeline/qa` → `POST /pipeline/deploy`** (+ `GET /pipeline/1105/{security,qa,deploy}
--status`). This finally tests whether the FULL-SCOPE app (menu-PDF extraction + online ordering +
-Stripe Connect + Auth0/2FA) can reach a LIVE URL — never yet proven end-to-end. Watch the MAIN
-backend container logs. Expect the historically-buggy LLM-generated ordering/stripe code to be the
-risk surface (888's duplicate-Index, 1038/1039's stripe/analytics 500s live in this exact area).
+### LATER — the durable Week-7 SECRETS-ONBOARDING work (now shown to fully block real deploys)
+Run 1105 proved a real deploy of an auth+payments app fail-fasts across `AUTH0_*`, `STRIPE_*`,
+`ENCRYPTION_KEY`, `ALLOWED_ORIGINS`, and needs a `REDIS_URL` + an actual Redis service — none of
+which the DevOps deploy path seeds/provisions. The generated code is CORRECT to fail-fast; the
+platform must seed these (per-owner secrets + a provisioned Redis) at deploy time. Big, separate.
 
-### C. THEN build FIX #18 — in-loop syntax re-validation during generation (the durable convergence fix)
-This is the fix for the §1b limitation run 1105 exposed. PLAN-FIRST, get approval, same rigor.
-- **What:** validate syntax INSIDE `developers/agents.build_ticket`'s own generation loop — after
-  each attempt, if the file is a backend `.py` and `agents.python_syntax_error` flags it, treat
-  that attempt as failed, append the structured `SYNTAX_ERROR` to the prompt, and retry within the
-  MAX_TRIES loop. Today that loop only re-generates on the lenient LLM `_self_review`, which does
-  NOT check syntax — so a syntactically-broken file passes review and is returned unchanged. This
-  gives up to ~3 SYNTAX-VALIDATED attempts per file (× the orchestrator's gate-retry), each seeing
-  "your output did not parse, here is the exact error" — the "validate DURING generation" step of
-  the Code Integrity Engine, and the direct antidote to the non-convergence measured on 1105.
-- **Principle guard:** the validator still must NOT rewrite app code itself — the DEVELOPER AGENT
-  performs the repair; the deterministic check just gates + re-verifies (detect → agent repairs →
-  verify). Regression-test that a file which is syntactically broken on attempt 1 and fixed on
-  attempt 2 is returned as `generated`; keep zero false positives.
-
-### D. LATER (unchanged) — the deferred third-party DEPENDENCY-VALIDATION slice (`PdfReadError`)
+### LATER — the deferred third-party DEPENDENCY-VALIDATION slice (`PdfReadError`)
 Still queued after Fix #18. **The bug (1039):** the QA retry loop wrote `from pypdf import
 PdfReadError`, but that name lives in `pypdf.errors`, not top-level pypdf → boot fail. NOT foldable
 into #16: `pypdf` is a DEPLOY/QA-venv dependency, NOT importable in the platform process, so the
@@ -271,16 +321,23 @@ third-party imports; one slice, plan-approved first.
 each validator regression-tested against a REAL captured bug fixture; ZERO false positives on valid
 code, proven against the platform's own code + 888's real files BEFORE wiring; bounded,
 re-validated repair via the `_collect_stubs` flag → retry → fail pattern; evolve toward the
-checkpoint/re-validate model. **Measured caveat from 1105: detection is solved; REPAIR CONVERGENCE
-is the current frontier (Fix #18).**
+checkpoint/re-validate model. **Measured on 1105: build-time detection is solved; the frontier is
+now (1) gating the QA regeneration loop and (2) the Week-7 secrets/redis deploy onboarding.**
 
-## 6. GIT — everything COMMITTED + PUSHED at handoff
-`Fix #16` (`90169ee`) is on `origin/master`. `Fix #17` + this CONTEXT update are committed as the
-final act of THIS session and PUSHED (verify: `git status` clean, `git log origin/master -1`).
-github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules: **no `Co-Authored-By`, ever**; never
-commit `.env`; keep the repo private. **Nothing is left running that spends money** — all pipeline
-stages are manually triggered; run 1105 is halted at build_failed; the only live containers are the
-idle platform stack + the local deploy888 demo (no idle LLM spend).
+## 6. GIT + STATE AT HANDOFF
+`Fix #16` (`90169ee`) and `Fix #17` (`5a640a1`) are on `origin/master`. **This session wrote NO new
+platform code** — run 1105 was a resume + HAND-FIXES to the DB/deployed containers, not source
+changes; only this CONTEXT.md update is new. Commit + push the CONTEXT update (verify `git status`
+clean, `git log origin/master -1`). github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules:
+**no `Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
+- **Run 1105 stack:** brought fully live (see §1c) and LEFT UP for the user to view at
+  **https://localhost:47899** (teardown deferred to the user's word). Tear down with
+  `docker rm -f aiorg_p1105_caddy aiorg_p1105_frontend aiorg_p1105_backend aiorg_p1105_db
+  aiorg_p1105_redis` (the `_redis` was added by hand this session). It is NOT a reusable fixture —
+  it needed live secret+table hand-seeding to serve. Project 1105's DB rows remain unless cleaned.
+- **Nothing left spending money** — all pipeline stages are manually triggered; no monitors/loops
+  running. The idle platform stack (`ai-org-*`) + the local `deploy888` demo remain up (no idle LLM
+  spend). ⚠️ Confirm the 1105 stack teardown actually ran before trusting this line.
 
 ---
 
