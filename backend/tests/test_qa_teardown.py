@@ -289,7 +289,7 @@ async def s4_full_run():
         return {"passed": True, "issues_found": 0, "issues_fixed": 0,
                 "files_reviewed": len(file_ids)}
 
-    async def _scripted(ticket, model, existing, contract=""):
+    async def _scripted(ticket, model, existing, contract="", repair=""):
         calls["build_ticket"] += 1
         return {"filename": "main.py", "filepath": "backend/app/main.py",
                 "content": GOOD_MAIN, "agent_type": "backend",

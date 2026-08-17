@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-16 late) — 15 fixes + FIX #16 + FIX #17 DONE/PUSHED; run 1105 DEPLOYED a real stack (each tier responds) but is NOT a usable app end-to-end (root 404 + frontend can't reach backend — deploy-integration gap); NEXT (decided, PLAN-FIRST) = gate QA's OWN file-regeneration path with Fix #16/#17 + bounded re-validated repair (supersedes the old Fix #18)
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-16 late) — 15 fixes + FIX #16 + FIX #17 + FIX #18 (QA-regen code-integrity gate) DONE/PUSHED; run 1105 DEPLOYED a real stack but was NOT usable end-to-end (deploy-integration + Week-7 secrets gaps); NEXT = the DevOps deploy-path work (Week-7 secrets/redis onboarding + the frontend↔backend deploy-integration gap), then the third-party dependency slice — all PLAN-FIRST
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -30,11 +30,12 @@ then went the FULL distance: build (FIX #17 caught + we hand-fixed a syntax bug)
 isolation, but the app is NOT usable end-to-end — root `/` is 404 (no generated homepage) and
 the frontend can't reach the backend (a `NEXT_PUBLIC_API_BASE_URL` vs `NEXT_PUBLIC_API_URL`
 config mismatch + build-time inlining + ambiguous proxy paths).** Two decisive lessons: (1)
-QA's OWN retry loop regenerates files through a path that runs NEITHER Fix #16 NOR Fix #17 and
-re-introduced both classes → the next fix (§5, PLAN-FIRST) gates QA's regeneration path; (2)
-the DEPLOY path has multiple unproven layers — Week-7 secrets, a Redis it never provisions, a
-health-check that only probes the edge, and now a broken frontend↔backend contract. The 888
-fixture is still the ONLY end-to-end-usable demo.**
+QA's OWN retry loop regenerated files through a path that ran NEITHER Fix #16 NOR Fix #17 and
+re-introduced both classes → **FIX #18 (§1d) now gates that path — DONE + tested**; (2) the
+DEPLOY path has multiple unproven layers — Week-7 secrets, a Redis it never provisions, a
+health-check that only probes the edge, and a broken frontend↔backend contract → **that DevOps
+deploy-path work is the NEXT priority (§5)**. The 888 fixture is still the ONLY end-to-end-usable
+demo.**
 
 ## 1. CURRENT STATE (all verified this session)
 - **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) + FIX #17 (backend
@@ -200,6 +201,33 @@ hand-work. **The sequence, and every intervention, in order:**
 - The 1105 stack was left UP for the user to view, then torn down (see §6). It is NOT a frozen
   fixture like 888 — it required live hand-seeding of secrets + tables to serve.
 
+## 1d. FIX #18 — CODE-INTEGRITY GATE ON QA's OWN REGENERATION LOOP (DONE + tested 2026-08-16 late)
+Closes the decisive 1105 hole (§1c step 4): QA's repair loop regenerated a file via the Developer
+agent and ACCEPTED it with NO deterministic validation, re-introducing the Fix #17 (order_be_3
+syntax) and Fix #16 (stripe.py→`StripeOAuthState`) classes and breaking the app at boot. Supersedes
+the old narrow "Fix #18" (which only re-validated inside `build_ticket`); the real hole was QA's
+separate regeneration path.
+- **Where:** `qa/orchestrator.py`. The accept point was `run()` line ~411 (`new_content = await
+  _regenerate(...)` → `gf.content = new_content`). Now routed through a gated wrapper.
+- **How:** `_gate_regenerated(candidate, filepath, files, file_id)` runs the SAME detectors as the
+  build gate — `dev_agents.python_syntax_error` (#17) then `dev_agents.import_symbol_mismatches`
+  (#16, index built from the CURRENT file set with the candidate swapped in). `_regenerate_validated`
+  wraps `_regenerate`: on a gate failure it feeds `dev_agents.repair_instructions(...)` back into a
+  BOUNDED re-generation (`_QA_REGEN_MAX_REVALIDATE = 2` extra attempts), re-validating each; a
+  rewrite that still fails is **REJECTED (returns None) → the previous file content is kept**, never
+  churned into a non-booting state. `_regenerate` gained a `repair=""` param threaded into
+  `build_ticket(..., repair)`.
+- **Zero false positives:** proven `{}` across the platform's own 64 backend modules AND 888's real
+  working generated files (each file treated as a regeneration of itself against the real set).
+  Backend `.py` only; frontend/non-`.py` is a no-op.
+- **Tests (14/14 offline suites pass — new suite `test_qa_regen_gate_offline.py`):** flags the REAL
+  1105 fixtures (`order_be_3_param_order_1071.py` syntax, `stripe_stripeoauthstate_1105.py` symbol),
+  leaves valid siblings alone, the zero-FP corpus proof, and three wrapper scenarios — converges
+  (broken→repaired via the fed-back SYNTAX_ERROR), REJECTS (persistently broken → None, bounded),
+  accepts a clean rewrite immediately. NOTE: `test_qa_retry_loop`/`test_qa_teardown` mocks were
+  updated to the current `build_ticket(..., repair="")` signature (same fix as the developer mocks).
+- Backend image REBUILT so the gate is live for the next run.
+
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
 real Opus ON, scoped key. **All three cleanly passed: BA → PI → Architect → Build (no gate
@@ -291,54 +319,39 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP (DECIDED with the user 2026-08-16 late) — GATE QA's OWN regeneration path. PLAN-FIRST, get approval before coding.
-Run 1105 is DONE (§1c: reached a live URL via hand-fixes). The next SINGLE fix is the durable
-answer to the decisive 1105 finding: **QA's file-regeneration/repair loop is an UNGATED path that
-re-introduced both the Fix #16 (wrong-symbol import: `stripe.py`→`StripeOAuthState`) and Fix #17
-(syntax: `order_be_3.py`) classes.** This SUPERSEDES the narrow "Fix #18" (which only re-validated
-inside `build_ticket`); the real hole is broader.
+## 5. EXPLICIT NEXT STEP — the DevOps DEPLOY-PATH work (Week-7 secrets + deploy-integration). PLAN-FIRST, get approval before coding.
+**FIX #18 (gate QA's regeneration loop) is DONE + tested + committed (§1d).** The three code-integrity
+build/QA gates (#16/#17/#18) now close the codegen + QA-churn hole. The remaining blockers to a
+truly-usable fresh deploy are ALL in the DevOps deploy path (proven by run 1105, §1c) — none are
+codegen-gate territory. Do the two below IN EITHER ORDER, each plan-first; they are what stands
+between "deploys a stack" and "a working app". A THIRD deterministic-catch item is bundled where it
+naturally fits.
 
-### THE FIX — wrap QA's regeneration with the same deterministic gates + bounded re-validated repair
-- **Where:** `qa/orchestrator.py` — the QA repair loop that calls the developer agents to rewrite a
-  file (`root_cause_agent: developer_rework`/`developer_fix`; it sets `files_rewritten_by_qa`). Find
-  the exact point a QA-regenerated file is written back, and gate it there.
-- **What:** after QA regenerates a backend file, run the SAME deterministic checks already built —
-  `agents.python_syntax_error` (Fix #17) + `agents.import_symbol_mismatches` against a fresh
-  `agents.build_symbol_index` of the CURRENT file set (Fix #16) — BEFORE accepting the rewrite. On a
-  failure, feed `agents.repair_instructions(...)` back into a BOUNDED re-generation (re-validated
-  each attempt), exactly like `_collect_stubs`. A rewrite that does not pass the gates must NOT
-  become the new file content (transactional: reject, don't churn siblings into a worse state).
-- **Also strongly consider (same session or next):** the two NEW deterministic-catchable bugs 1105
-  surfaced — (a) the `server_default='CURRENT_TIMESTAMP'` STRING DDL bug (make smoke_boot/QA actually
-  CREATE TABLES so a create_all failure is caught, not just "uvicorn started"); (b) the async
-  `create_all(bind=eng)` bootstrap fallback in the deploy `_devops_bootstrap.py`; (c) the deploy
-  health-check probing only the Caddy edge — it must hit a BACKEND route (e.g. `/health`) so a
-  crash-looping backend can never report `live`.
-- **Principle guard (unchanged):** deterministic detect → DEVELOPER AGENT repairs → deterministic
-  verify; the gate never rewrites app code itself; bounded attempts then fail cleanly. Regression-
-  test with the REAL 1105 captured cases (`order_be_3` syntax + `stripe.py`→`StripeOAuthState`);
-  ZERO false positives on the platform's own code + 888's real files. One slice, plan-approved first.
+### A. DEPLOY-INTEGRATION — make the deployed app actually FUNCTION in a browser (the §1c step-9 gaps)
+Fix the front/back deploy contract: (1) the frontend reads `NEXT_PUBLIC_API_BASE_URL` but the deploy
+injects `NEXT_PUBLIC_API_URL` — align the name AND set it to THIS deploy's origin (not a remote prod
+domain), remembering `NEXT_PUBLIC_*` is inlined at BUILD time so it must be right BEFORE the frontend
+image is built; (2) design a clean reverse-proxy split (the Caddy `/admin/menu` path is BOTH a
+frontend page and a backend route; backend routes aren't under `/api`) — e.g. serve the backend
+under a real `/api` prefix and have the frontend call `/api/...`; (3) the Architect should commission
+a root `app/page.tsx` homepage (root `/` is currently 404); (4) replace the deploy health-check —
+today it probes only the Caddy EDGE and reported `live` while the backend crash-looped, so it must
+hit a BACKEND route (`/health`) AND ideally load a page and confirm it fetches data.
 
-### LATER — the durable Week-7 SECRETS-ONBOARDING work (now shown to fully block real deploys)
+### B. Week-7 SECRETS-ONBOARDING — a real deploy of an auth+payments app can't boot without seeded secrets
 Run 1105 proved a real deploy of an auth+payments app fail-fasts across `AUTH0_*`, `STRIPE_*`,
 `ENCRYPTION_KEY`, `ALLOWED_ORIGINS`, and needs a `REDIS_URL` + an actual Redis service — none of
 which the DevOps deploy path seeds/provisions. The generated code is CORRECT to fail-fast; the
 platform must seed these (per-owner secrets + a provisioned Redis) at deploy time. Big, separate.
 
-### LATER — DEPLOY-INTEGRATION gap (NEW, from 1105 — the deploy stands up a stack but not a usable app)
-Even past secrets, 1105's deployed app did not FUNCTION in a browser (§1c step 9). Fix the deploy
-front/back contract: (1) the frontend reads `NEXT_PUBLIC_API_BASE_URL` but the deploy injects
-`NEXT_PUBLIC_API_URL` — align the name AND set it to THIS deploy's origin (not a remote prod
-domain), and remember `NEXT_PUBLIC_*` is inlined at BUILD time so it must be right BEFORE the
-frontend image is built; (2) the Caddy reverse-proxy path split is ambiguous (`/admin/menu` is both
-a frontend page and a backend route; backend routes aren't under `/api`) — design a clean split
-(e.g. serve the backend under a real `/api` prefix and have the frontend call `/api/...`); (3) the
-Architect should commission a root `app/page.tsx` homepage (root `/` is currently 404). Also add a
-deterministic post-deploy check that actually loads a PAGE and confirms it fetches data (not just an
-edge 200) — the current health-check hole let a non-functioning app report `live`.
+### C. (bundle where it fits) NEW deterministic-catchable codegen bugs 1105 surfaced
+- **DDL bug:** `models.py` `server_default='CURRENT_TIMESTAMP'` as a STRING → `create_all` fails →
+  no tables → every DB endpoint 500s. Make smoke_boot/QA actually CREATE TABLES (not just "uvicorn
+  started") so this is caught, and add a Backend-Dev prompt rule to use `text('CURRENT_TIMESTAMP')`
+  / `func.now()`. Plus the async `create_all(bind=eng)` bootstrap fallback in `_devops_bootstrap.py`.
 
 ### LATER — the deferred third-party DEPENDENCY-VALIDATION slice (`PdfReadError`)
-Still queued after Fix #18. **The bug (1039):** the QA retry loop wrote `from pypdf import
+Still queued. **The bug (1039):** the QA retry loop wrote `from pypdf import
 PdfReadError`, but that name lives in `pypdf.errors`, not top-level pypdf → boot fail. NOT foldable
 into #16: `pypdf` is a DEPLOY/QA-venv dependency, NOT importable in the platform process, so the
 build gate can't introspect it without false positives. RIGHT home = a gate INSIDE the QA/assembly
@@ -355,19 +368,22 @@ checkpoint/re-validate model. **Measured on 1105: build-time detection is solved
 now (1) gating the QA regeneration loop and (2) the Week-7 secrets/redis deploy onboarding.**
 
 ## 6. GIT + STATE AT HANDOFF
-`Fix #16` (`90169ee`) and `Fix #17` (`5a640a1`) are on `origin/master`. **This session wrote NO new
-platform code** — run 1105 was a resume + HAND-FIXES to the DB/deployed containers, not source
-changes; only this CONTEXT.md update is new. Commit + push the CONTEXT update (verify `git status`
-clean, `git log origin/master -1`). github.com/Rajkumar2002-Rk/ai-org (private). Permanent rules:
-**no `Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
-- **Run 1105 stack:** brought fully live (see §1c) and LEFT UP for the user to view at
-  **https://localhost:47899** (teardown deferred to the user's word). Tear down with
-  `docker rm -f aiorg_p1105_caddy aiorg_p1105_frontend aiorg_p1105_backend aiorg_p1105_db
-  aiorg_p1105_redis` (the `_redis` was added by hand this session). It is NOT a reusable fixture —
-  it needed live secret+table hand-seeding to serve. Project 1105's DB rows remain unless cleaned.
-- **Nothing left spending money** — all pipeline stages are manually triggered; no monitors/loops
-  running. The idle platform stack (`ai-org-*`) + the local `deploy888` demo remain up (no idle LLM
-  spend). ⚠️ Confirm the 1105 stack teardown actually ran before trusting this line.
+On `origin/master`: `Fix #16` (`90169ee`), `Fix #17` (`5a640a1`), and the run-1105 CONTEXT commits.
+**FIX #18 (QA-regen gate, §1d) is code + tests + this CONTEXT update — commit + push it** (`qa/
+orchestrator.py`, new `tests/test_qa_regen_gate_offline.py`, `tests/fixtures/
+stripe_stripeoauthstate_1105.py`, the two QA-mock signature fixes, CONTEXT.md). Verify `git status`
+clean + `git log origin/master -1` after. github.com/Rajkumar2002-Rk/ai-org (private). Permanent
+rules: **no `Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
+- **Backend image REBUILT** with Fix #18. ⚠️ The always-on platform backend `ai-org-backend-1` is
+  **STOPPED** (the user asked to stop everything that spends money before a break). Restart when
+  resuming real runs: `docker compose up -d backend`. Offline suites don't need it (they use
+  ephemeral `docker compose run` containers) and cost nothing.
+- **Run 1105 fully TORN DOWN** — all `aiorg_p1105_*` containers removed (incl. the hand-added
+  `_redis`) AND project 1105's DB rows deleted. It was never a reusable fixture (needed live
+  secret+table hand-seeding). 888 remains the only end-to-end-usable demo.
+- **Nothing is spending money** — the platform backend is stopped; all pipeline stages are manually
+  triggered; no monitors/loops running. Only idle containers remain: `ai-org-postgres-1`,
+  `ai-org-redis-1`, `ai-org-frontend-1`, and the local `deploy888` stack (no idle LLM spend).
 
 ---
 

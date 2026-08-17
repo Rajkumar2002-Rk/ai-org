@@ -54,7 +54,7 @@ def install_seams(repairs: dict[str, str]):
     """`repairs` maps filepath -> the content the 'Developer' returns on retry."""
     _build_calls.clear()
 
-    async def _scripted_build_ticket(ticket, model, existing, contract=""):
+    async def _scripted_build_ticket(ticket, model, existing, contract="", repair=""):
         tid = ticket.get("id", "?")
         _build_calls.append(tid)
         title = ticket.get("title", "")

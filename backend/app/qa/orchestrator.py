@@ -148,8 +148,13 @@ def _ticket_for(blueprint: dict, ticket_id: str) -> dict | None:
 
 
 async def _regenerate(file_row: dict, ticket: dict, blueprint: dict,
-                      failures: list[TestOutcome]) -> str | None:
-    """Send a failing file back to the Developer agent with the QA evidence."""
+                      failures: list[TestOutcome], repair: str = "") -> str | None:
+    """Send a failing file back to the Developer agent with the QA evidence.
+
+    `repair` (optional) is a structured code-integrity finding from the QA-regen gate
+    (fix #16/#17) — a targeted SYNTAX_ERROR / IMPORT_RESOLUTION_FAILURE — threaded into
+    the Developer's bounded retry so a rewrite that broke the file is repaired precisely
+    (see `_regenerate_validated`)."""
     routing = blueprint.get("llm_routing", {})
     model = routing.get(f"{ticket.get('assigned_to', 'backend')}_developer", "gpt-4o")
 
@@ -177,12 +182,78 @@ async def _regenerate(file_row: dict, ticket: dict, blueprint: dict,
     }
     try:
         result = await dev_agents.build_ticket(
-            repair_ticket, model, [], _contract_text(blueprint)
+            repair_ticket, model, [], _contract_text(blueprint), repair
         )
         return result.get("content")
     except Exception as exc:  # pragma: no cover - never kill the QA run
         logger.warning("Developer re-run failed for %s: %s", file_row.get("filepath"), exc)
         return None
+
+
+# ---- Code-integrity gate on QA's OWN regeneration (fix: close the ungated QA loop) ----
+# Run 1105 proved the decisive hole: QA's repair loop regenerates a file through the
+# Developer agent and ACCEPTED the result with NO deterministic validation, so it
+# re-introduced the exact classes the BUILD gate already closes — a param-ordering
+# SyntaxError in order_be_3.py (fix #17) and `from backend.app.models import
+# StripeOAuthState`, a symbol models.py never exported (fix #16). Both then broke the
+# app at boot. So QA's regeneration path gets the SAME deterministic gates as the build
+# gate, plus a BOUNDED, re-validated repair — and a rewrite that still fails the gate is
+# REJECTED (the previous file content is kept) rather than allowed to become canonical.
+_QA_REGEN_MAX_REVALIDATE = 2
+
+
+def _gate_regenerated(candidate: str, filepath: str, files: list[dict],
+                      file_id) -> dict:
+    """Deterministic code-integrity gate on a QA-regenerated backend `.py`: it MUST
+    parse (fix #17) AND every in-project `from ... import ...` must resolve to a real
+    exported symbol (fix #16). Returns a gate-result dict shaped for
+    `agents.repair_instructions` (`syntax_error` / `symbol_repairs`), or {} if clean.
+    Backend `.py` only; anything else (frontend, non-`.py`) is a no-op. Symbols are
+    resolved against the CURRENT file set with the candidate swapped in, so the check
+    reflects exactly what would ship."""
+    if not (filepath or "").endswith(".py"):
+        return {}
+    syn = dev_agents.python_syntax_error(candidate, filepath)
+    if syn:
+        return {"syntax_error": syn}      # syntax first — an unparseable file blocks the rest
+    swapped = [{**f, "content": candidate} if f.get("id") == file_id else f for f in files]
+    index = dev_agents.build_symbol_index(swapped)
+    sym = dev_agents.import_symbol_mismatches(candidate, filepath, index)
+    if sym:
+        return {"symbol_repairs": sym}
+    return {}
+
+
+async def _regenerate_validated(file_row: dict, ticket: dict, blueprint: dict,
+                                failures: list[TestOutcome],
+                                files: list[dict]) -> str | None:
+    """QA regeneration, gated by the build gate's own deterministic checks (fix #16/#17)
+    with a BOUNDED, re-validated repair. Returns accepted content, or None to REJECT the
+    rewrite (caller keeps the previous file — never ships a gate-failing regeneration,
+    which is exactly what the QA loop did on run 1105). At most `_QA_REGEN_MAX_REVALIDATE`
+    extra repair attempts; a still-failing rewrite is a non-convergent failure, logged."""
+    filepath = file_row.get("filepath") or file_row.get("filename") or ""
+    repair = ""
+    for attempt in range(_QA_REGEN_MAX_REVALIDATE + 1):
+        candidate = await _regenerate(file_row, ticket, blueprint, failures, repair)
+        if not candidate:
+            return None
+        gate = _gate_regenerated(candidate, filepath, files, file_row.get("id"))
+        if not gate:
+            return candidate                                   # clean — accept
+        repair = dev_agents.repair_instructions(gate)
+        logger.warning(
+            "QA regenerated %s but it FAILED the code-integrity gate (attempt %d/%d): "
+            "%s — re-requesting a targeted repair, not accepting the broken rewrite.",
+            filepath, attempt + 1, _QA_REGEN_MAX_REVALIDATE + 1,
+            "; ".join(k for k in gate),
+        )
+    logger.error(
+        "QA regeneration of %s did not pass the code-integrity gate after %d attempts "
+        "— REJECTING the rewrite and keeping the previous content (non-convergent).",
+        filepath, _QA_REGEN_MAX_REVALIDATE + 1,
+    )
+    return None
 
 
 async def _recertify(project_id: int, blueprint: dict, file_ids: set[int]) -> dict:
@@ -408,7 +479,13 @@ async def run(project_id: int) -> dict:
                     "description": f"Repair {row.get('filepath')}.",
                     "dependencies": [],
                 }
-                new_content = await _regenerate(row, ticket, blueprint, group)
+                # Gate QA's OWN regeneration with the build gate's deterministic checks
+                # (fix #16/#17) + bounded re-validated repair. A rewrite that does not
+                # parse or imports a symbol no in-project module exports is REJECTED
+                # (None) — the previous content is kept, never churned into a
+                # non-booting state as it was on run 1105.
+                new_content = await _regenerate_validated(
+                    row, ticket, blueprint, group, files)
                 if new_content:
                     async with async_session() as db:
                         gf = await db.get(GeneratedFile, file_id)
