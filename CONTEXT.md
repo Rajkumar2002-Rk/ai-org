@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-16 late) — 15 fixes + FIX #16 + FIX #17 DONE/PUSHED; run 1105 REACHED A GENUINELY-LIVE URL (first ever, with hand-fixes); NEXT (decided, PLAN-FIRST) = the durable fix — gate QA's OWN file-regeneration path with Fix #16/#17 + bounded re-validated repair (supersedes the old Fix #18)
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-16 late) — 15 fixes + FIX #16 + FIX #17 DONE/PUSHED; run 1105 DEPLOYED a real stack (each tier responds) but is NOT a usable app end-to-end (root 404 + frontend can't reach backend — deploy-integration gap); NEXT (decided, PLAN-FIRST) = gate QA's OWN file-regeneration path with Fix #16/#17 + bounded re-validated repair (supersedes the old Fix #18)
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -25,13 +25,16 @@ generation, not only at the end. Two slices are now DONE + live: **FIX #16 (Symb
 Resolution Gate, §1a)** and **FIX #17 (backend syntax/AST gate, §1b)**. A full-scope
 measurement run (**1105** — Bella Vista with menu PDF + online ordering + Stripe + Auth0)
 then went the FULL distance: build (FIX #17 caught + we hand-fixed a syntax bug) → smoke_boot
-→ **real Opus PASSED** → QA → deploy → **a GENUINELY-LIVE HTTPS URL** — the first fresh
-full-scope generation ever to serve. It required significant HAND-WORK (§1c) around the
-known Week-7 secrets gap AND several NEW codegen/loop bugs. **The decisive lesson: QA's OWN
-retry loop regenerates files through a path that runs NEITHER Fix #16 NOR Fix #17, and it
-re-introduced both classes. So the next fix (§5, PLAN-FIRST) is to gate QA's regeneration
-path with the same deterministic checks + bounded re-validated repair — this SUPERSEDES the
-narrow Fix #18.**
+→ **real Opus PASSED** → QA → deploy → a real HTTPS stack. It required significant HAND-WORK
+(§1c). **HONEST OUTCOME (corrected after the user opened the URL): each tier RESPONDS in
+isolation, but the app is NOT usable end-to-end — root `/` is 404 (no generated homepage) and
+the frontend can't reach the backend (a `NEXT_PUBLIC_API_BASE_URL` vs `NEXT_PUBLIC_API_URL`
+config mismatch + build-time inlining + ambiguous proxy paths).** Two decisive lessons: (1)
+QA's OWN retry loop regenerates files through a path that runs NEITHER Fix #16 NOR Fix #17 and
+re-introduced both classes → the next fix (§5, PLAN-FIRST) gates QA's regeneration path; (2)
+the DEPLOY path has multiple unproven layers — Week-7 secrets, a Redis it never provisions, a
+health-check that only probes the edge, and now a broken frontend↔backend contract. The 888
+fixture is still the ONLY end-to-end-usable demo.**
 
 ## 1. CURRENT STATE (all verified this session)
 - **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) + FIX #17 (backend
@@ -162,13 +165,28 @@ hand-work. **The sequence, and every intervention, in order:**
      **created the tables by hand** with the default corrected to `text('CURRENT_TIMESTAMP')`.
    - **Deploy health-check hole:** the deploy reported `live` (+ `tests_passed: 14`) by probing
      the Caddy/frontend EDGE while the backend crash-looped — it never hit a backend route.
-9. **RESULT — genuinely live** at **https://localhost:47899**: backend `GET /menu` → 200 `[]`
-   (empty — no PDF uploaded; upload needs a real/local-IdP admin token, none seeded),
-   `/health` → 200, `/admin/menu/pending` → **401** (auth gate works), `/docs`+`/openapi.json`
-   → 200 (full API: menu/orders/stripe/admin). Frontend pages render: `/order`, `/admin/menu`,
-   `/admin/menu/review`, `/settings` → 200. (Caddy routes `/api/* /docs /openapi.json /health`
-   → backend:8000, everything else → frontend:3000. Note: the frontend has NO root `/` page →
-   `GET /` = 404; that's a generated-frontend gap, not a deploy fault.)
+9. **RESULT — deployed + each tier responds IN ISOLATION, but NOT a usable app end-to-end**
+   (initial "genuinely live" claim was CORRECTED after the user opened the URL and hit a 404).
+   Tiers in isolation: backend `GET /menu` → 200 `[]`, `/health` → 200, `/admin/menu/pending`
+   → **401** (auth gate works), `/docs`+`/openapi.json` → 200 (full API). Frontend pages render
+   with real content: `/order` ("Place an Order"), `/admin/menu` ("Manage Menu" + add-item form),
+   `/admin/menu/review`, `/settings` → 200. **BUT the integrated browser experience is BROKEN:**
+   - **Root `/` = 404** — the generated frontend has NO homepage (`app/page.tsx`). This is what the
+     user saw.
+   - **Every page is stuck "Loading menu…"** — the frontend CANNOT reach the backend. TWO bugs:
+     (a) the frontend code reads `process.env.NEXT_PUBLIC_API_BASE_URL` but the deploy set a
+     DIFFERENT var `NEXT_PUBLIC_API_URL` (name mismatch) → `API_BASE=""` → it fetches same-origin
+     `/menu`, which Caddy routes to the FRONTEND (404), not the backend; (b) even the var the deploy
+     set points at a REMOTE prod domain (`bella-vista-….apps.rajkumarai.dev/api`), not this local
+     stack, AND Next inlines `NEXT_PUBLIC_*` at BUILD time so a runtime fix needs a frontend rebuild.
+   - **Reverse-proxy path model is ambiguous:** Caddy sends `/api/* /docs /openapi.json /health` →
+     backend:8000, everything else → frontend:3000 — but the backend's routes are `/menu`,
+     `/admin/menu`, etc. (NOT under `/api`), and `/admin/menu` is ALSO a frontend page path. So there
+     is no clean path split; the front/back contract is broken in the deploy.
+   **NET: the deploy stands up a real stack but produces a NON-FUNCTIONING product** — a NEW class of
+   gap (deploy-integration: frontend API base config + proxy routing), on top of the Week-7 secrets
+   gap and the health-check hole. None of it is caught by the pipeline; none is addressed by the
+   codegen gates (#16/#17). The 888 fixture remains the only END-TO-END-usable demo.
 
 **HONEST TAKEAWAYS for the platform (what 1105 proved):**
 - ✅ The Code Integrity gates (Fix #16/#17) + hand-fixes got a fresh full-scope app all the way to
@@ -306,6 +324,18 @@ Run 1105 proved a real deploy of an auth+payments app fail-fasts across `AUTH0_*
 `ENCRYPTION_KEY`, `ALLOWED_ORIGINS`, and needs a `REDIS_URL` + an actual Redis service — none of
 which the DevOps deploy path seeds/provisions. The generated code is CORRECT to fail-fast; the
 platform must seed these (per-owner secrets + a provisioned Redis) at deploy time. Big, separate.
+
+### LATER — DEPLOY-INTEGRATION gap (NEW, from 1105 — the deploy stands up a stack but not a usable app)
+Even past secrets, 1105's deployed app did not FUNCTION in a browser (§1c step 9). Fix the deploy
+front/back contract: (1) the frontend reads `NEXT_PUBLIC_API_BASE_URL` but the deploy injects
+`NEXT_PUBLIC_API_URL` — align the name AND set it to THIS deploy's origin (not a remote prod
+domain), and remember `NEXT_PUBLIC_*` is inlined at BUILD time so it must be right BEFORE the
+frontend image is built; (2) the Caddy reverse-proxy path split is ambiguous (`/admin/menu` is both
+a frontend page and a backend route; backend routes aren't under `/api`) — design a clean split
+(e.g. serve the backend under a real `/api` prefix and have the frontend call `/api/...`); (3) the
+Architect should commission a root `app/page.tsx` homepage (root `/` is currently 404). Also add a
+deterministic post-deploy check that actually loads a PAGE and confirms it fetches data (not just an
+edge 200) — the current health-check hole let a non-functioning app report `live`.
 
 ### LATER — the deferred third-party DEPENDENCY-VALIDATION slice (`PdfReadError`)
 Still queued after Fix #18. **The bug (1039):** the QA retry loop wrote `from pypdf import
