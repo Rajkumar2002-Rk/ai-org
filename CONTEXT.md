@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18/#19 + FIX #20 (health check, gap #3) + FIX #21 (FE↔BE wiring, gap #2) DONE/PUSHED; NEXT = deploy gap #4 (generated homepage — root `/` 404s), PLAN-FIRST. Gap #1 (Week-7/8 secrets+redis onboarding) DELIBERATELY DEFERRED to its own design session (§5.B). Fix #19 slice 2 (instance attr access) still logged as optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18/#19 + FIX #20 (health, gap #3) + FIX #21 (FE↔BE wiring, gap #2) + FIX #22 (generated homepage, gap #4) DONE/PUSHED. Deploy gaps #2/#3/#4 all CLOSED. NEXT (both optional, plan-first): the DELIBERATELY-DEFERRED gap #1 (Week-7/8 secrets+redis onboarding — its own design session, §5) and Fix #19 slice 2 (instance attr access). No urgent item outstanding.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -40,9 +40,10 @@ demo.**
 ## 1. CURRENT STATE (all verified this session)
 - **15 deterministic fixes + Code Integrity Engine gates FIX #16 (symbol resolution),
   #17 (backend syntax/AST), #18 (QA-regen gate), #19 (attribute resolution, slice 1) +
-  DevOps deploy-path FIX #20 (layered health check, gap #3) + FIX #21 (FE↔BE wiring,
-  gap #2) COMPLETE, verified live in the running backend, all 14 offline suites pass,
-  committed + pushed** (§1a–§1g have the detail).
+  DevOps deploy-path FIX #20 (health check, gap #3), #21 (FE↔BE wiring, gap #2), #22
+  (generated homepage, gap #4) COMPLETE, verified live in the running backend, all 14
+  offline suites pass, committed + pushed** (§1a–§1h have the detail). Deploy gaps
+  #2/#3/#4 all closed; only gap #1 (secrets/redis onboarding) remains, deferred (§5).
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -328,6 +329,31 @@ REAL generated artifacts:
   client-heavy (forced-dynamic `"use client"`; 1105 fetched client-side). Revisit only if a run does
   server-side data fetching.
 
+## 1h. FIX #22 — GENERATED HOMEPAGE (deploy gap #4) (DONE + tested 2026-08-17)
+Closes the run-1105 deploy gap #4 (§1c step 9): the deployed frontend had NO root
+`app/page.tsx`, so opening the live URL hit a 404 (what the user saw). The Architect now
+commissions a real root home page deterministically.
+- **Where:** `architect/builder.py`. New `_frontend_homepage_ticket(routes, business_name)`
+  (FND-6, mirrors FND-4/FND-5), `_frontend_page_routes(tickets)` (derives `/route` from each
+  `frontend/app/<route>/page.tsx`, EXCLUDING the root), `_has_root_homepage(tickets)`.
+- **What it commissions:** `frontend/app/page.tsx` — a MINIMAL but real SERVER component
+  (no `"use client"`, no data fetch, no client hooks → `next build` can't fail on it): the
+  business name + a one-line welcome + a Next.js `<Link>` nav to the app's ACTUAL routes.
+- **Placement (important):** added in `build_blueprint` BEFORE the entrypoint ticket (so APP-1
+  still depends on every ticket and stays last — the "entrypoint is last / depends on all"
+  invariant holds), with `dependencies: []` (first wave; the `<Link href>` targets are static
+  strings, so linked pages needn't exist when it builds). The real routes are BACKFILLED into
+  its description AFTER `_assign_filepaths` (when every frontend page path is final). Skipped if
+  a page already owns the root (idempotent) or there is no web frontend.
+- **Tests (14/14 offline suites pass):** `test_architect_offline.test_homepage_helpers` (route
+  derivation excludes root + ignores layout/css; `_has_root_homepage`; the FND-6 ticket names
+  the business, lists the exact routes, is server-only; no-routes → clean welcome, no invented
+  links) + `test_generated_homepage` (against a REAL Bella Vista blueprint: exactly one root
+  page, FND-6/frontend/no-deps, links every real route and only real routes, root excluded from
+  the nav, survives the duplicate-path guard). Image REBUILT.
+- **⭐ DEPLOY-PATH GAPS #2/#3/#4 ALL CLOSED.** Only gap #1 (Week-7/8 secrets/redis onboarding)
+  remains — DELIBERATELY DEFERRED to its own design session (§5).
+
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
 real Opus ON, scoped key. **All three cleanly passed: BA → PI → Architect → Build (no gate
@@ -419,19 +445,17 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP — deploy gap #4 (generated homepage). PLAN-FIRST.
-The code-integrity gates (#16/#17/#18/#19) close the codegen + QA-churn hole. Deploy **gap #3
-(health-check hole) = DONE — FIX #20 (§1f)** and **gap #2 (FE↔BE wiring) = DONE — FIX #21 (§1g)**.
-Remaining deploy-path work, each plan-first:
+## 5. EXPLICIT NEXT STEP — no urgent item; two OPTIONAL tracks, each plan-first.
+The code-integrity gates (#16/#17/#18/#19) close the codegen + QA-churn hole, and DEPLOY GAPS
+#2/#3/#4 ARE ALL CLOSED — **gap #3 (health) = FIX #20 (§1f)**, **gap #2 (FE↔BE wiring) = FIX #21
+(§1g)**, **gap #4 (homepage) = FIX #22 (§1h)**. What remains is optional:
 
-### A. GAP #4 — generated HOMEPAGE (root `/` currently 404s)
-Run 1105's deployed frontend had NO root `app/page.tsx`, so opening the live URL hit a 404 (what
-the user saw). The Architect should commission a root homepage ticket (a simple landing page that
-links to the app's real pages — `/menu`, `/order`, `/admin/menu`, etc.). Insertion point: the
-frontend tickets in `architect/builder.py` (where FE tickets are built). Small; deterministic
-(assert the blueprint commissions a `frontend/app/page.tsx`). Optional follow-on (not gap #4): a
-post-deploy check that actually LOADS a page and confirms it fetches data (fix #20 already confirms
-the backend answers; fix #21 already wires the FE→BE calls).
+### A. (OPTIONAL) Fix #19 slice 2 — annotated/constructed INSTANCE attribute access
+Extends the attribute gate (#19, §1e) from class-name access to instance access where the type is
+KNOWN with certainty (a `: Order` annotation or a local `x = Order(...)` construction) — catches
+`order.total_amonut` / `user.get_profile()` when the instance is typed/constructed. Query-derived
+instances stay OUT (not safely inferable). Kept only insofar as the platform+888 zero-FP proof
+stays clean (that proof is the arbiter). Plan-first.
 
 ### B. ⛔ DEFERRED BY DECISION (2026-08-17) — the Week-7/8 SECRETS-ONBOARDING gap (deploy gap #1)
 **Deliberately NOT auto-seeded.** A real deploy of an auth+payments app fail-fasts across `AUTH0_*`,

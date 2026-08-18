@@ -573,6 +573,68 @@ def _frontend_globals_ticket() -> dict:
     }
 
 
+def _frontend_page_routes(tickets: list[dict]) -> list[str]:
+    """The real App-Router routes of the generated frontend — one per
+    `frontend/app/<route>/page.tsx` ticket, EXCLUDING the root `frontend/app/page.tsx`.
+    Used to make the homepage link to pages that actually exist. Must be called AFTER
+    `_assign_filepaths`, when every frontend ticket has its final path."""
+    routes: list[str] = []
+    for t in tickets:
+        fp = (t.get("filepath") or "").strip()
+        if fp.startswith("frontend/app/") and fp.endswith("/page.tsx"):
+            route = fp[len("frontend/app"):-len("/page.tsx")]   # -> "/admin/menu", "" for root
+            if route:                                            # skip the root page itself
+                routes.append(route)
+    # Stable, de-duplicated (shortest/most-general first reads well in a nav).
+    return sorted(dict.fromkeys(routes), key=lambda r: (r.count("/"), r))
+
+
+def _has_root_homepage(tickets: list[dict]) -> bool:
+    return any((t.get("filepath") or "") == "frontend/app/page.tsx" for t in tickets)
+
+
+def _frontend_homepage_ticket(routes: list[str], business_name: str | None) -> dict:
+    """The App Router ROOT page (route `/`) — gap #4: without it, opening the deployed
+    app's live URL hits a 404 (run 1105: root `/` had no `app/page.tsx`). A minimal,
+    REAL landing page: the business name + a nav that links to the app's actual pages,
+    so a visitor lands somewhere useful instead of a 404. Same class as FND-4/FND-5 —
+    a framework file no feature ticket owns, commissioned deterministically.
+
+    Kept server-only and dependency-free (the `<Link href>` targets are static strings,
+    so the linked pages need not exist when this builds)."""
+    name = (business_name or "").strip() or "this app"
+    if routes:
+        links = ", ".join(f'`{r}`' for r in routes)
+        nav_rule = (
+            f"Render a simple nav that links to the app's real pages using the Next.js "
+            f"`<Link>` component from `next/link` — one link per route, using EXACTLY "
+            f"these route paths (they are the pages that exist; do not invent others): "
+            f"{links}. Give each link a short, human label derived from its path "
+            f"(e.g. `/admin/menu` -> \"Manage menu\", `/settings` -> \"Settings\"). ")
+    else:
+        nav_rule = ("There are no other pages yet, so no nav links are needed — a clean "
+                    "welcome is enough. ")
+    return {
+        "id": "FND-6",
+        "title": "Frontend home page",
+        "assigned_to": "frontend",
+        "filepath": "frontend/app/page.tsx",
+        "is_boilerplate": True,
+        "description": (
+            f"Create frontend/app/page.tsx — the Next.js App Router ROOT PAGE served at "
+            f"`/` (the site's home). Without it the deployed app's root URL returns a "
+            f"404. Keep it MINIMAL but real: export a default React component that shows "
+            f"a heading with the business name \"{name}\" and a one-line welcome. "
+            f"{nav_rule}"
+            f"This is a SERVER component: do NOT add \"use client\", do NOT fetch data or "
+            f"call the backend, do NOT use client-only hooks — so `next build` cannot "
+            f"fail on it. Plain minimal styling only (inline styles or classes that rely "
+            f"on the existing globals.css); add no new dependencies."
+        ),
+        "dependencies": [],
+    }
+
+
 def _security_ticket() -> dict:
     return {
         "id": "SEC-1",
@@ -1130,6 +1192,15 @@ async def build_blueprint(summary: dict) -> dict:
     # Security is mandatory on every build.
     tickets.append(_security_ticket())
 
+    # gap #4: commission the root home page so the deployed app's `/` isn't a 404
+    # (run 1105 had no app/page.tsx). Added BEFORE the entrypoint so the entrypoint still
+    # depends on every ticket and stays in the final wave. Skipped if a page already owns
+    # the root, or if there is no web frontend at all. Its nav links are BACKFILLED after
+    # _assign_filepaths, when every frontend page path is final.
+    if any(t.get("assigned_to") == "frontend" for t in tickets) \
+            and not _has_root_homepage(tickets):
+        tickets.append(_frontend_homepage_ticket([], summary.get("business_name")))
+
     # Entrypoint LAST — it registers the routers every other ticket produced,
     # so it depends on all of them and lands in the final build wave.
     tickets.append(_entrypoint_ticket([t.get("id") for t in tickets if t.get("id")]))
@@ -1138,6 +1209,14 @@ async def build_blueprint(summary: dict) -> dict:
     # sharing a path meant one silently overwrote the other — see
     # _assign_filepaths for the real failure this caused.
     _assign_filepaths(tickets)
+
+    # Backfill the home page's nav with the FINAL, real routes (now that every frontend
+    # page has its assigned path). No-op if there is no home page.
+    hp = next((t for t in tickets if t.get("id") == "FND-6"
+               and t.get("filepath") == "frontend/app/page.tsx"), None)
+    if hp is not None:
+        hp["description"] = _frontend_homepage_ticket(
+            _frontend_page_routes(tickets), summary.get("business_name"))["description"]
 
     return {
         "tech_stack": creative.get("tech_stack", {}),

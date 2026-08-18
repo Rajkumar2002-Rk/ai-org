@@ -534,6 +534,67 @@ def test_developer_pins_assigned_path():
           "backend/app/routes/orders.py" in agents._base_prompt(ticket, [], ""))
 
 
+def test_homepage_helpers():
+    """FIX #22 unit layer (deploy gap #4): the route helper + the FND-6 ticket builder."""
+    print("\n=== TEST 7a: homepage helpers (route derivation + ticket) ===")
+    tickets = [
+        {"id": "FND-4", "filepath": "frontend/app/layout.tsx"},     # not a page
+        {"id": "FND-5", "filepath": "frontend/app/globals.css"},    # not a page
+        {"id": "FE-1", "filepath": "frontend/app/menu/page.tsx"},
+        {"id": "MENU-2", "filepath": "frontend/app/admin/menu/page.tsx"},
+        {"id": "FND-6", "filepath": "frontend/app/page.tsx"},        # the ROOT page (excluded)
+    ]
+    routes = builder._frontend_page_routes(tickets)
+    check("routes are derived from */page.tsx, root EXCLUDED, layout/css ignored",
+          routes == ["/menu", "/admin/menu"], )
+    check("_has_root_homepage detects an existing root page",
+          builder._has_root_homepage(tickets) is True)
+    check("_has_root_homepage is False when no root page exists",
+          builder._has_root_homepage(tickets[:-1]) is False)
+
+    t = builder._frontend_homepage_ticket(["/menu", "/admin/menu"], "Bella Vista")
+    check("homepage ticket is FND-6, frontend, pinned to frontend/app/page.tsx, no deps",
+          t["id"] == "FND-6" and t["assigned_to"] == "frontend"
+          and t["filepath"] == "frontend/app/page.tsx" and t["dependencies"] == [])
+    check("homepage names the business + lists the exact routes + is server-only",
+          "Bella Vista" in t["description"] and "`/menu`" in t["description"]
+          and "`/admin/menu`" in t["description"] and 'do NOT add "use client"' in t["description"])
+    # No routes / no business name -> still a real welcome page, no invented links.
+    t0 = builder._frontend_homepage_ticket([], None)
+    check("with no routes: a clean welcome, no nav links invented",
+          "no nav links are needed" in t0["description"] and "this app" in t0["description"])
+
+
+async def test_generated_homepage():
+    """FIX #22 (deploy gap #4): run 1105's deployed app 404'd at `/` because no
+    frontend/app/page.tsx was ever generated. build_blueprint must now commission a real
+    root home page that links to the app's ACTUAL routes. Proven against a real blueprint."""
+    print("\n=== TEST 7b: generated home page (root / is no longer a 404) ===")
+    bp = await builder.build_blueprint(summary(
+        build="Bella Vista Italian restaurant with online ordering and Stripe payments",
+        business_name="Bella Vista", is_food=True, menu_setup="pdf", is_local=True))
+    tickets = bp["sprint_tickets"]
+    roots = [t for t in tickets if t.get("filepath") == "frontend/app/page.tsx"]
+    check("exactly one root home page (frontend/app/page.tsx) is commissioned",
+          len(roots) == 1)
+    hp = roots[0]
+    check("it is FND-6, a frontend ticket, first-wave (no deps)",
+          hp["id"] == "FND-6" and hp["assigned_to"] == "frontend" and hp["dependencies"] == [])
+    check("its description names the business", "Bella Vista" in hp["description"])
+    # Consistency: it links EXACTLY the app's real routes (whatever the build produced).
+    real_routes = builder._frontend_page_routes(tickets)
+    check("there ARE real routes to link (a menu app has feature pages)", len(real_routes) > 0)
+    check("the home page links every real route, and none that don't exist",
+          all(f"`{r}`" in hp["description"] for r in real_routes))
+    check("the root route is NOT among the nav routes (the home page never links itself)",
+          "/" not in real_routes)
+    check("the home page is a server component (no client hooks / no data fetch)",
+          'do NOT add "use client"' in hp["description"] and "do NOT fetch data" in hp["description"])
+    # It survives the pipeline's own duplicate-path guard (unique root path).
+    dupes = [t for t in tickets if t.get("filepath") == "frontend/app/page.tsx"]
+    check("no other ticket collided onto the root page path", len(dupes) == 1)
+
+
 async def main():
     await test_payment_domain()
     await test_non_payment_domain()
@@ -544,6 +605,8 @@ async def main():
     test_conventional_stem()
     test_contract_declares_exact_module_paths()
     test_developer_pins_assigned_path()
+    test_homepage_helpers()
+    await test_generated_homepage()
 
     print("\n" + "=" * 60)
     if _failures:
