@@ -298,6 +298,54 @@ def test_reviewer_flag():
           and "leakage" in reviewer._PAYMENT_SECURITY_FOCUS.lower())
 
 
+async def test_reviewer_security_verdict():
+    """FIX #23 (run 1289): the security cert falsely FAILED on code whose final content
+    was reproducibly clean — the old stop-and-verify loop set security_passed=False and
+    its bounded stochastic rechecks never happened to come back clean. The verdict is now
+    based on a CONFIRMED critical on the FINAL content (flagged on TWO passes): a genuine
+    (reproducible) vulnerability still fails; a one-off flake on clean content does not.
+    Mocks _review/_fix — no LLM, no network."""
+    print("\n=== TEST 4b: security verdict = CONFIRMED critical on final content ===")
+    crit = [{"severity": "critical", "type": "xss", "detail": "x"}]
+
+    async def run_case(queue):
+        calls = {"n": 0}
+
+        async def fake_review(model, system, file, content, bypass):
+            i = calls["n"]; calls["n"] += 1
+            return queue[i] if i < len(queue) else []
+
+        async def fake_fix(model, file, content, issues, bypass):
+            return content + "\n# fixed"      # non-None so a fix is 'applied'
+
+        orig_r, orig_f = reviewer._review, reviewer._fix
+        reviewer._review, reviewer._fix = fake_review, fake_fix
+        try:
+            res = await reviewer.review_file(
+                {"id": 1, "filepath": "frontend/app/x.tsx", "content": "x"}, "gpt-4o-mini")
+        finally:
+            reviewer._review, reviewer._fix = orig_r, orig_f
+        return res, calls["n"]
+
+    # review call order: [general, security(s_issues), fix-loop rechecks x<=2, confirm x<=2]
+    # A. STABLE critical — flagged on every pass, incl. BOTH confirmation passes -> FAIL.
+    res, _ = await run_case([[], crit, crit, crit, crit, crit])
+    check("a STABLE (reproducible) critical still FAILS the cert",
+          res["security_passed"] is False)
+    # B. Initial flag, but the final content is reproducibly clean (the 1289 case) -> PASS.
+    res, _ = await run_case([[], crit, [], []])
+    check("an initial critical with clean final content PASSES (the 1289 false-negative is gone)",
+          res["security_passed"] is True)
+    # C. A one-off flake DURING the verdict (1 of 2 confirmation passes) -> PASS.
+    res, _ = await run_case([[], crit, [], crit, []])
+    check("a single-pass flake in the verdict does NOT fail the file (needs 2 to confirm)",
+          res["security_passed"] is True)
+    # D. A clean file never enters the critical path -> PASS, no extra verdict reviews.
+    res, n = await run_case([[], []])
+    check("a clean file passes with NO extra verdict reviews spent",
+          res["security_passed"] is True and n == 2)
+
+
 async def test_unique_filepaths():
     """Two tickets writing the same file silently destroyed one ticket's work.
 
@@ -600,6 +648,7 @@ async def main():
     await test_non_payment_domain()
     await test_gating_suite()
     test_reviewer_flag()
+    await test_reviewer_security_verdict()
     await test_unique_filepaths()
     test_entrypoint_gets_real_router_paths()
     test_conventional_stem()

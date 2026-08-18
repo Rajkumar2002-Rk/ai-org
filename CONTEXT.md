@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18/#19 + FIX #20 (health, gap #3) + FIX #21 (FE↔BE wiring, gap #2) + FIX #22 (generated homepage, gap #4) DONE/PUSHED. Deploy gaps #2/#3/#4 all CLOSED. NEXT (both optional, plan-first): the DELIBERATELY-DEFERRED gap #1 (Week-7/8 secrets+redis onboarding — its own design session, §5) and Fix #19 slice 2 (instance attr access). No urgent item outstanding.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16–#22 + FIX #23 (security-review verdict = confirmed-critical) DONE/PUSHED. Measurement run 1289 (all fixes live, Quick): CLEAN fresh full-scope build (Fix #16 caught+repaired a live bug) + smoke_boot PASSED with ZERO hand-fixing, then stopped at a FALSE-NEGATIVE in the Opus security cert (diagnosed → FIX #23). NEXT: re-run 1289's /pipeline/secure (or a fresh run) to see it reach deploy/secrets gap; then the DELIBERATELY-DEFERRED gap #1 (secrets/redis onboarding, §5). Fix #19 slice 2 still optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -41,9 +41,11 @@ demo.**
 - **15 deterministic fixes + Code Integrity Engine gates FIX #16 (symbol resolution),
   #17 (backend syntax/AST), #18 (QA-regen gate), #19 (attribute resolution, slice 1) +
   DevOps deploy-path FIX #20 (health check, gap #3), #21 (FE↔BE wiring, gap #2), #22
-  (generated homepage, gap #4) COMPLETE, verified live in the running backend, all 14
-  offline suites pass, committed + pushed** (§1a–§1h have the detail). Deploy gaps
-  #2/#3/#4 all closed; only gap #1 (secrets/redis onboarding) remains, deferred (§5).
+  (generated homepage, gap #4) + FIX #23 (security-review verdict = confirmed-critical)
+  COMPLETE, verified live in the running backend, all 14 offline suites pass, committed +
+  pushed** (§1a–§1i have the detail). Deploy gaps #2/#3/#4 all closed; only gap #1
+  (secrets/redis onboarding) remains, deferred (§5). Run 1289 (§1i): codegen pipeline
+  proven solid; pending a paid re-run of 1289's Opus review to validate Fix #23 end-to-end.
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -353,6 +355,40 @@ commissions a real root home page deterministically.
   the nav, survives the duplicate-path guard). Image REBUILT.
 - **⭐ DEPLOY-PATH GAPS #2/#3/#4 ALL CLOSED.** Only gap #1 (Week-7/8 secrets/redis onboarding)
   remains — DELIBERATELY DEFERRED to its own design session (§5).
+
+## 1i. MEASUREMENT RUN 1289 + FIX #23 — security-review verdict = CONFIRMED critical (2026-08-17)
+Full-scope run with ALL fixes live (Bella Vista: menu PDF + ordering + Stripe + auth, **Quick**).
+**The codegen + boot pipeline is now SOLID — proven live:**
+- BA → PI → Architect (22 tickets incl. FND-6 homepage) → **Build reached `done`**, meaning it also
+  **passed smoke_boot**. **Fix #16 CAUGHT A REAL BUG on the fresh generation** (`notifications.py`
+  imported `send_email`/`send_sms` from `integrations.integrate`, which don't exist there) → structured
+  repair → **recovered on retry** → the full app **assembled + booted with ZERO hand-fixing.** First
+  fresh full-scope run ever to reach a clean bootable build unaided. No require_admin/DDL/syntax/QA-churn.
+- **Then stopped at the Opus security cert (`passed: False`)** — NOT the secrets gap, NOT a real vuln.
+**DIAGNOSIS (proven, not guessed):** re-reviewing the 4 flagged files' FINAL content across 4 fresh
+Opus passes returned **0 criticals every time** (`[0,0,0,0]`); only medium/minor issues remained
+(file buffered before size-check DoS in menu_upload; unsanitized AI-parsed fields; a stubbed
+`validate_api_key`; client-side token exposure; an open-redirect — all real future hardening, none
+cert-blocking). The `passed:False` was a **FALSE NEGATIVE in the review's convergence**: the moment
+the first stochastic pass tagged a `critical`, `review_file` set `security_passed=False` and its
+`_MAX_SECURITY_RETRIES=2` rechecks (each a fresh stochastic review) never happened to come back clean
+— so a file whose FINAL content is reproducibly clean was labeled failed; `cert.passed = all(files)`
+→ one stuck file fails the whole cert → deploy fail-closed. **Recurring/systemic** (review logic, not
+codegen): with a stochastic reviewer over ~22 files, ≥1 file getting stuck recurs run-to-run.
+**FIX #23 (`reviewer.review_file` + `_confirmed_critical`):** the fix loop still FIXES criticals
+(unchanged), but pass/fail is now decided on the FINAL content by a **confirmation rule** — a file
+fails ONLY if a critical is **confirmed on TWO independent passes** (short-circuits when pass 1 is
+clean). A genuine (reproducible) vuln shows on every pass → still fails; a one-off flake on clean
+content no longer false-fails. Does NOT weaken the gate against stable criticals; narrow, deliberate
+loosening of the *convergence verdict* only (user-approved trade-off). Extra Opus cost only for files
+that actually hit a critical (1–2 verdict reviews), not every file.
+- **Tests (14/14 offline suites pass):** `test_architect_offline.test_reviewer_security_verdict`
+  (mocks `_review`/`_fix`): a STABLE critical (both confirm passes) still FAILS; an initial-flag +
+  clean-final (the 1289 case) PASSES; a single-pass verdict flake PASSES; a clean file spends no extra
+  verdict reviews. Image REBUILT; Fix #23 live.
+- **⏭️ NOT YET RE-RUN:** project 1289 is still in the DB with its failed cert. Re-running
+  `POST /pipeline/secure` for 1289 (real Opus, ~$1–1.5) should now PASS and let it proceed
+  QA → deploy → (secrets gap). That is the pending validation + the original measurement goal.
 
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
