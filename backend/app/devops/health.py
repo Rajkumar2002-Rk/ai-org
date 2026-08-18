@@ -23,7 +23,12 @@ import httpx
 
 logger = logging.getLogger("devops.health")
 
-_PROBE_PATHS = ("/openapi.json", "/health", "/healthz", "/")
+# Backend-liveness paths. Caddy routes each of these to `backend:8000` (its `@api`
+# matcher), so a `< 500` answer on ANY of them proves the BACKEND process is actually
+# up — a crash-looping backend makes Caddy return 502/503/504 on all of them. A live
+# frontend edge (e.g. a 404 homepage) must NEVER be enough to call a deploy healthy;
+# that was the run-1105 false-"live". `/openapi.json` is always present in a FastAPI app.
+_BACKEND_LIVENESS_PATHS = ("/openapi.json", "/health", "/healthz")
 
 # Fault kinds.
 TRANSIENT_INFRA = "transient_infra"    # the ONLY auto-fixable class
@@ -39,6 +44,11 @@ class ProbeResult:
     attempts: int
     last_status: int | None = None
     last_error: str | None = None
+    # WHICH layer of the stack failed, when not healthy: 'edge' (Caddy / the URL is
+    # unreachable at all), 'backend' (the edge answers but the backend does not — the
+    # run-1105 crash-loop that a live frontend edge used to mask), or 'frontend' (the
+    # frontend process is not answering). None when healthy.
+    failed_layer: str | None = None
 
 
 @dataclass
@@ -51,29 +61,64 @@ class Fault:
         return self.kind == TRANSIENT_INFRA
 
 
-async def probe(url: str, verify_tls: bool, interval: int, timeout: int) -> ProbeResult:
-    """Ping `url` until it answers < 500 or `timeout` elapses."""
+async def probe(url: str, verify_tls: bool, interval: int, timeout: int, *,
+                has_frontend: bool = True,
+                backend_paths: tuple = _BACKEND_LIVENESS_PATHS) -> ProbeResult:
+    """LAYERED health probe (edge → backend → frontend). Retries until healthy or
+    `timeout`. A deploy is healthy ONLY when the BACKEND actually answers; a live
+    frontend edge must never mask a crash-looping backend (the run-1105 false-"live").
+
+    Per round, checked most-fundamental first, so `failed_layer` names the real cause:
+      * EDGE     — no HTTP response at all (Caddy/the URL is unreachable);
+      * BACKEND  — the edge answers but every backend-liveness path is 5xx (502/503/504
+                   from Caddy = the backend is down; a 200 or even a 404 = it answered);
+      * FRONTEND — (only when `has_frontend`) `/` does not answer < 500 (a 404 homepage
+                   still counts as up — gap #4's missing homepage must not false-fail).
+    """
     import asyncio
 
     attempts = 0
     last_status: int | None = None
     last_error: str | None = None
+    failed_layer = "edge"
     deadline = asyncio.get_event_loop().time() + timeout
 
     async with httpx.AsyncClient(verify=verify_tls, timeout=5,
                                  follow_redirects=True) as client:
         while True:
             attempts += 1
-            for path in _PROBE_PATHS:
+            edge_up = False
+            backend_up = False
+            # BACKEND: a < 500 answer on any backend-routed path proves the process is up.
+            for path in backend_paths:
                 try:
                     r = await client.get(f"{url}{path}")
+                    edge_up = True                       # got an HTTP response -> Caddy is up
                     last_status = r.status_code
                     if r.status_code < 500:
-                        return ProbeResult(True, attempts, last_status, None)
-                except Exception as exc:            # not up yet
+                        backend_up = True
+                        break
+                except Exception as exc:                 # connection refused / timeout
                     last_error = str(exc)[:200]
+            # FRONTEND: a non-5xx from `/` proves the frontend process answered.
+            frontend_up = True
+            if has_frontend:
+                try:
+                    r = await client.get(f"{url}/")
+                    edge_up = True
+                    last_status = r.status_code
+                    frontend_up = r.status_code < 500
+                except Exception as exc:
+                    last_error = str(exc)[:200]
+                    frontend_up = False
+
+            if edge_up and backend_up and frontend_up:
+                return ProbeResult(True, attempts, last_status, None, None)
+            failed_layer = ("edge" if not edge_up
+                            else "backend" if not backend_up
+                            else "frontend")
             if asyncio.get_event_loop().time() >= deadline:
-                return ProbeResult(False, attempts, last_status, last_error)
+                return ProbeResult(False, attempts, last_status, last_error, failed_layer)
             await asyncio.sleep(interval)
 
 

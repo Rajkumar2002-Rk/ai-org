@@ -252,11 +252,14 @@ async def run(project_id: int) -> dict:
                         "reason": fault.reason, "security_certified": certified,
                         "tests_passed": tests_passed, "auto_fixed": auto_fixed}
 
-        # ---- STEP 7: health probe + one infra-only auto-fix -------------
+        # ---- STEP 7: LAYERED health probe + one infra-only auto-fix -----
+        # The probe must prove the BACKEND actually answers — a live frontend edge (a 404
+        # homepage) can no longer mask a crash-looping backend (the run-1105 false-"live").
         probe_url = res.probe_url or res.live_url
+        has_frontend = any(manifest._is_frontend(f) for f in req.files)
         p = await health.probe(probe_url, res.verify_tls,
                                settings.devops_health_interval,
-                               settings.devops_health_timeout)
+                               settings.devops_health_timeout, has_frontend=has_frontend)
         health_attempts = p.attempts
         if not p.healthy and not auto_fixed:
             diag = await driver.diagnostics(req)
@@ -268,9 +271,13 @@ async def run(project_id: int) -> dict:
                 await driver.restart(req)
                 p = await health.probe(probe_url, res.verify_tls,
                                        settings.devops_health_interval,
-                                       settings.devops_health_timeout)
+                                       settings.devops_health_timeout,
+                                       has_frontend=has_frontend)
                 health_attempts += p.attempts
             if not p.healthy:
+                # Name WHICH layer failed so a false "live" can never hide a dead backend.
+                layer = p.failed_layer or "app"
+                reason = f"The {layer} layer did not become healthy. {fault.reason}"
                 await _set_row(deployment_id, status="failed", live_url=res.live_url,
                                ssl_enabled=res.ssl_enabled, ssl_type=res.ssl_type,
                                server_type=res.server_type, auto_fixed=auto_fixed,
@@ -278,12 +285,13 @@ async def run(project_id: int) -> dict:
                                health_attempts=health_attempts,
                                image_backend_ref=res.image_backend_ref,
                                image_frontend_ref=res.image_frontend_ref,
-                               error_message=fault.reason[:2000])
+                               error_message=reason[:2000])
                 await driver.teardown(req)
                 return {"status": "failed", "run_id": run_id,
-                        "deployment_id": deployment_id, "reason": fault.reason,
+                        "deployment_id": deployment_id, "reason": reason,
                         "security_certified": certified, "tests_passed": tests_passed,
-                        "auto_fixed": auto_fixed, "health_attempts": health_attempts}
+                        "auto_fixed": auto_fixed, "health_attempts": health_attempts,
+                        "failed_layer": p.failed_layer}
 
         # ---- LIVE --------------------------------------------------------
         await _set_row(

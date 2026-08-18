@@ -289,6 +289,76 @@ def test_health():
           not mixed.autofixable, mixed.kind)
 
 
+def test_health_probe():
+    """The LAYERED health probe (fix #3, gap #3): a deploy is healthy ONLY when the
+    BACKEND actually answers. The headline check is the run-1105 defect — a crash-looping
+    backend (502 on backend routes) behind a LIVE frontend edge (404 homepage) must be
+    reported UNHEALTHY, not a false 'live'. Deterministic: httpx.MockTransport, no network."""
+    import httpx
+
+    def _probe(status_map, has_frontend=True):
+        """Run health.probe against a mock where each path returns status_map[path]
+        (an int status, or an Exception instance to simulate a connection error; a
+        path missing from the map raises ConnectError = unreachable)."""
+        def handler(request):
+            st = status_map.get(request.url.path, httpx.ConnectError("refused"))
+            if isinstance(st, Exception):
+                raise st
+            return httpx.Response(st, text="x")
+        orig = health.httpx.AsyncClient      # the REAL class (health.httpx IS the httpx module)
+
+        def factory(*_a, **_k):              # build a real client with a mock transport
+            return orig(transport=httpx.MockTransport(handler))
+        health.httpx.AsyncClient = factory
+        try:
+            return asyncio.run(health.probe("https://x", False, 0, 0,
+                                            has_frontend=has_frontend))
+        finally:
+            health.httpx.AsyncClient = orig
+
+    print("\nF2. Layered health probe — backend liveness is required")
+
+    # ⭐ THE run-1105 REGRESSION: backend routes 502 (crash-loop) but the frontend edge
+    # serves a 404 homepage. Old probe returned healthy on the '/' 404; it must now FAIL.
+    dead_be = _probe({"/openapi.json": 502, "/health": 502, "/healthz": 502, "/": 404})
+    check("a crash-looping backend behind a LIVE frontend edge is UNHEALTHY (the 1105 bug)",
+          dead_be.healthy is False, str(dead_be))
+    check("...and the failure is attributed to the BACKEND layer",
+          dead_be.failed_layer == "backend", str(dead_be.failed_layer))
+
+    # A genuinely-up stack: backend answers, frontend serves (404 homepage is fine).
+    up = _probe({"/openapi.json": 200, "/": 404})
+    check("backend 200 + frontend edge answering (404 homepage) is HEALTHY",
+          up.healthy is True and up.failed_layer is None, str(up))
+
+    # gap #4 must NOT false-fail: a 404 homepage is the frontend answering, not a failure.
+    check("a 404 homepage alone never marks the stack unhealthy",
+          _probe({"/openapi.json": 200, "/": 404}).healthy is True)
+
+    # Backend answers via /health even if /openapi.json is 502-ish? (all backend paths tried)
+    be_via_health = _probe({"/openapi.json": 404, "/health": 200, "/": 404})
+    check("backend answering on ANY liveness path (200/404) counts as up",
+          be_via_health.healthy is True, str(be_via_health))
+
+    # Frontend container dead (502) while backend is fine -> unhealthy, FRONTEND layer.
+    dead_fe = _probe({"/openapi.json": 200, "/": 502})
+    check("a dead frontend behind a healthy backend is UNHEALTHY (frontend layer)",
+          dead_fe.healthy is False and dead_fe.failed_layer == "frontend", str(dead_fe))
+
+    # Edge/Caddy unreachable (every request errors) -> EDGE layer.
+    dead_edge = _probe({})   # nothing mapped -> ConnectError on every path
+    check("an unreachable edge (Caddy down) is UNHEALTHY (edge layer)",
+          dead_edge.healthy is False and dead_edge.failed_layer == "edge", str(dead_edge))
+
+    # Backend-only stack (no frontend): backend liveness alone decides.
+    be_only_up = _probe({"/openapi.json": 200}, has_frontend=False)
+    check("a backend-only stack is healthy on backend liveness alone",
+          be_only_up.healthy is True, str(be_only_up))
+    be_only_down = _probe({"/openapi.json": 502}, has_frontend=False)
+    check("a backend-only stack with a 502 backend is UNHEALTHY (backend layer)",
+          be_only_down.healthy is False and be_only_down.failed_layer == "backend", str(be_only_down))
+
+
 # ------------------------------------------------------------------ G. sec gate
 def test_security_gate():
     print("\nG. Security gate (STEP 0) — fail-closed at the deploy edge")
@@ -411,6 +481,7 @@ def main():
     test_secrets()
     test_cost()
     test_health()
+    test_health_probe()
     test_security_gate()
     test_email_validator_reqs()
     test_aws_pure_functions()

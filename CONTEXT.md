@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18 + FIX #19 (Attribute Resolution Gate, slice 1) DONE/PUSHED; NEXT = either (a) Fix #19 slice 2 (annotated/constructed INSTANCE attribute access — user wants to discuss) or (b) the DevOps deploy-path work (health-check hole #3 first, then Week-7 secrets/redis + FE↔BE wiring) — all PLAN-FIRST
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18/#19 + FIX #20 (LAYERED health check, deploy gap #3) DONE/PUSHED; NEXT = the remaining DevOps deploy-path gaps — #2 FE↔BE wiring (var-name mismatch + build-arg + Caddy prefix) and #4 homepage, PLAN-FIRST. Gap #1 (Week-7/8 secrets+redis onboarding) is DELIBERATELY DEFERRED to its own design session (§5). Fix #19 slice 2 (instance attr access) still logged as optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -38,10 +38,10 @@ deploy-path work is the NEXT priority (§5)**. The 888 fixture is still the ONLY
 demo.**
 
 ## 1. CURRENT STATE (all verified this session)
-- **15 deterministic fixes + the Code Integrity Engine gates FIX #16 (symbol resolution),
-  #17 (backend syntax/AST), #18 (QA-regen gate), #19 (attribute resolution, slice 1)
-  COMPLETE, verified live in the running backend, all 14 offline suites pass, committed +
-  pushed** (§1a–§1e have the detail).
+- **15 deterministic fixes + Code Integrity Engine gates FIX #16 (symbol resolution),
+  #17 (backend syntax/AST), #18 (QA-regen gate), #19 (attribute resolution, slice 1) +
+  FIX #20 (layered deploy health check, gap #3) COMPLETE, verified live in the running
+  backend, all 14 offline suites pass, committed + pushed** (§1a–§1f have the detail).
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -267,6 +267,33 @@ checks module-level IMPORTS; #19 checks ATTRIBUTE ACCESS resolves to a real clas
   `test_attribute_zero_false_positives` (the 64-module + 888/1105 corpus proof) +
   `test_qa_regen_gate_offline.test_gate_attribute`. Backend image REBUILT; gate live.
 
+## 1f. FIX #20 — LAYERED DEPLOY HEALTH CHECK (deploy gap #3) (DONE + tested 2026-08-17)
+Closes the run-1105 deploy gap #3 (§1c step 8): the health probe reported `live` by hitting
+the Caddy/frontend EDGE (`GET /` → a 404 homepage, `<500`) while the BACKEND was crash-looping
+(502 on backend routes). A deploy that silently reports success while the backend is dead is the
+same "confident but wrong" class every fix here targets.
+- **Where:** `devops/health.py` `probe()` + the call site `devops/orchestrator.py` (STEP 7).
+- **How:** `probe()` is now LAYERED (edge → backend → frontend) and reports `ProbeResult.
+  failed_layer`. Healthy REQUIRES the BACKEND to answer: a `<500` on any backend-liveness path
+  (`_BACKEND_LIVENESS_PATHS = /openapi.json, /health, /healthz` — all Caddy-routed to `backend:8000`;
+  `/openapi.json` is always present in FastAPI). Layers: **edge** = no HTTP response at all
+  (Caddy/URL unreachable); **backend** = edge answers but backend routes are 5xx (the 1105 crash-loop);
+  **frontend** = (only when `has_frontend`) `/` is not `<500` (a 404 homepage still counts as up, so
+  gap #4's missing homepage never false-fails). `probe()` gained `has_frontend` + `backend_paths`
+  kwargs; the orchestrator derives `has_frontend` from `req.files` via `manifest._is_frontend` and
+  prefixes the failure with the layer (`"The backend layer did not become healthy. …"`), also
+  returned as `failed_layer`. `classify()` UNCHANGED (still called without a probe result by
+  `background/autofix.py`), so once the probe correctly fails, the existing MISSING_CONFIG/APP_ERROR
+  → `status="failed"` + teardown flow runs as designed.
+- **Tests (14/14 offline suites pass):** `test_devops_offline.test_health_probe` (httpx.MockTransport,
+  no network) proves FAILURE, not just success — ⭐ the run-1105 regression (backend 502 + `/` 404 →
+  UNHEALTHY, `failed_layer=='backend'`), plus healthy-when-backend-up, 404-homepage-doesn't-false-fail,
+  dead-frontend→frontend layer, unreachable-edge→edge layer, and backend-only stacks. Image REBUILT.
+- **⚠️ DELIBERATE CONSEQUENCE (intended):** after #20, a 1105-style fresh full-scope deploy will now
+  HONESTLY report **failed** at the health gate (backend can't boot without seeded secrets) instead
+  of a false `live`. That is the point — measure truthfully. It does NOT make deploys succeed; gaps
+  #1/#2/#4 still stand (§5).
+
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
 real Opus ON, scoped key. **All three cleanly passed: BA → PI → Architect → Build (no gate
@@ -358,26 +385,36 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP — the DevOps DEPLOY-PATH work (Week-7 secrets + deploy-integration). PLAN-FIRST, get approval before coding.
-**FIX #18 (gate QA's regeneration loop) is DONE + tested + committed (§1d).** The three code-integrity
-build/QA gates (#16/#17/#18) now close the codegen + QA-churn hole. The remaining blockers to a
-truly-usable fresh deploy are ALL in the DevOps deploy path (proven by run 1105, §1c) — none are
-codegen-gate territory. Do the two below IN EITHER ORDER, each plan-first; they are what stands
-between "deploys a stack" and "a working app". A THIRD deterministic-catch item is bundled where it
-naturally fits.
+## 5. EXPLICIT NEXT STEP — the remaining DevOps DEPLOY-PATH gaps (#2 FE↔BE wiring, #4 homepage). PLAN-FIRST.
+The code-integrity gates (#16/#17/#18/#19) close the codegen + QA-churn hole. Deploy **gap #3
+(health-check hole) is now DONE — FIX #20 (§1f)**: the deploy can no longer report `live` while the
+backend is dead. Remaining deploy-path blockers to a truly-usable fresh deploy (proven by run 1105,
+§1c) — each plan-first:
 
-### A. DEPLOY-INTEGRATION — make the deployed app actually FUNCTION in a browser (the §1c step-9 gaps)
-Fix the front/back deploy contract: (1) the frontend reads `NEXT_PUBLIC_API_BASE_URL` but the deploy
-injects `NEXT_PUBLIC_API_URL` — align the name AND set it to THIS deploy's origin (not a remote prod
-domain), remembering `NEXT_PUBLIC_*` is inlined at BUILD time so it must be right BEFORE the frontend
-image is built; (2) design a clean reverse-proxy split (the Caddy `/admin/menu` path is BOTH a
-frontend page and a backend route; backend routes aren't under `/api`) — e.g. serve the backend
-under a real `/api` prefix and have the frontend call `/api/...`; (3) the Architect should commission
-a root `app/page.tsx` homepage (root `/` is currently 404); (4) replace the deploy health-check —
-today it probes only the Caddy EDGE and reported `live` while the backend crash-looped, so it must
-hit a BACKEND route (`/health`) AND ideally load a page and confirm it fetches data.
+### A. DEPLOY-INTEGRATION (gap #2 + #4) — make the deployed app actually FUNCTION in a browser
+Fix the front/back deploy contract (all in `devops/manifest.py`): (1) the frontend reads
+`NEXT_PUBLIC_API_BASE_URL` but the deploy injects `NEXT_PUBLIC_API_URL` — the var name is
+LLM-emergent (nothing pins it), so PIN it as a contract (like AUTH_EXPORTS) AND pass it as a Docker
+BUILD ARG (`_frontend_dockerfile` runs `npm run build` with no ARG; `NEXT_PUBLIC_*` is inlined at
+BUILD time, so a runtime `environment:` has no effect), set to THIS deploy's real origin (not the
+current remote prod domain); (2) design a clean reverse-proxy split — the Caddy `@api` matcher sends
+`/api/*` to the backend but backend routes aren't under `/api` (and `/admin/menu` is BOTH a frontend
+page and a backend route), so use `handle_path /api/*` (strip prefix) so `/api/menu` → backend
+`/menu`, and have the frontend call `/api/...`; (3) the Architect should commission a root
+`app/page.tsx` homepage (root `/` is currently 404). NOTE: FIX #20's health check already covers
+"confirm the backend answers"; a nice follow-on is a post-deploy check that loads a PAGE and confirms
+it fetches data.
 
-### B. Week-7 SECRETS-ONBOARDING — a real deploy of an auth+payments app can't boot without seeded secrets
+### B. ⛔ DEFERRED BY DECISION (2026-08-17) — the Week-7/8 SECRETS-ONBOARDING gap (deploy gap #1)
+**Deliberately NOT auto-seeded.** A real deploy of an auth+payments app fail-fasts across `AUTH0_*`,
+`STRIPE_CLIENT_ID/SECRET_KEY` (genuinely owner-specific), plus `ENCRYPTION_KEY`/`STRIPE_TOKEN_ENC_KEY`/
+`ALLOWED_ORIGINS` and a `REDIS_URL` + a provisioned Redis (platform-generatable) — none of which the
+DevOps deploy path seeds/provisions. The generated code is CORRECT to fail-fast; FIX #20 now makes
+that failure HONEST (a `MISSING_CONFIG` "backend layer" failed, not a false `live`). **The user's
+explicit call: do NOT build a quick auto-seed to make a demo deploy succeed.** This is the same
+secrets-onboarding gap open since Week 7-8 and deserves its OWN careful, dedicated design session
+(per-owner secret onboarding: how an owner connects their Auth0 tenant + Stripe account; and the
+platform-generatable infra secrets + Redis provisioning). Do NOT patch it in passing.
 Run 1105 proved a real deploy of an auth+payments app fail-fasts across `AUTH0_*`, `STRIPE_*`,
 `ENCRYPTION_KEY`, `ALLOWED_ORIGINS`, and needs a `REDIS_URL` + an actual Redis service — none of
 which the DevOps deploy path seeds/provisions. The generated code is CORRECT to fail-fast; the
