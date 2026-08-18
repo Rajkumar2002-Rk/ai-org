@@ -79,6 +79,22 @@ def _system(agent_type: str) -> str:
         "does not match a real model attribute raises ResponseValidationError (500) "
         "as soon as a row is serialized."
     ) if agent_type == "backend" else ""
+    # Frontend API-base contract (deploy gap #2): the deploy wires the backend behind a
+    # `/api` prefix and injects the base URL as `NEXT_PUBLIC_API_BASE_URL` at BUILD time.
+    # The frontend MUST read that exact env var — a different name (or a hardcoded host)
+    # means the browser can't reach the backend (the run-1105 "Loading…" forever bug).
+    # NOTE: this literal MUST match manifest.FRONTEND_API_BASE_ENV; test_devops_offline
+    # asserts they agree.
+    frontend_rule = (
+        " CRITICAL API-base rule: to call the backend, use EXACTLY the environment "
+        "variable `process.env.NEXT_PUBLIC_API_BASE_URL` as the base URL for every "
+        "request (e.g. `fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/menu`)`). Do "
+        "NOT hardcode a backend host/port, do NOT use a relative path without that "
+        "base, and do NOT invent another env-var name (not NEXT_PUBLIC_API_URL, not "
+        "NEXT_PUBLIC_BACKEND_URL). The platform sets NEXT_PUBLIC_API_BASE_URL at build "
+        "time and routes it to the backend; any other name leaves the UI unable to "
+        "reach the API."
+    ) if agent_type == "frontend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "
         f"production-quality code file for the given ticket. Stack: "
@@ -98,7 +114,7 @@ def _system(agent_type: str) -> str:
         f"Return ONLY a JSON "
         f'object: {{"filename": string, "filepath": string, "content": string}}. '
         f"content is the FULL file as a single string. No markdown fences, no prose."
-        + backend_rule
+        + backend_rule + frontend_rule
     )
 
 

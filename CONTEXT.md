@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18/#19 + FIX #20 (LAYERED health check, deploy gap #3) DONE/PUSHED; NEXT = the remaining DevOps deploy-path gaps — #2 FE↔BE wiring (var-name mismatch + build-arg + Caddy prefix) and #4 homepage, PLAN-FIRST. Gap #1 (Week-7/8 secrets+redis onboarding) is DELIBERATELY DEFERRED to its own design session (§5). Fix #19 slice 2 (instance attr access) still logged as optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18/#19 + FIX #20 (health check, gap #3) + FIX #21 (FE↔BE wiring, gap #2) DONE/PUSHED; NEXT = deploy gap #4 (generated homepage — root `/` 404s), PLAN-FIRST. Gap #1 (Week-7/8 secrets+redis onboarding) DELIBERATELY DEFERRED to its own design session (§5.B). Fix #19 slice 2 (instance attr access) still logged as optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -40,8 +40,9 @@ demo.**
 ## 1. CURRENT STATE (all verified this session)
 - **15 deterministic fixes + Code Integrity Engine gates FIX #16 (symbol resolution),
   #17 (backend syntax/AST), #18 (QA-regen gate), #19 (attribute resolution, slice 1) +
-  FIX #20 (layered deploy health check, gap #3) COMPLETE, verified live in the running
-  backend, all 14 offline suites pass, committed + pushed** (§1a–§1f have the detail).
+  DevOps deploy-path FIX #20 (layered health check, gap #3) + FIX #21 (FE↔BE wiring,
+  gap #2) COMPLETE, verified live in the running backend, all 14 offline suites pass,
+  committed + pushed** (§1a–§1g have the detail).
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -294,6 +295,39 @@ same "confident but wrong" class every fix here targets.
   of a false `live`. That is the point — measure truthfully. It does NOT make deploys succeed; gaps
   #1/#2/#4 still stand (§5).
 
+## 1g. FIX #21 — FRONTEND↔BACKEND DEPLOY WIRING (deploy gap #2) (DONE + tested 2026-08-17)
+Closes the run-1105 deploy gap #2 (§1c step 9): the deployed app rendered but every page was stuck
+"Loading…" because the frontend could not reach the backend. Four defects, all fixed against the
+REAL generated artifacts:
+- **(a) var-name mismatch:** the deploy set `NEXT_PUBLIC_API_URL` but the generated frontend read
+  `NEXT_PUBLIC_API_BASE_URL` (LLM-emergent, nothing pinned it). → Deploy now sets
+  `NEXT_PUBLIC_API_BASE_URL`, AND it is CONTRACT-PINNED on the codegen side (Part 3) so a fresh
+  generation reads exactly that var — determinism, not luck (same pattern as AUTH_EXPORTS).
+- **(b) wrong value:** it was `https://{subdomain}/api` (a remote `.apps.rajkumarai.dev` host that
+  doesn't resolve to the local stack). → Now a RELATIVE `/api` (same-origin), works on both the
+  local `localhost:<port>` and the AWS subdomain origins.
+- **(c) build-time inlining:** Next.js inlines `NEXT_PUBLIC_*` at BUILD time, but it was only a
+  runtime `environment:`. → Now a Docker BUILD ARG (`_frontend_dockerfile` `ARG ... ENV ...` before
+  `npm run build`; local compose `build.args`; AWS buildx `--build-arg`).
+- **(d) Caddy /api not stripped:** `@api path /api/*` → backend WITHOUT stripping, so `/api/menu`
+  hit backend `/api/menu` → 404. → Now `handle_path /api/* { reverse_proxy backend:8000 }` STRIPS
+  the prefix so `/api/menu` → backend `/menu`; `/openapi.json /docs /health /healthz` still route to
+  the backend WITHOUT stripping (so the fix #20 health probe is unaffected); everything else →
+  frontend. This also removes the `/admin/menu` collision: that path is the FRONTEND page; the
+  backend endpoint is reached at `/api/admin/menu`.
+- **Files:** `devops/manifest.py` (constants `FRONTEND_API_BASE_ENV`/`_VALUE`, `_caddyfile`/
+  `_caddy_routes`, `_frontend_dockerfile`, `_compose` frontend block), `devops/drivers/aws.py`
+  (frontend `--build-arg`), `developers/agents._system('frontend')` (the contract-pin — Part 3).
+- **Tests (14/14 offline suites pass):** `test_devops_offline.test_frontend_wiring` asserts each of
+  the four 1105 defects is resolved against the REAL generated compose/Caddyfile/Dockerfile, incl.
+  the AWS branch, PLUS the codegen contract-pin matches the manifest constant (drift guard). Image
+  REBUILT.
+- **⚠️ KNOWN LIMITATION (logged, not urgent):** `/api` relative works for CLIENT-side fetches (the
+  browser hits Caddy). A generated page doing SERVER-side (SSR/RSC) fetching inside the frontend
+  container would need `http://backend:8000` instead — acceptable because the generated apps are
+  client-heavy (forced-dynamic `"use client"`; 1105 fetched client-side). Revisit only if a run does
+  server-side data fetching.
+
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
 real Opus ON, scoped key. **All three cleanly passed: BA → PI → Architect → Build (no gate
@@ -385,25 +419,19 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP — the remaining DevOps DEPLOY-PATH gaps (#2 FE↔BE wiring, #4 homepage). PLAN-FIRST.
+## 5. EXPLICIT NEXT STEP — deploy gap #4 (generated homepage). PLAN-FIRST.
 The code-integrity gates (#16/#17/#18/#19) close the codegen + QA-churn hole. Deploy **gap #3
-(health-check hole) is now DONE — FIX #20 (§1f)**: the deploy can no longer report `live` while the
-backend is dead. Remaining deploy-path blockers to a truly-usable fresh deploy (proven by run 1105,
-§1c) — each plan-first:
+(health-check hole) = DONE — FIX #20 (§1f)** and **gap #2 (FE↔BE wiring) = DONE — FIX #21 (§1g)**.
+Remaining deploy-path work, each plan-first:
 
-### A. DEPLOY-INTEGRATION (gap #2 + #4) — make the deployed app actually FUNCTION in a browser
-Fix the front/back deploy contract (all in `devops/manifest.py`): (1) the frontend reads
-`NEXT_PUBLIC_API_BASE_URL` but the deploy injects `NEXT_PUBLIC_API_URL` — the var name is
-LLM-emergent (nothing pins it), so PIN it as a contract (like AUTH_EXPORTS) AND pass it as a Docker
-BUILD ARG (`_frontend_dockerfile` runs `npm run build` with no ARG; `NEXT_PUBLIC_*` is inlined at
-BUILD time, so a runtime `environment:` has no effect), set to THIS deploy's real origin (not the
-current remote prod domain); (2) design a clean reverse-proxy split — the Caddy `@api` matcher sends
-`/api/*` to the backend but backend routes aren't under `/api` (and `/admin/menu` is BOTH a frontend
-page and a backend route), so use `handle_path /api/*` (strip prefix) so `/api/menu` → backend
-`/menu`, and have the frontend call `/api/...`; (3) the Architect should commission a root
-`app/page.tsx` homepage (root `/` is currently 404). NOTE: FIX #20's health check already covers
-"confirm the backend answers"; a nice follow-on is a post-deploy check that loads a PAGE and confirms
-it fetches data.
+### A. GAP #4 — generated HOMEPAGE (root `/` currently 404s)
+Run 1105's deployed frontend had NO root `app/page.tsx`, so opening the live URL hit a 404 (what
+the user saw). The Architect should commission a root homepage ticket (a simple landing page that
+links to the app's real pages — `/menu`, `/order`, `/admin/menu`, etc.). Insertion point: the
+frontend tickets in `architect/builder.py` (where FE tickets are built). Small; deterministic
+(assert the blueprint commissions a `frontend/app/page.tsx`). Optional follow-on (not gap #4): a
+post-deploy check that actually LOADS a page and confirms it fetches data (fix #20 already confirms
+the backend answers; fix #21 already wires the FE→BE calls).
 
 ### B. ⛔ DEFERRED BY DECISION (2026-08-17) — the Week-7/8 SECRETS-ONBOARDING gap (deploy gap #1)
 **Deliberately NOT auto-seeded.** A real deploy of an auth+payments app fail-fasts across `AUTH0_*`,

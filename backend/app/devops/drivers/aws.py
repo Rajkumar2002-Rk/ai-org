@@ -163,9 +163,14 @@ class AwsDriver(DeployDriver):
             for kind, (repo, ctx) in contexts.items():
                 await self._ensure_repo(repo)
                 uri = f"{registry}/{repo}:latest"
+                # gap #2: the frontend needs the API base as a BUILD ARG so Next.js
+                # inlines it into the client bundle (a runtime env is too late).
+                extra = (["--build-arg",
+                          f"{manifest.FRONTEND_API_BASE_ENV}={manifest.FRONTEND_API_BASE_VALUE}"]
+                         if kind == "frontend" else [])
                 code, out = await run_cmd(
                     ["docker", "buildx", "build", "--platform", _TARGET_PLATFORM,
-                     "-t", uri, "--push", ctx],
+                     *extra, "-t", uri, "--push", ctx],
                     timeout=settings.devops_build_timeout)
                 if code != 0:
                     raise RuntimeError(f"buildx build+push {kind} failed: {out[-600:]}")

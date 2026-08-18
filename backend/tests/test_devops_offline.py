@@ -180,6 +180,91 @@ def test_manifest():
           and names["subdomain"] in aws_caddy)
 
 
+def test_frontend_wiring():
+    """DevOps deploy gap #2 (proven against the run-1105 defects specifically): the
+    generated frontend could not reach the backend because (a) the deploy set
+    NEXT_PUBLIC_API_URL but the frontend read NEXT_PUBLIC_API_BASE_URL, (b) the value
+    was a remote domain, (c) it was a runtime env not a BUILD ARG (Next inlines
+    NEXT_PUBLIC_* at build), and (d) Caddy sent /api/* to the backend WITHOUT stripping
+    /api. Each is asserted resolved against the REAL generated artifacts."""
+    from app.developers import agents
+
+    root = tempfile.mkdtemp(prefix="devops-fe-")
+    names = naming.names(1105, "Bella Vista")
+    files = _synthetic_backend() + [
+        {"id": 9, "ticket_id": "FE-1", "filename": "page.tsx",
+         "filepath": "frontend/app/menu/page.tsx",
+         "content": "export default function P(){return <div/>;}\n",
+         "agent_type": "frontend"}]
+    m = manifest.build(files, root, names, subdomain=names["subdomain"], local=True)
+
+    compose = open(m.compose_path).read()
+    fe_dockerfile = open(os.path.join(m.frontend_context, "Dockerfile")).read()
+    caddy = open(os.path.join(m.caddy_context, "Caddyfile")).read()
+    ENV = manifest.FRONTEND_API_BASE_ENV
+    VAL = manifest.FRONTEND_API_BASE_VALUE
+
+    # (a) NAME: the deploy now sets the var the frontend reads — and NOT the wrong one.
+    check("deploy sets NEXT_PUBLIC_API_BASE_URL (the var the 1105 frontend read)",
+          ENV == "NEXT_PUBLIC_API_BASE_URL" and ENV in compose, ENV)
+    check("the wrong NEXT_PUBLIC_API_URL is gone from the compose",
+          "NEXT_PUBLIC_API_URL:" not in compose and "NEXT_PUBLIC_API_URL " not in compose)
+
+    # (b) VALUE: a relative /api (same-origin), NOT the remote .apps.rajkumarai.dev host.
+    check("the API base is the relative /api, not an absolute/remote URL",
+          VAL == "/api" and f'{ENV}: "/api"' in compose)
+    check("the API base does NOT point at the remote apps subdomain",
+          names["subdomain"] not in _fe_env_region(compose))
+
+    # (c) BUILD ARG: present in the Dockerfile BEFORE `npm run build`, and in build.args.
+    dockerfile_arg_before_build = (f"ARG {ENV}" in fe_dockerfile
+                                   and fe_dockerfile.index(f"ARG {ENV}")
+                                   < fe_dockerfile.index("npm run build"))
+    check("frontend Dockerfile declares the API base as an ARG before `npm run build`",
+          dockerfile_arg_before_build, fe_dockerfile)
+    fe_build_block = _fe_env_region(compose).split("container_name:")[0]  # the `build:` section
+    check("compose passes the API base as a build ARG (not runtime-only)",
+          "args:" in fe_build_block and f'{ENV}: "/api"' in fe_build_block)
+
+    # (d) CADDY: /api/* is prefix-STRIPPED to the backend; health/openapi still routed.
+    check("Caddy strips the /api prefix (handle_path /api/*) so /api/menu -> backend /menu",
+          "handle_path /api/* {" in caddy)
+    check("Caddy still routes /openapi.json + /health to the backend (fix #20 probe)",
+          "/openapi.json" in caddy and "/health" in caddy and "backend:8000" in caddy)
+    check("a bare frontend path (/menu, /admin/menu) is NOT sent to the backend",
+          "handle_path /menu" not in caddy and "reverse_proxy frontend:3000" in caddy)
+
+    # AWS branch strips /api too (the prefix fix is not local-only).
+    root2 = tempfile.mkdtemp(prefix="devops-fe-")
+    m2 = manifest.build(files, root2, names, subdomain=names["subdomain"], local=False,
+                        le_email="x@y.com", use_images=True,
+                        image_refs={"backend": "r/b", "frontend": "r/f", "caddy": "r/c"})
+    aws_caddy = open(os.path.join(m2.caddy_context, "Caddyfile")).read()
+    check("AWS Caddy also strips the /api prefix", "handle_path /api/* {" in aws_caddy)
+
+    # Part 3 — the codegen contract-pin: the frontend prompt mandates the SAME var, so a
+    # fresh generation reads exactly what the deploy sets (not a guessed name).
+    fe_prompt = agents._system("frontend")
+    check("frontend developer prompt pins process.env.NEXT_PUBLIC_API_BASE_URL",
+          "process.env.NEXT_PUBLIC_API_BASE_URL" in fe_prompt)
+    check("the pinned var name MATCHES the manifest constant (no drift)",
+          manifest.FRONTEND_API_BASE_ENV in fe_prompt)
+    check("frontend prompt forbids the wrong/invented var names",
+          "NEXT_PUBLIC_API_URL" in fe_prompt and "do NOT" in fe_prompt.replace("Do NOT", "do NOT"))
+    check("the API-base rule is FRONTEND-only (backend prompt does not carry it)",
+          manifest.FRONTEND_API_BASE_ENV not in agents._system("backend"))
+
+
+def _fe_env_region(compose: str) -> str:
+    """Just the frontend service block, so the remote-subdomain check can't be fooled by
+    an unrelated mention elsewhere in the compose."""
+    if "  frontend:" not in compose:
+        return ""
+    start = compose.index("  frontend:")
+    end = compose.index("  caddy:", start) if "  caddy:" in compose[start:] else len(compose)
+    return compose[start:end]
+
+
 # ------------------------------------------------------------------ D. secrets
 def test_secrets():
     print("\nD. Secrets (STEP 5) — encrypted + kept out of logs, provably")
@@ -478,6 +563,7 @@ def main():
     test_sizing()
     test_isolation()
     test_manifest()
+    test_frontend_wiring()
     test_secrets()
     test_cost()
     test_health()

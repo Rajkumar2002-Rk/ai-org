@@ -32,6 +32,18 @@ from app.qa import assembly as qa
 BACKEND_PORT = 8000
 FRONTEND_PORT = 3000
 
+# FE↔BE wiring (deploy gap #2). The generated frontend reaches the backend through
+# EXACTLY this env var (pinned as a contract on the codegen side too —
+# developers/agents._system('frontend')), set to a RELATIVE `/api` prefix so a
+# browser fetch is same-origin and works on BOTH the local (localhost:<port>) and the
+# AWS (real subdomain) origins. Caddy strips the `/api` prefix and forwards to the
+# backend (see `_caddyfile`). It MUST be a Docker BUILD ARG, not just a runtime env:
+# Next.js inlines `NEXT_PUBLIC_*` into the client bundle at build time, so a runtime-only
+# value never reaches the browser (the run-1105 bug). Keep this string in sync with the
+# frontend developer prompt; `test_devops_offline` asserts they agree.
+FRONTEND_API_BASE_ENV = "NEXT_PUBLIC_API_BASE_URL"
+FRONTEND_API_BASE_VALUE = "/api"
+
 # Always needed to run a generated FastAPI + async SQLAlchemy app, whether or not
 # the code imports them by a name the scanner sees.
 _BACKEND_BASE_REQS = [
@@ -181,8 +193,14 @@ CMD ["python", "/srv/_devops_bootstrap.py"]
 def _frontend_dockerfile() -> str:
     # Build at image-build time so a broken generated UI fails the deploy honestly
     # (rather than crash-looping at runtime).
+    # The API base (gap #2) MUST be present as a build ARG here — Next.js inlines
+    # `NEXT_PUBLIC_*` into the client bundle during `npm run build`, so a runtime-only
+    # env would never reach the browser (the run-1105 bug). The caller passes it via
+    # `--build-arg`/compose `build.args`; the ENV makes it visible to `npm run build`.
     return f'''FROM node:20-slim
 WORKDIR /app
+ARG {FRONTEND_API_BASE_ENV}={FRONTEND_API_BASE_VALUE}
+ENV {FRONTEND_API_BASE_ENV}=${FRONTEND_API_BASE_ENV}
 COPY package.json ./
 RUN npm install
 COPY . .
@@ -192,12 +210,37 @@ CMD ["npm", "run", "start"]
 '''
 
 
+def _caddy_routes() -> str:
+    """The shared reverse-proxy routes (deploy gap #2). Order matters in Caddy:
+
+      * `handle_path /api/*` STRIPS the `/api` prefix, so a same-origin frontend call
+        `${NEXT_PUBLIC_API_BASE_URL}/menu` = `/api/menu` reaches the backend as `/menu`.
+        This also removes the `/admin/menu` collision (that path is the FRONTEND page;
+        the backend endpoint is reached at `/api/admin/menu`).
+      * `/openapi.json /docs /health /healthz` go to the backend WITHOUT stripping — the
+        app serves them at those exact paths, and the layered health probe (fix #20)
+        depends on them.
+      * everything else -> the frontend (or the backend if there is no frontend)."""
+    web = "backend:8000"  # overridden by caller via .format
+    return '''	handle_path /api/* {{
+		reverse_proxy backend:8000
+	}}
+	@backend_direct path /openapi.json /docs /health /healthz
+	handle @backend_direct {{
+		reverse_proxy backend:8000
+	}}
+	handle {{
+		reverse_proxy {web}
+	}}'''
+
+
 def _caddyfile(subdomain: str, has_frontend: bool, local: bool,
                le_email: str) -> str:
-    """Reverse proxy. `/api/*` + the app's own health/openapi go to the backend;
-    everything else to the frontend (or the backend if there is no frontend)."""
+    """Reverse proxy. `/api/*` (prefix stripped) + the app's own health/openapi go to
+    the backend; everything else to the frontend (or the backend if there is no
+    frontend). See `_caddy_routes`."""
     web = "backend:8000" if not has_frontend else "frontend:3000"
-    api_matcher = "@api path /api/* /openapi.json /docs /health /healthz"
+    routes = _caddy_routes().format(web=web)
     if local:
         # Local: an internally-trusted cert. The site MUST name the hosts it will
         # be reached by, or `tls internal` has no hostname to mint a cert for and
@@ -210,13 +253,7 @@ def _caddyfile(subdomain: str, has_frontend: bool, local: bool,
 }}
 localhost, host.docker.internal {{
 	tls internal
-	{api_matcher}
-	handle @api {{
-		reverse_proxy backend:8000
-	}}
-	handle {{
-		reverse_proxy {web}
-	}}
+{routes}
 }}
 '''
     # AWS: real Let's Encrypt for the real subdomain.
@@ -224,13 +261,7 @@ localhost, host.docker.internal {{
 	email {le_email}
 }}
 {subdomain} {{
-	{api_matcher}
-	handle @api {{
-		reverse_proxy backend:8000
-	}}
-	handle {{
-		reverse_proxy {web}
-	}}
+{routes}
 }}
 '''
 
@@ -257,11 +288,23 @@ def _compose(names: dict, has_frontend: bool, https_host_port: int,
 
     frontend_block = ""
     if has_frontend:
+        # gap #2: build the frontend WITH the API base as a build ARG (Next inlines
+        # NEXT_PUBLIC_* at build time), not just a runtime env. For the pushed-image
+        # (AWS) path the arg is passed by the buildx build; here (local compose build)
+        # it rides in `build.args`. The runtime `environment:` mirrors it (harmless,
+        # and covers any server-side read).
+        if use_images:
+            fe_source = f"    image: {image_refs.get('frontend')}"
+        else:
+            fe_source = (f"    build:\n"
+                         f"      context: ./frontend\n"
+                         f"      args:\n"
+                         f"        {FRONTEND_API_BASE_ENV}: \"{FRONTEND_API_BASE_VALUE}\"")
         frontend_block = f'''  frontend:
-{_svc_source('frontend', 'frontend')}
+{fe_source}
     container_name: {names['frontend_container']}
     environment:
-      NEXT_PUBLIC_API_URL: "https://{subdomain}/api"
+      {FRONTEND_API_BASE_ENV}: "{FRONTEND_API_BASE_VALUE}"
     depends_on:
       - backend
     networks: [appnet]
