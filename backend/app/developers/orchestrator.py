@@ -182,6 +182,11 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
             r["symbol_repairs"] = sym
             problems.append("unresolved import symbol(s) " + ", ".join(
                 f"{s['module']}.{s['symbol']}" for s in sym))
+        attr = agents.attribute_access_mismatches(content, rel, sym_index)
+        if attr:
+            r["attribute_repairs"] = attr
+            problems.append("unresolved attribute access " + ", ".join(
+                f"{a['class']}.{a['attribute']}" for a in attr))
         if problems:
             r["status"] = agents.STUB_STATUS
             r["gate_problems"] = problems

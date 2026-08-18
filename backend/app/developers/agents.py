@@ -510,16 +510,107 @@ def _module_exports(content: str) -> set | None:
     return names if _collect_module_names(tree.body, names) else None
 
 
+# ---- class attribute surface (FIX #19 — Attribute Resolution Gate) --------------------
+# The curated framework-base attribute surfaces. A class's OWN body defs are captured by
+# AST scan; these are the inherited names we cannot see in the body but must NOT flag.
+# Dunders are excluded on the ACCESS side regardless, so these hold the non-dunder API.
+_SQLA_MODEL_ATTRS = frozenset({
+    "metadata", "registry", "query", "c", "awaitable_attrs",
+    "__table__", "__tablename__", "__mapper__", "__mapper_args__", "__table_args__"})
+_PYDANTIC_MODEL_ATTRS = frozenset({
+    "model_dump", "model_dump_json", "model_validate", "model_validate_json",
+    "model_construct", "model_copy", "model_config", "model_fields", "model_fields_set",
+    "model_extra", "model_rebuild", "model_json_schema", "model_post_init",
+    "dict", "json", "copy", "parse_obj", "parse_raw", "schema", "schema_json",
+    "construct", "validate", "from_orm", "update_forward_refs", "Config"})
+_DYNAMIC_ATTR_METHODS = ("__getattr__", "__getattribute__", "__setattr__", "__init_subclass__")
+
+
+def _class_body_attrs(node: ast.ClassDef) -> tuple[set, bool]:
+    """(attribute names bound on the class, is_dynamic). Captures class-body assigns
+    (`Column(...)`, `relationship(...)`, `mapped_column(...)`), annotations, methods,
+    `@property`/`@hybrid_property` (they are class-body FunctionDefs), nested classes,
+    and `self.X = ...` assignments in methods. `is_dynamic` is True when the class opts
+    into dynamic attributes (a `__getattr__`/`__setattr__` method or a `setattr(...)`
+    call) — its real surface is then unknowable and it must NEVER be flagged.
+    Over-capture is SAFE here (it only suppresses a flag); under-capture is what causes
+    false positives, so this errs toward capturing more."""
+    attrs: set = set()
+    dynamic = False
+    for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            attrs.add(stmt.name)
+            if stmt.name in _DYNAMIC_ATTR_METHODS:
+                dynamic = True
+            for sub in ast.walk(stmt):                     # self.X = ... / self.X: T = ...
+                if isinstance(sub, ast.Assign):
+                    for tgt in sub.targets:
+                        if isinstance(tgt, ast.Attribute) and isinstance(tgt.value, ast.Name) \
+                                and tgt.value.id == "self":
+                            attrs.add(tgt.attr)
+                elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Attribute) \
+                        and isinstance(sub.target.value, ast.Name) and sub.target.value.id == "self":
+                    attrs.add(sub.target.attr)
+        elif isinstance(stmt, ast.ClassDef):
+            attrs.add(stmt.name)
+        elif isinstance(stmt, ast.Assign):
+            for tgt in stmt.targets:
+                for nm in ast.walk(tgt):
+                    if isinstance(nm, ast.Name):
+                        attrs.add(nm.id)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            attrs.add(stmt.target.id)
+    for sub in ast.walk(node):                             # any setattr(...) -> dynamic surface
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                and sub.func.id == "setattr":
+            dynamic = True
+    return attrs, dynamic
+
+
+def _module_class_index(content: str) -> tuple[dict, dict]:
+    """({ClassName -> raw class info}, {local name -> (raw module, original name)}) for one
+    module's source. The imports map lets a class name — or a base class — be resolved to
+    where it is defined, across files. Returns ({}, {}) for unparseable content."""
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return {}, {}
+    classes: dict = {}
+    imports: dict = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            attrs, dynamic = _class_body_attrs(node)
+            classes[node.name] = {
+                "attrs": attrs,
+                "bases": [b.id for b in node.bases if isinstance(b, ast.Name)],
+                # a base we can't name (Attribute like logging.Filter, a Subscript, or a
+                # metaclass= keyword) means the surface is not fully enumerable -> open.
+                "open_base": any(not isinstance(b, ast.Name) for b in node.bases)
+                or bool(node.keywords),
+                "tablename": "__tablename__" in attrs,     # the SQLAlchemy-model signal
+                "dynamic": dynamic,
+            }
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for a in node.names:
+                if a.name != "*":
+                    imports[a.asname or a.name] = (node.module, a.name)
+    return classes, imports
+
+
 def build_symbol_index(project_files: list[dict]) -> dict:
     """Build the in-project symbol index once for a whole build, then reuse it for
-    every file (see `import_symbol_mismatches`). Structure:
+    every file (see `import_symbol_mismatches` / `attribute_access_mismatches`). Structure:
       - modules: dotted module path -> source content (both spellings; __init__ maps
         to its package path)
       - all_paths: every dotted module/package path that exists (for submodule imports)
       - auth_present: whether an auth.py was actually generated
+      - classes: dotted module -> {ClassName -> raw class info} (FIX #19)
+      - class_imports: dotted module -> {local name -> (raw module, original name)} (FIX #19)
     """
     modules: dict[str, str] = {}
     all_paths: set[str] = set()
+    classes: dict[str, dict] = {}
+    class_imports: dict[str, dict] = {}
     auth_present = False
     for f in project_files:
         fp = (f.get("filepath") or f.get("filename") or "")
@@ -527,12 +618,16 @@ def build_symbol_index(project_files: list[dict]) -> dict:
             continue
         aliases, _is_pkg = _dotted_aliases(fp)
         content = f.get("content") or ""
+        cdefs, cimports = _module_class_index(content)
         for a in aliases:
             modules[a] = content
             all_paths.add(a)
+            classes[a] = cdefs
+            class_imports[a] = cimports
         if any(a in _AUTH_ALIASES for a in aliases):
             auth_present = True
-    return {"modules": modules, "all_paths": all_paths, "auth_present": auth_present}
+    return {"modules": modules, "all_paths": all_paths, "auth_present": auth_present,
+            "classes": classes, "class_imports": class_imports}
 
 
 def import_symbol_mismatches(content: str, filepath: str, index: dict) -> list[dict]:
@@ -584,6 +679,159 @@ def import_symbol_mismatches(content: str, filepath: str, index: dict) -> list[d
                 continue
             findings.append({"file": filepath, "line": node.lineno, "module": mod,
                              "symbol": y, "available": sorted(exports)})
+    return findings
+
+
+# ---------------------------------------------------------------- attribute resolution (FIX #19)
+# NO ATTRIBUTE: the 3rd most common structural LLM codegen error (after wrong imports/#16
+# and syntax/#17). Code accesses a field/method that does not exist on the class it uses —
+# e.g. `Order.total_amonut` (typo) or `MenuItem.total_amount` (a field models.py never
+# defines; the CONTEXT §"KNOWN-OPEN" example). This is a DIFFERENT mechanism than #16: #16
+# checks module-level IMPORTS; #19 checks ATTRIBUTE ACCESS resolves to a real attribute of
+# a known in-project class.
+#
+# SLICE 1 — CLASS-NAME access only (`ClassName.attr`): the type is the named class, so NO
+# instance type-inference is needed (that is where false positives live; deferred to a
+# later slice). HARD REQUIREMENT — zero false positives. `ClassName.attr` is flagged ONLY
+# when the class is an ENUMERABLE in-project class (its full attribute surface is known)
+# AND `attr` is neither a body attribute, an inherited framework attribute (SQLAlchemy /
+# Pydantic curated surface), nor a dunder. A class is treated as OPEN (never flagged) if it
+# is dynamic (`__getattr__`/`setattr`), has any base we cannot fully enumerate, or is not
+# in-project. Instance access (`x.attr`), chained access, module-qualified access, and
+# stored/assigned targets are all OUT OF SCOPE for slice 1 -> skipped.
+
+
+def _alt_module_spelling(mod: str) -> str | None:
+    """backend.app.x <-> app.x (the two spellings the same file answers to)."""
+    if mod.startswith("backend.app"):
+        return mod[len("backend."):]
+    if mod == "app" or mod.startswith("app."):
+        return "backend." + mod
+    return None
+
+
+def _lookup_class(name: str, module: str, index: dict) -> tuple[str, str] | None:
+    """Resolve a class NAME as referenced inside `module` to the (dotted module, ClassName)
+    where it is DEFINED — via a class defined in that module or imported into it from an
+    in-project module. None if it is not an enumerable in-project class."""
+    classes = index.get("classes", {})
+    if name in classes.get(module, {}):
+        return module, name
+    tgt = index.get("class_imports", {}).get(module, {}).get(name)
+    if tgt:
+        tmod, tname = tgt
+        for cand in (tmod, _alt_module_spelling(tmod)):
+            if cand and tname in classes.get(cand, {}):
+                return cand, tname
+    return None
+
+
+def _resolve_class_attrs(module: str, name: str, index: dict, seen: set | None = None) -> set | None:
+    """The FULL attribute surface of an in-project class, or None if the class is OPEN and
+    must never be flagged (dynamic, or any base we cannot fully enumerate). ORM models
+    (identified by `__tablename__`) get the curated SQLAlchemy surface; Pydantic models
+    (base `BaseModel`) get the Pydantic surface; in-project base classes are unioned
+    recursively; any other base -> open."""
+    seen = seen or set()
+    if (module, name) in seen:                             # inheritance cycle -> give up safely
+        return None
+    seen.add((module, name))
+    raw = index.get("classes", {}).get(module, {}).get(name)
+    if raw is None or raw["dynamic"]:
+        return None
+    attrs = set(raw["attrs"])
+    if raw["tablename"]:                                   # SQLAlchemy ORM model
+        return attrs | _SQLA_MODEL_ATTRS
+    if raw["open_base"]:
+        return None
+    for base in raw["bases"]:
+        if base == "BaseModel":
+            attrs |= _PYDANTIC_MODEL_ATTRS
+            continue
+        if base == "object":
+            continue
+        tgt = _lookup_class(base, module, index)
+        if tgt is None:                                    # base not enumerable in-project -> open
+            return None
+        sub = _resolve_class_attrs(tgt[0], tgt[1], index, seen)
+        if sub is None:
+            return None
+        attrs |= sub
+    return attrs
+
+
+def _stored_names(tree: ast.AST) -> set:
+    """Every name that is ASSIGNED or bound as a parameter anywhere in the file. A class
+    name that is also a local variable/param is ambiguous, so it is excluded from the
+    class map (conservative — suppresses a possible flag, never adds a false one)."""
+    out: set = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            out.add(n.id)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            args = n.args
+            for a in (list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)
+                      + ([args.vararg] if args.vararg else [])
+                      + ([args.kwarg] if args.kwarg else [])):
+                out.add(a.arg)
+    return out
+
+
+def attribute_access_mismatches(content: str, filepath: str, index: dict) -> list[dict]:
+    """Structured findings for every `ClassName.attr` in a generated backend `.py` whose
+    `attr` does not exist on that enumerable in-project class (FIX #19, slice 1). Zero
+    false positives by construction (see the module docstring). Each finding:
+    {file, line, class, module, attribute, available} — machine-readable for
+    `repair_instructions` (an ATTRIBUTE_RESOLUTION_FAILURE)."""
+    if not filepath.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return []                                          # syntax is its own finding (#17)
+    aliases = _dotted_aliases(filepath)[0]
+    all_classes = index.get("classes", {})
+    module = next((a for a in aliases if a in all_classes), (aliases or [""])[0])
+
+    own_classes, own_imports = _module_class_index(content)
+    shadowed = _stored_names(tree)
+    # name -> (defining module, ClassName) for every enumerable in-project class this file
+    # can refer to by a bare name, minus anything shadowed by a local variable/param.
+    classmap: dict[str, tuple] = {}
+    for cname in own_classes:
+        if cname not in shadowed:
+            classmap[cname] = (module, cname)
+    for local, (tmod, tname) in own_imports.items():
+        if local in shadowed or local in classmap:
+            continue
+        for cand in (tmod, _alt_module_spelling(tmod)):
+            if cand and tname in all_classes.get(cand, {}):
+                classmap[local] = (cand, tname)
+                break
+
+    findings: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
+            continue                                       # only attribute READS on a bare name
+        if not isinstance(node.value, ast.Name):
+            continue                                       # single-level `ClassName.attr` only
+        cls = node.value.id
+        if cls not in classmap:
+            continue
+        attr = node.attr
+        if attr.startswith("__") and attr.endswith("__"):  # dunders: skip
+            continue
+        cmod, cname = classmap[cls]
+        surface = _resolve_class_attrs(cmod, cname, index)
+        if surface is None:                                # open class -> never flag
+            continue
+        if attr in surface:
+            continue
+        body_attrs = index["classes"][cmod][cname]["attrs"]
+        findings.append({
+            "file": filepath, "line": node.lineno, "class": cname, "module": cmod,
+            "attribute": attr,
+            "available": sorted(a for a in body_attrs if not a.startswith("__"))})
     return findings
 
 
@@ -653,6 +901,23 @@ def repair_instructions(result: dict) -> str:
                 f"Repair: import one of the available symbols above, or implement the needed "
                 f"behaviour INLINE in this file. Do NOT invent a symbol the module does not "
                 f"export, and do NOT modify the imported module."
+            )
+
+    # ATTRIBUTE_RESOLUTION_FAILURE (fix #19).
+    attrs = result.get("attribute_repairs") or []
+    if attrs:
+        parts.append("\n=== ATTRIBUTE_RESOLUTION_FAILURE — repair ONLY this file, do not "
+                     "touch any other file ===")
+        for r in attrs:
+            avail = ", ".join(r.get("available") or []) or "(the class defines no fields of its own)"
+            parts.append(
+                f"\nClass: {r['class']}  (defined in {r['module']})\n"
+                f"Accessed attribute (does NOT exist on that class): {r['class']}."
+                f"{r['attribute']}  (line {r.get('line')})\n"
+                f"Real attributes of {r['class']}: {avail}\n"
+                f"Repair: use a real attribute/field from the list above (this is usually a "
+                f"typo or a wrong field name), or add the field to the class ONLY if this file "
+                f"owns that class's definition. Do NOT modify the class's module from here."
             )
     return "\n".join(parts)
 

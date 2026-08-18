@@ -40,8 +40,10 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 _MODELS = {"id": 1, "filepath": "backend/app/models.py", "content": (
     "from backend.app.database import Base\n"
     "from sqlalchemy import Column, Integer, String\n"
-    "class StripeAccount(Base):\n    __tablename__ = 'stripe_accounts'\n    id = Column(Integer)\n"
-    "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n    id = Column(Integer)\n")}
+    "class StripeAccount(Base):\n    __tablename__ = 'stripe_accounts'\n"
+    "    id = Column(Integer)\n    user_id = Column(Integer)\n    connected = Column(Boolean)\n"
+    "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n"
+    "    id = Column(Integer)\n    name = Column(String)\n    price = Column(Integer)\n    status = Column(String)\n")}
 _DATABASE = {"id": 2, "filepath": "backend/app/database.py", "content": (
     "Base = object\n"
     "async def get_db():\n    yield None\n"
@@ -86,11 +88,35 @@ def test_gate_symbol():
           "IMPORT_RESOLUTION_FAILURE" in rt and "StripeOAuthState" in rt, rt)
     # Once models.py DOES export StripeOAuthState, the same file is clean.
     models_fixed = {**_MODELS, "content": _MODELS["content"] +
-                    "class StripeOAuthState(Base):\n    __tablename__ = 'stripe_oauth_states'\n    id = Column(Integer)\n"}
+                    "class StripeOAuthState(Base):\n    __tablename__ = 'stripe_oauth_states'\n"
+                    "    id = Column(Integer)\n    state = Column(String)\n"
+                    "    user_id = Column(Integer)\n    expires_at = Column(TIMESTAMP)\n"}
     files2 = [models_fixed, _DATABASE, _AUTH,
               {"id": 11, "filepath": "backend/app/routes/stripe.py", "content": bad}]
     check("with StripeOAuthState defined, the same stripe.py passes the gate",
           orch._gate_regenerated(bad, "backend/app/routes/stripe.py", files2, 11) == {}, "should be clean")
+
+
+def test_gate_attribute():
+    """The QA-regen gate also runs the attribute-resolution check (fix #19): a regenerated
+    file accessing a field the in-project model does not define is flagged, not accepted."""
+    bad = ("from backend.app.models import MenuItem\n"
+           "from sqlalchemy import select\n"
+           "def q():\n    return select(MenuItem.total_amount)\n")   # MenuItem has no total_amount
+    files = [_MODELS, _DATABASE, _AUTH,
+             {"id": 13, "filepath": "backend/app/routes/menu.py", "content": bad}]
+    gate = orch._gate_regenerated(bad, "backend/app/routes/menu.py", files, 13)
+    check("a regenerated file with a bad attribute access is flagged by the QA gate",
+          [a["attribute"] for a in gate.get("attribute_repairs", [])] == ["total_amount"], str(gate))
+    rt = orch.dev_agents.repair_instructions(gate)
+    check("gate result renders an ATTRIBUTE_RESOLUTION_FAILURE repair",
+          "ATTRIBUTE_RESOLUTION_FAILURE" in rt and "total_amount" in rt, rt)
+    good = bad.replace("total_amount", "price")
+    check("using a real field passes the QA gate",
+          orch._gate_regenerated(good, "backend/app/routes/menu.py",
+                                 [_MODELS, _DATABASE, _AUTH,
+                                  {"id": 13, "filepath": "backend/app/routes/menu.py", "content": good}], 13) == {},
+          "should be clean")
 
 
 def test_gate_clean_and_noop():
@@ -202,6 +228,7 @@ async def scenario_accepts_clean():
 async def main():
     test_gate_syntax()
     test_gate_symbol()
+    test_gate_attribute()
     test_gate_clean_and_noop()
     test_gate_zero_false_positives()
     await scenario_converges()

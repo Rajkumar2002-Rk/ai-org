@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-16 late) — 15 fixes + FIX #16 + FIX #17 + FIX #18 (QA-regen code-integrity gate) DONE/PUSHED; run 1105 DEPLOYED a real stack but was NOT usable end-to-end (deploy-integration + Week-7 secrets gaps); NEXT = the DevOps deploy-path work (Week-7 secrets/redis onboarding + the frontend↔backend deploy-integration gap), then the third-party dependency slice — all PLAN-FIRST
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16/#17/#18 + FIX #19 (Attribute Resolution Gate, slice 1) DONE/PUSHED; NEXT = either (a) Fix #19 slice 2 (annotated/constructed INSTANCE attribute access — user wants to discuss) or (b) the DevOps deploy-path work (health-check hole #3 first, then Week-7 secrets/redis + FE↔BE wiring) — all PLAN-FIRST
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -38,9 +38,10 @@ deploy-path work is the NEXT priority (§5)**. The 888 fixture is still the ONLY
 demo.**
 
 ## 1. CURRENT STATE (all verified this session)
-- **15 deterministic fixes + FIX #16 (Symbol Resolution Gate) + FIX #17 (backend
-  syntax/AST gate) COMPLETE, verified live in the running backend, all 13 free offline
-  suites pass, committed + pushed** (§1a/§1b have the detail).
+- **15 deterministic fixes + the Code Integrity Engine gates FIX #16 (symbol resolution),
+  #17 (backend syntax/AST), #18 (QA-regen gate), #19 (attribute resolution, slice 1)
+  COMPLETE, verified live in the running backend, all 14 offline suites pass, committed +
+  pushed** (§1a–§1e have the detail).
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -227,6 +228,44 @@ separate regeneration path.
   accepts a clean rewrite immediately. NOTE: `test_qa_retry_loop`/`test_qa_teardown` mocks were
   updated to the current `build_ticket(..., repair="")` signature (same fix as the developer mocks).
 - Backend image REBUILT so the gate is live for the next run.
+
+## 1e. FIX #19 — ATTRIBUTE RESOLUTION GATE, slice 1 (DONE + tested 2026-08-17)
+Research-backed: after wrong imports (#16) and syntax (#17), "No attribute" is the next most
+common structural LLM codegen error (86K-error taxonomy across 7 models). Code accesses a
+field/method that doesn't exist on a class it uses — e.g. `Order.total_amonut` (typo),
+`MenuItem.total_amount` (the CONTEXT §"KNOWN-OPEN" example). DIFFERENT mechanism than #16 (#16
+checks module-level IMPORTS; #19 checks ATTRIBUTE ACCESS resolves to a real class attribute).
+- **Slice 1 scope = CLASS-NAME access only (`ClassName.attr`)** — the type IS the named class,
+  so NO instance type-inference (that is where false positives live; deferred to slice 2).
+  Instance access (`x.attr`), chained/module-qualified access, and stored targets are OUT →
+  skipped. (User approved class-name-only; wants to DISCUSS slice 2 = annotated/constructed
+  instance access, now that the FP proof stayed clean.)
+- **Index extension (NOT a parallel system):** `agents.build_symbol_index` now also returns
+  `classes` (dotted module → {ClassName → raw info: body attrs incl `self.X=`, bases, tablename,
+  dynamic, open_base}) and `class_imports` (name → origin), built in the same file-set pass.
+- **Resolution + zero-FP rules:** `_resolve_class_attrs` returns a class's FULL attribute surface
+  or None (=OPEN → never flag). ORM models (detected by `__tablename__`) get a curated
+  SQLAlchemy base surface (`metadata/registry/query/c/__table__/…`); Pydantic (`BaseModel` base)
+  gets the Pydantic surface (`model_dump/model_validate/model_fields/…`); in-project base classes
+  union recursively; ANY unresolvable/third-party base, a metaclass=, a `__getattr__`/`setattr`
+  (dynamic), or a shadowed class name → OPEN/skip. Dunders skipped on the access side. Captures
+  BOTH `Column(...)` (Assign) and `Mapped[..]=mapped_column(...)` (AnnAssign), relationships,
+  `@property`/methods.
+- **Detector:** `agents.attribute_access_mismatches(content, filepath, index)` → structured
+  findings `{file, line, class, module, attribute, available}`. `repair_instructions` renders a
+  targeted `ATTRIBUTE_RESOLUTION_FAILURE` (class + bad attr + the class's real fields).
+- **Wiring:** `developers/orchestrator._collect_stubs` (build gate, alongside #16/#17) AND
+  `qa/orchestrator._gate_regenerated` (the Fix #18 QA-regen gate) — same flag → structured-repair
+  → bounded-retry / reject flow. No collision.
+- **Zero false positives — PROVEN:** 0 findings across the platform's own 64 backend modules AND
+  every real generated fixture (888's 10 files + the captured 1105/1071 files), while flagging the
+  synthetic `MenuItem.total_amount` / `Order.total_amonut` with correct `available`.
+- **Tests (14/14 offline suites pass):** `test_developers_offline.test_attribute_resolution_gate`
+  (typos flagged; real columns / relationship / method / dunder / SQLA+Pydantic base attrs NOT
+  flagged; OPEN classes — logging.Filter/ABC base, `__getattr__`, DeclarativeBase — NOT flagged;
+  instance/constructed/module-qualified/shadowed OUT of scope; gate integration + repair text) +
+  `test_attribute_zero_false_positives` (the 64-module + 888/1105 corpus proof) +
+  `test_qa_regen_gate_offline.test_gate_attribute`. Backend image REBUILT; gate live.
 
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),

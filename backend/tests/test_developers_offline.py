@@ -606,6 +606,159 @@ def test_python_syntax_gate():
           "without a default" in rt and "with a default" in rt, rt)
 
 
+# Shared in-project fixtures for the attribute-resolution tests (SQLAlchemy models with
+# both `Column` and `mapped_column`/Mapped styles, a Pydantic schema, a plain class, and
+# OPEN classes that must never be flagged).
+_ATTR_MODELS = {"id": 1, "filepath": "backend/app/models.py", "content": (
+    "from backend.app.database import Base\n"
+    "from sqlalchemy import Column, Integer, String\n"
+    "from sqlalchemy.orm import Mapped, mapped_column, relationship\n"
+    "class MenuItem(Base):\n"
+    "    __tablename__ = 'menu_items'\n"
+    "    id = Column(Integer, primary_key=True)\n"
+    "    name = Column(String)\n"
+    "    price = Column(Integer)\n"
+    "    status = Column(String)\n"
+    "class Order(Base):\n"
+    "    __tablename__ = 'orders'\n"
+    "    id: Mapped[int] = mapped_column(Integer, primary_key=True)\n"
+    "    total_price: Mapped[int] = mapped_column(Integer)\n"
+    "    user_id: Mapped[int] = mapped_column(Integer)\n"
+    "    items = relationship('OrderItem')\n"
+    "    def label(self):\n        return f'order {self.id}'\n")}
+_ATTR_SCHEMAS = {"id": 2, "filepath": "backend/app/schemas.py", "content": (
+    "from pydantic import BaseModel\n"
+    "class OrderIn(BaseModel):\n    quantity: int\n    note: str\n")}
+_ATTR_OPEN = {"id": 3, "filepath": "backend/app/open_cls.py", "content": (
+    "import logging\n"
+    "from abc import ABC\n"
+    "class Filt(logging.Filter):\n    own = 1\n"          # base logging.Filter -> open
+    "class Svc(ABC):\n    own = 1\n"                       # base ABC (in-project name, unresolvable) -> open
+    "class Dyn:\n    real = 1\n    def __getattr__(self, k):\n        return None\n")}  # dynamic -> open
+_ATTR_DB = {"id": 4, "filepath": "backend/app/database.py", "content": (
+    "from sqlalchemy.orm import DeclarativeBase\n"
+    "class Base(DeclarativeBase):\n    pass\n")}
+
+
+def test_attribute_resolution_gate():
+    """FIX #19 (slice 1): `ClassName.attr` must resolve to a real attribute of a KNOWN
+    in-project class. Catches the 'No attribute' class — the CONTEXT `MenuItem.total_amount`
+    example and typos like `Order.total_amonut` — while NEVER flagging real fields, dunders,
+    inherited framework attributes, relationships, or OPEN classes (dynamic / unresolvable
+    base / third-party). Class-name access only; instance access is out of slice-1 scope."""
+    files = [_ATTR_MODELS, _ATTR_SCHEMAS, _ATTR_OPEN, _ATTR_DB]
+    idx = agents.build_symbol_index(files)
+
+    def flags(src):
+        f = {"filepath": "backend/app/routes/x.py", "content": src}
+        return agents.attribute_access_mismatches(src, f["filepath"],
+                                                  agents.build_symbol_index(files + [f]))
+
+    bad = ("from backend.app.models import MenuItem, Order\n"
+           "from sqlalchemy import select\n"
+           "def a():\n    return select(MenuItem.total_amount)\n"     # CONTEXT example
+           "def b():\n    return Order.total_amonut\n")               # typo
+    found = flags(bad)
+    got = sorted((f["class"], f["attribute"]) for f in found)
+    check("flags MenuItem.total_amount (CONTEXT example) + Order.total_amonut (typo)",
+          got == [("MenuItem", "total_amount"), ("Order", "total_amonut")], str(got))
+    check("the finding lists the class's REAL fields",
+          any(f["class"] == "Order" and set(f["available"]) >= {"id", "total_price", "user_id"}
+              for f in found), str(found))
+
+    ok = ("from backend.app.models import MenuItem, Order\n"
+          "from sqlalchemy import select\n"
+          "def a():\n    return select(MenuItem.status, MenuItem.price, Order.total_price)\n"  # real columns
+          "def b():\n    return Order.items\n"                    # relationship
+          "def c():\n    return Order.label\n"                    # method
+          "def d():\n    return Order.__table__\n"                # dunder
+          "def e():\n    return MenuItem.metadata\n"              # SQLA base attr
+          "def f():\n    return Order.query\n")                   # SQLA base attr
+    check("real columns / relationship / method / dunder / SQLA-base attrs are NOT flagged",
+          flags(ok) == [], str(flags(ok)))
+
+    pyd = ("from backend.app.schemas import OrderIn\n"
+           "def a():\n    return OrderIn.quantity\n"              # real field
+           "def b():\n    return OrderIn.model_fields\n"          # Pydantic base attr
+           "def c():\n    return OrderIn.notez\n")                # typo -> flagged
+    pf = sorted((f["class"], f["attribute"]) for f in flags(pyd))
+    check("Pydantic: real field + model_fields NOT flagged; a typo IS flagged",
+          pf == [("OrderIn", "notez")], str(pf))
+
+    openacc = ("from backend.app.open_cls import Filt, Svc, Dyn\n"
+               "from backend.app.database import Base\n"
+               "def a():\n    return Filt.anything\n"             # logging.Filter base -> open
+               "def b():\n    return Svc.whatever\n"              # ABC base -> open
+               "def c():\n    return Dyn.nope\n"                  # __getattr__ -> open
+               "def d():\n    return Base.metadata\n")            # DeclarativeBase base -> open
+    check("OPEN classes (third-party/ABC base, dynamic, DeclarativeBase) are NEVER flagged",
+          flags(openacc) == [], str(flags(openacc)))
+
+    outofscope = ("from backend.app.models import Order\n"
+                  "def a(o):\n    return o.total_amonut\n"        # instance access -> slice-2, skip
+                  "def b():\n    o = Order()\n    return o.total_amonut\n"  # local construction -> skip
+                  "import backend.app.models as m\n"
+                  "def c():\n    return m.Order.total_amonut\n")  # module-qualified -> skip
+    check("instance/constructed/module-qualified access is OUT of slice-1 scope (skipped)",
+          flags(outofscope) == [], str(flags(outofscope)))
+
+    shadow = ("from backend.app.models import Order\n"
+              "def a():\n    Order = object()\n    return Order.total_amonut\n")  # shadowed name
+    check("a class name shadowed by a local variable is NOT flagged (ambiguous)",
+          flags(shadow) == [], str(flags(shadow)))
+
+    # Gate integration: _collect_stubs rejects a file with a bad attribute access.
+    from app.developers import orchestrator as orch
+    built = [{**_ATTR_MODELS, "ticket_id": "FND-1", "status": "generated"},
+             {"ticket_id": "BE-1", "filepath": "backend/app/routes/x.py", "status": "generated",
+              "content": "from backend.app.models import Order\ndef a():\n    return Order.total_amonut\n"}]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("gate rejects the ticket with the bad attribute access",
+          [s["ticket_id"] for s in stubbed] == ["BE-1"], str([s["ticket_id"] for s in stubbed]))
+    be1 = next(s for s in built if s["ticket_id"] == "BE-1")
+    check("the rejected ticket carries structured attribute_repairs",
+          be1.get("attribute_repairs") and be1["attribute_repairs"][0]["attribute"] == "total_amonut",
+          str(be1.get("attribute_repairs")))
+    check("the model ticket is left untouched", built[0]["status"] == "generated")
+    rt = agents.repair_instructions(be1)
+    check("repair text is an ATTRIBUTE_RESOLUTION_FAILURE naming the class + attribute",
+          "ATTRIBUTE_RESOLUTION_FAILURE" in rt and "Order" in rt and "total_amonut" in rt, rt)
+
+
+def test_attribute_zero_false_positives():
+    """HARD REQUIREMENT: zero false positives on real, working code. Run the attribute
+    gate across the platform's own ~64 backend modules AND every real generated fixture
+    (888's 10 files + the captured 1105 files). Not one may be flagged."""
+    import os
+    import glob
+    app_dir = os.path.join(os.path.dirname(__file__), "..", "app")
+    platform = []
+    for path in glob.glob(os.path.join(app_dir, "**", "*.py"), recursive=True):
+        rel = "backend/" + os.path.relpath(path, os.path.join(app_dir, "..")).replace(os.sep, "/")
+        platform.append({"filepath": rel, "content": open(path, encoding="utf-8").read()})
+    pidx = agents.build_symbol_index(platform)
+    pf = []
+    for f in platform:
+        pf += agents.attribute_access_mismatches(f["content"], f["filepath"], pidx)
+    check(f"ZERO false positives across the platform's own {len(platform)} backend modules",
+          pf == [], str([(x["file"].split("/")[-1], x["class"] + "." + x["attribute"]) for x in pf[:8]]))
+
+    fx = os.path.join(os.path.dirname(__file__), "fixtures")
+    real = [{"filepath": os.path.basename(p).replace("__", "/"),
+             "content": open(p, encoding="utf-8").read()}
+            for p in sorted(glob.glob(os.path.join(fx, "gen888", "*.py")))]
+    for name in ("stripe_stripeoauthstate_1105.py", "order_be_3_param_order_1071.py"):
+        p = os.path.join(fx, name)
+        if os.path.isfile(p):
+            real.append({"filepath": f"backend/app/routes/{name}", "content": open(p, encoding="utf-8").read()})
+    ridx = agents.build_symbol_index(real)
+    rf = []
+    for f in real:
+        rf += agents.attribute_access_mismatches(f["content"], f["filepath"], ridx)
+    check(f"ZERO false positives across {len(real)} real generated fixtures (888 + 1105)",
+          rf == [], str([(x["file"], x["class"] + "." + x["attribute"]) for x in rf[:8]]))
+
+
 async def scenario_syntax_repair_retry():
     print("\n=== S5: a syntax-broken backend file is REPAIRED via the structured retry -> built ===")
     pid = await _make_project()
@@ -741,6 +894,8 @@ async def main():
         test_import_symbol_resolution_gate()
         test_import_symbol_zero_false_positives()
         test_python_syntax_gate()
+        test_attribute_resolution_gate()
+        test_attribute_zero_false_positives()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

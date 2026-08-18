@@ -221,6 +221,9 @@ def _gate_regenerated(candidate: str, filepath: str, files: list[dict],
     sym = dev_agents.import_symbol_mismatches(candidate, filepath, index)
     if sym:
         return {"symbol_repairs": sym}
+    attr = dev_agents.attribute_access_mismatches(candidate, filepath, index)
+    if attr:
+        return {"attribute_repairs": attr}
     return {}
 
 
