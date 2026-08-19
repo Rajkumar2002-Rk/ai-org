@@ -646,6 +646,17 @@ Run 1105 proved a real deploy of an auth+payments app fail-fasts across `AUTH0_*
 which the DevOps deploy path seeds/provisions. The generated code is CORRECT to fail-fast; the
 platform must seed these (per-owner secrets + a provisioned Redis) at deploy time. Big, separate.
 
+**📄 PLAN WRITTEN (2026-08-19), NOT built — `PLAN_owner_onboarding.md` (repo root).** Full plan-first
+proposal for the OWNER-account half of gap #1 ("problem #1"). Decisions locked with the user: Auth0 =
+platform auto-provisions (owner does nothing); Stripe = click-to-connect (Stripe Connect OAuth) surfaced
+in a NEW BA `connect_accounts` stage BEFORE deploy; Email = platform sends on the owner's behalf; SMS =
+platform-provide-if-simple-else-defer. Key finding in the plan: the only GENUINELY owner-specific secret
+is the connected Stripe `account_id`; STRIPE_CLIENT_ID/SECRET_KEY/REDIRECT_URI + Auth0 tenant + SMTP are
+all platform-held. Includes the one-time HUMAN setup (platform Stripe Connect acct, Auth0 Management app,
+email sender), the deploy-STEP-5 injection design, zero-regression test strategy, and a build order.
+The PLATFORM-solvable trio (crypto-key mint+persist, Redis service, config defaults) is a SEPARATE plan
+(problem #3, still to write). Do NOT implement either without explicit go-ahead; do NOT auto-seed secrets.
+
 ### C. (bundle where it fits) NEW deterministic-catchable codegen bugs 1105 surfaced
 - **DDL bug:** `models.py` `server_default='CURRENT_TIMESTAMP'` as a STRING → `create_all` fails →
   no tables → every DB endpoint 500s. Make smoke_boot/QA actually CREATE TABLES (not just "uvicorn
