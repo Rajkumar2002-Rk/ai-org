@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-19) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#24 all DONE + COMMITTED + PUSHED (HEAD 290ff82). Run 1289's REAL QA 500s (order/notification endpoints) were root-caused to get_db swallowing HTTPException→500 → **FIX #24 = BUILT + tested + live** (AST build-gate detector + QA-regen gate + backend prompt rule; deterministic; §1k). NEXT = re-run 1289 QA→deploy to reach the honest Week-7/8 secrets/redis gap (deploy gap #1, deferred by decision — do NOT auto-seed). Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22). Fix #19 slice 2 still optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-19) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#24 all DONE + COMMITTED + PUSHED (HEAD 290ff82). Run 1289's REAL QA 500s (order/notification endpoints) were root-caused to get_db swallowing HTTPException→500 → **FIX #24 = BUILT + tested + live** (AST build-gate detector + QA-regen gate + backend prompt rule; deterministic; §1k). **Validated live: hand-fixed 1289's get_db → QA 103/1 (all 20 500s resolved, §1k). Then re-secured 1289 (real Opus PASS, Fix #23 holds) + deploy → HONESTLY failed at the backend/secrets wall (Fix #20 holds, no false live; §1l).** ⭐ NEW GAP FOUND: the security reviewer's fix loop is UNGATED — it reintroduced the get_db swallow → **candidate FIX #25** (gate `reviewer._fix` with the build detectors, like Fix #18 did for QA; plan-first, NOT built; §1l). NEXT = decide FIX #25 (plan-first) and/or the deferred deploy gap #1 (secrets onboarding — do NOT auto-seed). Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22). Fix #19 slice 2 still optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -481,6 +481,39 @@ Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run
   fresh full `POST /pipeline/secure` (Fix #23 makes it PASS per §1j step 4; ~$ Opus) — separate from
   the get_db fix and NOT done here (would spend money; awaiting user call). After that: QA→deploy hits
   the honest Week-7/8 secrets gap (deploy gap #1, deferred).
+
+## 1l. RUN 1289 re-secure → DEPLOY reached the honest secrets wall + ⭐ NEW GAP: the reviewer fix-loop is UNGATED (candidate FIX #25) (2026-08-19)
+Per user request ("re-secure 1289 then deploy") after §1k's get_db hand-fix. Exact sequence + findings:
+1. **First `POST /pipeline/secure` SILENTLY NO-OP'd** — the review has a HARD GATE (`main._run_review`
+   line ~284) requiring `build:status:{pid}=="done"` in redis, but that key has a 24h TTL and had
+   EXPIRED (handoff was 2 days prior). It set `secure:status=error` with ZERO llm spend. Fixed HONESTLY:
+   ran the real `main._smoke_boot(1289)` on the CURRENT DB files (with the get_db fix) → **booted clean**
+   → legitimately restored `build:status:1289=done` (NOT faked — the code demonstrably boots).
+2. **Re-`POST /pipeline/secure` → ✅ real Opus PASSED** (`claude-opus-4-8`, 22 files, 75 found/65 fixed,
+   cert `passed:True`, cost **$0.82**). Fix #23's confirmation verdict gave a clean PASS again.
+3. **⭐ DISCOVERY — the security reviewer's OWN fix loop is an UNGATED regeneration path.** Scanning all
+   22 post-review files with the build-gate detectors: the reviewer's `_fix` (general model, minor/medium
+   issues) **REWROTE `database.py` and RE-INTRODUCED the exact get_db HTTPException-swallow** Fix #24
+   targets (clean during the §1k QA run → dirty right after this review; line 66 `except Exception: ...
+   raise HTTPException(500)`), AND flagged `StripeAccount.owner_id` in `stripe.py` (Fix #19 class; may be
+   pre-existing). This is the SAME hole Fix #18 closed for the QA loop, now in `reviewer.review_file`.
+   `review_subset`/`review_file` write fixes back WITHOUT running the deterministic build gates, so a
+   "helpful" error-handling fix reintroduces a gate-class bug. Evidence fixture:
+   `backend/tests/fixtures/database_reviewer_reintroduced_swallow_1289.py` (the reviewer-rewritten file).
+   **➡️ CANDIDATE FIX #25 (PROPOSED, NOT BUILT — plan-first):** run the build-gate detectors
+   (#16/#17/#19/#24) on `reviewer._fix` output; reject/repair a fix that introduces a gate-class bug
+   (mirrors Fix #18's bounded re-validate/reject for the QA loop). Regression fixture = the captured file.
+4. **`POST /pipeline/deploy` → HONESTLY `failed` at the backend layer** (exactly Fix #20's design):
+   `status:failed`, `failed_layer:"backend"`, `live_url:null` (NO false live), `security_certified:true`,
+   `tests_passed:103`, `health_attempts:13`. The generated code fail-fasts at startup on the Week-7/8
+   secrets gap (AUTH0/STRIPE/ENCRYPTION_KEY/ALLOWED_ORIGINS + missing Redis) — deploy gap #1, DEFERRED by
+   decision (NOT auto-seeded). Deploy stack was torn down cleanly (no orphaned 1289 containers, no idle
+   spend). NOTE: the deployed database.py carried the reviewer-reintroduced get_db bug, but it never
+   manifested — the backend can't boot past the secrets fail-fast anyway.
+**NET:** re-secure works (real Opus PASS, Fix #23 holds); deploy reaches the honest secrets wall (Fix #20
+holds, no false live). The one blocker to a CLEAN full-scope deploy is now TWO deferred items: deploy gap
+#1 (secrets onboarding) and candidate Fix #25 (gate the reviewer fix-loop). Project 1289 LEFT IN THE DB;
+its database.py currently holds the reviewer-reintroduced swallow (evidence for Fix #25).
 - **Tests (all 14 offline suites pass):** `test_developers_offline.test_http_exception_swallow_gate`
   (true positive; the 5 negatives — specific-exc / HTTPException-sibling / isinstance-guard / bare-raise
   / route-handler-no-yield; zero-FP corpus; gate integration + repair text) +
