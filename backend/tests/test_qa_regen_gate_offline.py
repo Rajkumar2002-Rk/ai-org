@@ -119,6 +119,29 @@ def test_gate_attribute():
           "should be clean")
 
 
+def test_gate_http_swallow():
+    """The QA-regen gate also runs the HTTPException-swallow check (fix #24): a regenerated
+    database.py whose get_db re-raises framework HTTPExceptions as a 500 is flagged, not
+    accepted (run 1289's QA loop regenerated files — this closes that class here too)."""
+    import os
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "database_get_db_swallow_1289.py")
+    bad = open(fx, encoding="utf-8").read()
+    files = [_MODELS, _AUTH, {"id": 14, "filepath": "backend/app/database.py", "content": bad}]
+    gate = orch._gate_regenerated(bad, "backend/app/database.py", files, 14)
+    check("a regenerated get_db that swallows HTTPException is flagged by the QA gate",
+          [h["function"] for h in gate.get("http_swallow_repairs", [])] == ["get_db"], str(gate))
+    rt = orch.dev_agents.repair_instructions(gate)
+    check("gate result renders an HTTP_EXCEPTION_SWALLOW repair",
+          "HTTP_EXCEPTION_SWALLOW" in rt and "get_db" in rt, rt)
+    good = ("from sqlalchemy.ext.asyncio import AsyncSession\n"
+            "async def get_db():\n    async with async_session() as s:\n        yield s\n")
+    check("a clean get_db passes the QA gate",
+          orch._gate_regenerated(good, "backend/app/database.py",
+                                 [_MODELS, _AUTH,
+                                  {"id": 14, "filepath": "backend/app/database.py", "content": good}], 14) == {},
+          "should be clean")
+
+
 def test_gate_clean_and_noop():
     """A valid regeneration passes; non-.py / frontend files are a no-op (not this gate's job)."""
     good = ("from backend.app.database import get_db\n"
@@ -229,6 +252,7 @@ async def main():
     test_gate_syntax()
     test_gate_symbol()
     test_gate_attribute()
+    test_gate_http_swallow()
     test_gate_clean_and_noop()
     test_gate_zero_false_positives()
     await scenario_converges()

@@ -759,6 +759,108 @@ def test_attribute_zero_false_positives():
           rf == [], str([(x["file"], x["class"] + "." + x["attribute"]) for x in rf[:8]]))
 
 
+def test_http_exception_swallow_gate():
+    """FIX #24 regression (project 1289): the generated database.py `get_db` wrapped
+    `yield session` in `except Exception: raise HTTPException(500)`. FastAPI runs the
+    request inside the yield, so a downstream HTTPException(401) got re-raised as a 500 —
+    every 401/404/422 on every DB endpoint became "Internal server error" (all 20 QA
+    failures). The build gate must flag the 1289 file, attach a structured finding,
+    render a targeted repair, and reject ONLY that ticket. Zero false positives: a
+    dependency generator that catches a SPECIFIC exception, re-raises HTTPException, or
+    guards with isinstance is correct; a broad-500 raise in a plain route handler (no
+    yield) is out of scope."""
+    import os
+    import glob
+    from app.developers import orchestrator as orch
+
+    # 1289's EXACT captured database.py — the true positive.
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "database_get_db_swallow_1289.py")
+    bad = open(fx, encoding="utf-8").read()
+    hit = agents.http_exception_swallow(bad, "backend/app/database.py")
+    check("1289's get_db is flagged as an HTTPException swallow",
+          len(hit) == 1 and hit[0]["function"] == "get_db", str(hit))
+
+    # NEGATIVES — each of these is a correct pattern and must NOT be flagged.
+    ok_specific = ("async def get_db():\n"
+                   "    async with async_session() as s:\n"
+                   "        try:\n            yield s\n"
+                   "        except SQLAlchemyError as e:\n"
+                   "            raise HTTPException(status_code=500, detail='db')\n")
+    check("get_db catching a SPECIFIC SQLAlchemyError is NOT flagged (gen888 pattern)",
+          agents.http_exception_swallow(ok_specific, "backend/app/database.py") == [])
+    ok_sibling = ("async def get_db():\n"
+                  "    try:\n"
+                  "        async with async_session() as s:\n            yield s\n"
+                  "    except HTTPException:\n        raise\n"
+                  "    except Exception:\n        raise HTTPException(500, 'x')\n")
+    check("a broad handler with an earlier `except HTTPException: raise` sibling is NOT flagged",
+          agents.http_exception_swallow(ok_sibling, "backend/app/database.py") == [])
+    ok_isinstance = ("async def get_db():\n"
+                     "    try:\n"
+                     "        async with async_session() as s:\n            yield s\n"
+                     "    except Exception as e:\n"
+                     "        if isinstance(e, HTTPException):\n            raise\n"
+                     "        raise HTTPException(500, 'x')\n")
+    check("a broad handler that re-raises HTTPException via isinstance guard is NOT flagged",
+          agents.http_exception_swallow(ok_isinstance, "backend/app/database.py") == [])
+    ok_bare = ("async def get_db():\n"
+               "    try:\n"
+               "        async with async_session() as s:\n            yield s\n"
+               "    except Exception:\n        log()\n        raise\n")
+    check("a broad handler with a bare `raise` (re-raise) is NOT flagged",
+          agents.http_exception_swallow(ok_bare, "backend/app/database.py") == [])
+    route_500 = ("async def create_order(db=Depends(get_db)):\n"
+                 "    try:\n        return await do()\n"
+                 "    except Exception:\n        raise HTTPException(status_code=500, detail='x')\n")
+    check("a broad-500 raise in a plain route handler (no yield) is out of scope",
+          agents.http_exception_swallow(route_500, "backend/app/routes/order.py") == [])
+    check("a non-.py file is ignored",
+          agents.http_exception_swallow(bad, "frontend/app/page.tsx") == [])
+
+    # Zero-false-positive proof across platform + all real generated fixtures.
+    app_dir = os.path.join(os.path.dirname(__file__), "..", "app")
+    plat = [(p, open(p, encoding="utf-8").read())
+            for p in glob.glob(os.path.join(app_dir, "**", "*.py"), recursive=True)]
+    plat_fp = [p for p, c in plat if agents.http_exception_swallow(c, "backend/app/x.py")]
+    check(f"ZERO false positives across the platform's own {len(plat)} backend modules",
+          plat_fp == [], str(plat_fp[:6]))
+    fxdir = os.path.join(os.path.dirname(__file__), "fixtures")
+    real = list(glob.glob(os.path.join(fxdir, "gen888", "*.py")))
+    for n in ("stripe_stripeoauthstate_1105.py", "order_be_3_param_order_1071.py"):
+        p = os.path.join(fxdir, n)
+        if os.path.isfile(p):
+            real.append(p)
+    real_fp = [os.path.basename(p) for p in real
+               if agents.http_exception_swallow(open(p, encoding="utf-8").read(), "backend/app/x.py")]
+    check("ZERO false positives across the real generated fixtures (888 + 1105/1071)",
+          real_fp == [], str(real_fp))
+
+    # Gate integration: _collect_stubs rejects ONLY the swallowing file, attaches the
+    # structured finding, and the repair renders a precise HTTP_EXCEPTION_SWALLOW ticket.
+    built = [
+        {"ticket_id": "FND-2", "filepath": "backend/app/database.py",
+         "content": bad, "status": "generated"},
+        {"ticket_id": "FND-1", "filepath": "backend/app/models.py",
+         "content": "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n    id = Column(Integer)\n",
+         "status": "generated"},
+    ]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("gate rejects ONLY the HTTPException-swallowing ticket",
+          [s["ticket_id"] for s in stubbed] == ["FND-2"], str([s["ticket_id"] for s in stubbed]))
+    fnd2 = next(s for s in built if s["ticket_id"] == "FND-2")
+    check("the rejected ticket carries STUB_STATUS", fnd2["status"] == agents.STUB_STATUS)
+    check("the rejected ticket carries the structured http_swallow_repairs",
+          fnd2.get("http_swallow_repairs") and fnd2["http_swallow_repairs"][0]["function"] == "get_db",
+          str(fnd2.get("http_swallow_repairs")))
+    check("the clean model ticket is left untouched", built[1]["status"] == "generated")
+    rt = agents.repair_instructions(fnd2)
+    check("repair text is an HTTP_EXCEPTION_SWALLOW naming the function",
+          "HTTP_EXCEPTION_SWALLOW" in rt and "get_db" in rt, rt)
+    check("repair text tells it to let HTTPException propagate / not turn into 500",
+          "propagate" in rt.lower() and "HTTPException(500)" in rt, rt)
+    check("repair text scopes the fix to this file only", "only this file" in rt.lower(), rt)
+
+
 async def scenario_syntax_repair_retry():
     print("\n=== S5: a syntax-broken backend file is REPAIRED via the structured retry -> built ===")
     pid = await _make_project()
@@ -896,6 +998,7 @@ async def main():
         test_python_syntax_gate()
         test_attribute_resolution_gate()
         test_attribute_zero_false_positives()
+        test_http_exception_swallow_gate()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

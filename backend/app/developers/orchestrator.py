@@ -144,7 +144,10 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
         1038: `from backend.app.auth import require_admin`, but auth exports only
         get_current_user/get_current_admin_user → ImportError at boot);
       * a backend `.py` that does not PARSE at all (fix #17 — 1071: `order_be_3.py` put a
-        non-default parameter after a defaulted one → hard SyntaxError, app never boots).
+        non-default parameter after a defaulted one → hard SyntaxError, app never boots);
+      * a `get_db`-style dependency generator whose broad `except` around its `yield`
+        re-raises framework HTTPExceptions as a 500 (fix #24 — 1289: every 401/404/422 on
+        every DB endpoint became "Internal server error").
       The failure is attached STRUCTURALLY (`syntax_error` / `symbol_repairs`) so the
       retry can repair it precisely.
     """
@@ -187,6 +190,11 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
             r["attribute_repairs"] = attr
             problems.append("unresolved attribute access " + ", ".join(
                 f"{a['class']}.{a['attribute']}" for a in attr))
+        hx = agents.http_exception_swallow(content, rel)
+        if hx:
+            r["http_swallow_repairs"] = hx
+            problems.append("dependency generator swallows HTTPException into 500 " +
+                            ", ".join(f"{h['function']}()" for h in hx))
         if problems:
             r["status"] = agents.STUB_STATUS
             r["gate_problems"] = problems

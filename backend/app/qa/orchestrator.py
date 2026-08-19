@@ -206,8 +206,10 @@ def _gate_regenerated(candidate: str, filepath: str, files: list[dict],
                       file_id) -> dict:
     """Deterministic code-integrity gate on a QA-regenerated backend `.py`: it MUST
     parse (fix #17) AND every in-project `from ... import ...` must resolve to a real
-    exported symbol (fix #16). Returns a gate-result dict shaped for
-    `agents.repair_instructions` (`syntax_error` / `symbol_repairs`), or {} if clean.
+    exported symbol (fix #16) AND no `get_db`-style dependency generator swallows a
+    framework HTTPException into a 500 (fix #24). Returns a gate-result dict shaped for
+    `agents.repair_instructions` (`syntax_error` / `symbol_repairs` / `http_swallow_repairs`),
+    or {} if clean.
     Backend `.py` only; anything else (frontend, non-`.py`) is a no-op. Symbols are
     resolved against the CURRENT file set with the candidate swapped in, so the check
     reflects exactly what would ship."""
@@ -224,6 +226,9 @@ def _gate_regenerated(candidate: str, filepath: str, files: list[dict],
     attr = dev_agents.attribute_access_mismatches(candidate, filepath, index)
     if attr:
         return {"attribute_repairs": attr}
+    hx = dev_agents.http_exception_swallow(candidate, filepath)
+    if hx:
+        return {"http_swallow_repairs": hx}
     return {}
 
 

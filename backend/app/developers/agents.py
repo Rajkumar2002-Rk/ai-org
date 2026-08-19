@@ -78,6 +78,19 @@ def _system(agent_type: str) -> str:
         "`source_name`, `user` into `user_id`, etc.). A response-schema field that "
         "does not match a real model attribute raises ResponseValidationError (500) "
         "as soon as a row is serialized."
+        # Error propagation in get_db (project 1289): `get_db` wrapped `yield session`
+        # in `except Exception: raise HTTPException(500)`. FastAPI runs the request
+        # inside the yield, so a downstream HTTPException(401) got re-raised as a 500 —
+        # every 401/404/422 on every DB endpoint became "Internal server error".
+        " CRITICAL error-propagation rule: a database-session dependency generator "
+        "(`get_db` and any `Depends`-ed generator that `yield`s) MUST let framework "
+        "`HTTPException`s (401/404/422/400) propagate UNCHANGED. Do NOT wrap the `yield` "
+        "in a broad `try/except Exception` that raises `HTTPException(500)` — that catches "
+        "the request's own HTTPExceptions (FastAPI runs the request inside the yield) and "
+        "turns every intended 4xx into a 500. Prefer the plain `async with "
+        "async_session() as session: yield session` with NO wrapping try/except; if you "
+        "must catch, re-raise `HTTPException` first (`except HTTPException: raise`) and "
+        "only map a specific `SQLAlchemyError`, never broad `Exception`, to a 500."
     ) if agent_type == "backend" else ""
     # Frontend API-base contract (deploy gap #2): the deploy wires the backend behind a
     # `/api` prefix and injects the base URL as `NEXT_PUBLIC_API_BASE_URL` at BUILD time.
@@ -432,6 +445,129 @@ def model_schema_mismatches(models_content: str, database_schema: list) -> list[
             if name and name not in model_cols[tname]:
                 missing.append(f"{tname}.{name}")
     return missing
+
+
+# ------------------------------------------------- HTTPException swallow (FIX #24)
+# ERROR PROPAGATION (project 1289): the generated `database.py` (FND-2) wrote a
+# `get_db` dependency whose `yield session` is wrapped in `try: ... except
+# Exception: raise HTTPException(500, "Internal server error")`. FastAPI runs the
+# rest of a request INSIDE that generator's `yield`, so when a protected endpoint's
+# OAuth2 dependency raises `HTTPException(401)`, that 401 propagates back through the
+# yield, is caught by the broad `except`, and is RE-RAISED AS A 500 — masking every
+# intended 401/404/422/400 on every endpoint that depends on get_db (run 1289: all
+# 20 QA failures, no-login/missing-field/injection/happy-path all became 500). The
+# correct pattern lets framework HTTPExceptions propagate unchanged and only maps
+# genuinely-unexpected errors. This is the deterministic detector for that anti-pattern.
+def _status_is_500(node: ast.AST) -> bool:
+    """True if an AST node denotes HTTP 500 — literal `500`,
+    `status.HTTP_500_INTERNAL_SERVER_ERROR`, or a bare `HTTP_500_*` name."""
+    if isinstance(node, ast.Constant) and node.value == 500:
+        return True
+    if isinstance(node, ast.Attribute):
+        return node.attr.startswith("HTTP_500")
+    if isinstance(node, ast.Name):
+        return node.id.startswith("HTTP_500")
+    return False
+
+
+def _raises_http_500(node: ast.AST) -> bool:
+    """True if `node` is a `raise HTTPException(...)` whose status is 500 (positional
+    first arg or `status_code=`), or a `return`/`raise` of a *Response(status_code=500)."""
+    call = None
+    if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
+        call = node.exc
+    elif isinstance(node, ast.Return) and isinstance(node.value, ast.Call):
+        call = node.value
+    if call is None:
+        return False
+    fname = getattr(call.func, "id", None) or getattr(call.func, "attr", None) or ""
+    is_http = fname == "HTTPException" or fname.endswith("Response")
+    if not is_http:
+        return False
+    for kw in call.keywords:
+        if kw.arg in ("status_code", "status") and _status_is_500(kw.value):
+            return True
+    # HTTPException(500, ...) — status is the first positional arg
+    if fname == "HTTPException" and call.args and _status_is_500(call.args[0]):
+        return True
+    return False
+
+
+def _reraises_httpexception(handler: ast.ExceptHandler) -> bool:
+    """True if a broad `except` body preserves already-HTTPException errors: a bare
+    `raise` (re-raises the current exception) or an `isinstance(e, HTTPException)`
+    guard anywhere in its body. Either makes the handler safe → not flagged."""
+    for n in ast.walk(handler):
+        if isinstance(n, ast.Raise) and n.exc is None:      # bare `raise`
+            return True
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "isinstance":
+            for a in n.args[1:]:
+                for sub in ast.walk(a):
+                    if isinstance(sub, ast.Name) and sub.id == "HTTPException":
+                        return True
+    return False
+
+
+_BROAD_EXC_NAMES = {"Exception", "BaseException"}
+
+
+def _handler_is_broad(handler: ast.ExceptHandler) -> bool:
+    """True if `except:` (bare) or `except Exception`/`except BaseException` (single or
+    in a tuple). A specific type like `SQLAlchemyError` is NOT broad — the gen888 get_db
+    catches SQLAlchemyError and is correct, so it must never be flagged."""
+    t = handler.type
+    if t is None:
+        return True                                          # bare except:
+    types = t.elts if isinstance(t, ast.Tuple) else [t]
+    return any(isinstance(x, ast.Name) and x.id in _BROAD_EXC_NAMES for x in types)
+
+
+def http_exception_swallow(content: str, filepath: str) -> list[dict]:
+    """Structured findings for a FastAPI DEPENDENCY GENERATOR (a function whose `try`
+    body contains a `yield` — get_db and friends) that SWALLOWS framework HTTPExceptions
+    into a 500. Flags only when a `try` wrapping a `yield` has a handler that (1) catches
+    broad `Exception`/`BaseException`/bare-`except`, (2) raises/returns HTTP 500, and
+    (3) does NOT preserve already-HTTPException errors (no bare `raise`, no
+    `isinstance(_, HTTPException)` guard, and no earlier `except HTTPException` sibling on
+    the same try). Backend `.py` only; returns [] on non-`.py` or a SyntaxError (the
+    syntax gate owns that). Returns [{file, line, function, detail}]."""
+    if not filepath.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return []
+    findings: list[dict] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for tnode in ast.walk(fn):
+            if not isinstance(tnode, ast.Try):
+                continue
+            if not any(isinstance(y, (ast.Yield, ast.YieldFrom))
+                       for stmt in tnode.body for y in ast.walk(stmt)):
+                continue                                     # not a dependency generator's try
+            # An earlier `except HTTPException` sibling already preserves 401/404/422.
+            has_http_sibling = any(
+                h.type is not None and any(
+                    isinstance(x, ast.Name) and x.id == "HTTPException"
+                    for x in (h.type.elts if isinstance(h.type, ast.Tuple) else [h.type]))
+                for h in tnode.handlers)
+            for h in tnode.handlers:
+                if not _handler_is_broad(h):
+                    continue
+                if not any(_raises_http_500(n) for n in ast.walk(h)):
+                    continue
+                if has_http_sibling or _reraises_httpexception(h):
+                    continue
+                findings.append({
+                    "file": filepath, "line": h.lineno, "function": fn.name,
+                    "detail": (f"dependency generator `{fn.name}` catches broad "
+                               f"{'except:' if h.type is None else ast.unparse(h.type)} "
+                               f"around its `yield` and re-raises framework "
+                               f"HTTPExceptions as HTTP 500")})
+                break                                        # one finding per function is enough
+    return findings
 
 
 # ---------------------------------------------------------------- symbol resolution (FIX #16)
@@ -934,6 +1070,27 @@ def repair_instructions(result: dict) -> str:
                 f"Repair: use a real attribute/field from the list above (this is usually a "
                 f"typo or a wrong field name), or add the field to the class ONLY if this file "
                 f"owns that class's definition. Do NOT modify the class's module from here."
+            )
+
+    # HTTP_EXCEPTION_SWALLOW (fix #24).
+    swallows = result.get("http_swallow_repairs") or []
+    if swallows:
+        parts.append("\n=== HTTP_EXCEPTION_SWALLOW — repair ONLY this file, do not "
+                     "touch any other file ===")
+        for r in swallows:
+            parts.append(
+                f"\nFunction: {r['function']}  (broad handler at line {r.get('line')})\n"
+                f"Problem: {r.get('detail')}.\n"
+                f"FastAPI runs the whole request INSIDE this generator's `yield`, so a "
+                f"framework `HTTPException(401/404/422/…)` raised downstream is caught by "
+                f"the broad `except` and re-raised as a 500 — masking every intended 4xx on "
+                f"every endpoint that depends on it.\n"
+                f"Repair: let framework HTTPExceptions propagate UNCHANGED. Either drop the "
+                f"broad try/except entirely (the plain `async with async_session() as "
+                f"session: yield session` is correct), or re-raise HTTPException first "
+                f"(`except HTTPException: raise`) and only map genuinely-unexpected errors — "
+                f"prefer catching a specific `SQLAlchemyError` rather than broad `Exception`. "
+                f"NEVER turn a caught exception into `HTTPException(500)` unconditionally."
             )
     return "\n".join(parts)
 
