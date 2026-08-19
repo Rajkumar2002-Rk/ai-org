@@ -468,6 +468,19 @@ Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run
   HTTPExceptions propagate unchanged; prefer plain `async with … yield`; catch specific
   `SQLAlchemyError`, never broad `Exception`, and re-raise HTTPException first if you must catch).
 - **Fixture:** `backend/tests/fixtures/database_get_db_swallow_1289.py` (the real 1289 FND-2, id 2717).
+- **✅ VALIDATED LIVE ON RUN 1289 (2026-08-19):** hand-fixed 1289's `get_db` in the DB (id 2717 →
+  plain `async with async_session() as session: yield session`, no wrapping try/except) and re-ran QA
+  (`POST /pipeline/qa`). Result **103 passed / 1 failed** (was 84/20) — **all 20 auth-gated
+  order/notification 500s resolved to correct 4xx; all 22 order/notification/auth tests green; zero
+  functional failures**, `files_rewritten_by_qa: 0` (no LLM regen — the fix alone did it). Cost $0.048
+  (just the single-file drift re-review). The lone remaining red is `security: re-check after repairs`
+  — the certification gate, NOT a functional bug: my edited database.py re-reviewed CLEAN
+  (`recertified.passed: True`, 5/5, no criticals), but the overall cert stays `passed: False` because
+  its stored base was already `passed: False` (1289 was `security_blocked` from the original review;
+  `cert.passed = base_passed AND recert_passed = False AND True`). Restoring a passing cert needs a
+  fresh full `POST /pipeline/secure` (Fix #23 makes it PASS per §1j step 4; ~$ Opus) — separate from
+  the get_db fix and NOT done here (would spend money; awaiting user call). After that: QA→deploy hits
+  the honest Week-7/8 secrets gap (deploy gap #1, deferred).
 - **Tests (all 14 offline suites pass):** `test_developers_offline.test_http_exception_swallow_gate`
   (true positive; the 5 negatives — specific-exc / HTTPException-sibling / isinstance-guard / bare-raise
   / route-handler-no-yield; zero-FP corpus; gate integration + repair text) +
