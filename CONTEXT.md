@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-17) — 15 fixes + FIX #16–#22 + FIX #23 (security-review verdict = confirmed-critical) DONE/PUSHED. Measurement run 1289 (all fixes live, Quick): CLEAN fresh full-scope build (Fix #16 caught+repaired a live bug) + smoke_boot PASSED with ZERO hand-fixing, then stopped at a FALSE-NEGATIVE in the Opus security cert (diagnosed → FIX #23). NEXT: re-run 1289's /pipeline/secure (or a fresh run) to see it reach deploy/secrets gap; then the DELIBERATELY-DEFERRED gap #1 (secrets/redis onboarding, §5). Fix #19 slice 2 still optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-17, late) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#23 all DONE + COMMITTED + PUSHED (HEAD 6947af0). Run 1289 then hit REAL QA 500s (order/notification endpoints); root cause DIAGNOSED (get_db swallows HTTPException→500) → candidate **FIX #24** (deterministic, NOT built). NEXT = decide Fix #24 (plan-first) vs accept-as-QA's-job (§5/§1j). Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22); gap #1 (secrets/redis) deliberately deferred. Fix #19 slice 2 optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -43,9 +43,11 @@ demo.**
   DevOps deploy-path FIX #20 (health check, gap #3), #21 (FE↔BE wiring, gap #2), #22
   (generated homepage, gap #4) + FIX #23 (security-review verdict = confirmed-critical)
   COMPLETE, verified live in the running backend, all 14 offline suites pass, committed +
-  pushed** (§1a–§1i have the detail). Deploy gaps #2/#3/#4 all closed; only gap #1
-  (secrets/redis onboarding) remains, deferred (§5). Run 1289 (§1i): codegen pipeline
-  proven solid; pending a paid re-run of 1289's Opus review to validate Fix #23 end-to-end.
+  pushed** (§1a–§1j have the detail). Deploy gaps #2/#3/#4 all closed; only gap #1
+  (secrets/redis onboarding) remains, deferred (§5). **🏆 Run 1289 (§1j): first-ever full-scope
+  fresh generation to pass Build→smoke_boot→**real Opus security review** unaided (Fix #23
+  validated live); then hit real QA 500s → root cause diagnosed (get_db swallows HTTPException)
+  → candidate FIX #24 (NOT built; §5.A). Candidate Fix #24 + Fix #19 slice 2 = the only open work.**
   The fixes (see the "FIXES" sections far below for full detail): #1–#11 (the deploy-
   readiness batch: menu-schema dedupe, email-validator, **auth-symbol contract**,
   smoke-boot gate, response_model rule + traceback capture, Fernet key, python-multipart,
@@ -386,9 +388,59 @@ that actually hit a critical (1–2 verdict reviews), not every file.
   (mocks `_review`/`_fix`): a STABLE critical (both confirm passes) still FAILS; an initial-flag +
   clean-final (the 1289 case) PASSES; a single-pass verdict flake PASSES; a clean file spends no extra
   verdict reviews. Image REBUILT; Fix #23 live.
-- **⏭️ NOT YET RE-RUN:** project 1289 is still in the DB with its failed cert. Re-running
-  `POST /pipeline/secure` for 1289 (real Opus, ~$1–1.5) should now PASS and let it proceed
-  QA → deploy → (secrets gap). That is the pending validation + the original measurement goal.
+## 1j. 🏆 RUN 1289 — FULL SEQUENCE + FIX #23 VALIDATED LIVE + the get_db 500 (candidate FIX #24) (2026-08-17 late)
+This is the headline result of the whole Code Integrity Engine effort. Full-scope Bella Vista
+(menu PDF + ordering + Stripe + auth, **Quick launch**), ALL fixes #16–#23 live. Exact sequence:
+1. **BA → PI → Architect:** 22 tickets incl. FND-6 homepage (Fix #22). PI kept all 3 features.
+2. **Build → `done`** (means smoke_boot ALSO passed). **FIX #16 CAUGHT A REAL BUG on the fresh
+   generation** — `routes/notifications.py` (BE-3) imported `send_email`/`send_sms` from
+   `integrations.integrate`, which don't exist there → structured repair → **recovered on retry.**
+   The full app **assembled + booted with ZERO hand-fixing** — a first for a fresh full-scope run.
+3. **Opus security review — FIRST PASS: `passed:False`** (128 found / 123 fixed). Diagnosed as a
+   FALSE NEGATIVE in the review-convergence loop (not a real vuln, not the secrets gap) → **FIX #23
+   (§1i).**
+4. **Rebuilt + re-ran `POST /pipeline/secure` → ✅ Opus PASSED** (`passed:True`, real
+   `claude-opus-4-8`, 90 found / 83 fixed, 22 files). **🏆 FIRST-EVER real Opus security PASS on a
+   full-scope fresh generation — Fix #23 validated end-to-end.**
+5. **QA → 84 passed / 20 failed** (`status: error`). The 20 failures are ALL on the auth-gated
+   `order` + `notification` endpoints (public `GET /menu` is fine). **FIX #18 FIRED LIVE + WORKED:**
+   QA's retry loop regenerated `notifications.py` into a wrong-symbol import → the QA-regen gate
+   REJECTED it ("REJECTING the rewrite") — the exact 1038/1039 QA-churn, prevented. `files_rewritten
+   _by_qa: 6`, `still_certified: False` (QA drift + security re-check failed).
+6. **500 ROOT CAUSE — DIAGNOSED (complete; offline assemble+boot, real traceback captured, ~$0):**
+   `get_db` in **`database.py` (FND-2)** wraps `yield session` in a broad `except Exception` that
+   re-raises **as `HTTPException(500, "Internal server error")`**. So when a protected endpoint's
+   OAuth2 dependency raises `HTTPException(401)`, that 401 propagates back through get_db's `yield`,
+   hits the broad except, and becomes a **500**. This masks EVERY intended 401/404/422/400 on every
+   endpoint that depends on get_db → all 20 failures (no-login→500, missing-field→500, injection→500,
+   happy-path→500). Public `/menu` (GET, no error path) is unaffected. **Captured traceback proof:**
+   `oauth2.py:588 raise HTTPException(401: Not authenticated)` → response `500 {"detail":"Internal
+   server error"}`. (Note: `security.py`'s own HTTPException handler is CORRECT but is on a throwaway
+   `app`; `main.py` is the real entrypoint. `create_order` DOES pass created_at/updated_at — the
+   earlier model-timestamp hypothesis was WRONG. The confirmed cause is the get_db swallow.)
+7. **ASSESSMENT (my read, user to decide):** RECURRING, deterministically-detectable + preventable —
+   NOT a per-generation logic bug. It is the "confident but wrong" error-handling anti-pattern
+   ("a dependency generator wraps `yield` in a broad `except` that turns framework exceptions into
+   500"). Systemic (get_db is foundational → breaks HTTP semantics on every DB endpoint at once).
+   QA DID catch it (QA's job), but it is a strong build-gate candidate too (move the cheap
+   deterministic failure earlier — the whole Engine thesis; would have saved this run's QA+Opus cycle).
+
+**➡️ CANDIDATE FIX #24 (PROPOSED, NOT BUILT — plan-first, same rigor as #16–#23):** an AST build-gate
+detector (sibling of `agents.bad_session_dependency` / `model_schema_mismatches`) that flags a
+`get_db`-style dependency generator whose `yield` is inside a `try` whose `except` catches broad
+`Exception`/bare-`except` and raises `HTTPException(500)`/returns 500 WITHOUT re-raising an already-
+`HTTPException`; wired into `_collect_stubs` (+ the QA-regen gate); PLUS a FND-2/backend prompt rule
+("`get_db` must let FastAPI HTTPException 401/404/422 propagate unchanged; never turn errors into 500;
+re-raise HTTPException untouched"). Zero-FP proof vs the platform's own 64 modules + 888 real files;
+regression test using the CAPTURED 1289 `database.py`. **User's open question to answer next session:
+build Fix #24, or accept this as QA's job and move on.**
+
+**⏭️ NOT YET REACHED: deploy.** Run 1289 stopped at QA (app-logic 500), NOT the secrets gap. If Fix
+#24 lands (or the get_db is hand-fixed), a re-run of QA→deploy would then hit the Week-7/8 secrets
+gap honestly (Fix #20's layered health check reports it as `failed` "backend layer", no false live).
+
+**Project 1289 is LEFT IN THE DB** (status `security_blocked` from the 1st review; the 2nd review +
+QA ran after). Its `database.py` is the Fix #24 regression fixture source — capture it before cleanup.
 
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
@@ -481,19 +533,32 @@ each validator regression-tested against a REAL captured bug fixture; wire into 
 `developers/orchestrator._collect_stubs` gate pattern (flag → bounded retry → fail) but evolve
 that loop toward the checkpoint/re-validate model above.
 
-## 5. EXPLICIT NEXT STEP — no urgent item; two OPTIONAL tracks, each plan-first.
-The code-integrity gates (#16/#17/#18/#19) close the codegen + QA-churn hole, and DEPLOY GAPS
-#2/#3/#4 ARE ALL CLOSED — **gap #3 (health) = FIX #20 (§1f)**, **gap #2 (FE↔BE wiring) = FIX #21
-(§1g)**, **gap #4 (homepage) = FIX #22 (§1h)**. What remains is optional:
+## 5. EXPLICIT NEXT STEP — decide candidate FIX #24 (the run-1289 get_db 500). PLAN-FIRST.
+Code-integrity gates (#16–#19) + security-verdict fix (#23) are solid and VALIDATED LIVE on run 1289
+(§1j: real Opus PASSED, first ever). DEPLOY GAPS #2/#3/#4 ALL CLOSED (#20/#21/#22). The one open,
+concrete item is the run-1289 QA finding, already fully diagnosed:
 
-### A. (OPTIONAL) Fix #19 slice 2 — annotated/constructed INSTANCE attribute access
+### A. ⭐ THE OPEN DECISION — candidate FIX #24 (get_db swallows HTTPException → 500)
+Root cause CONFIRMED (§1j step 6): `get_db` (FND-2 `database.py`) wraps `yield session` in a broad
+`except Exception` that re-raises as `HTTPException(500)`, masking every 401/404/422 on every DB
+endpoint → the 20 QA failures. **RECURRING, deterministically-detectable + preventable** (my read).
+**Decision to make first:** build Fix #24, or accept it as QA's job (QA did catch it). If building —
+plan-first, same rigor as #16–#23: AST detector in `developers/agents.py` (flag a `get_db`-style
+dependency generator whose `yield`-wrapping `except` catches broad `Exception`/bare-`except` and
+raises/returns 500 without re-raising an already-`HTTPException`), wired into
+`developers/orchestrator._collect_stubs` + `qa/orchestrator._gate_regenerated`; a FND-2/backend prompt
+rule; zero-FP proof vs the platform's own 64 modules + 888's `gen888` fixtures; regression test on the
+CAPTURED 1289 `database.py` (grab it from the DB before any 1289 cleanup). Then re-run QA→deploy to
+reach the honest secrets gap.
+
+### B. (OPTIONAL) Fix #19 slice 2 — annotated/constructed INSTANCE attribute access
 Extends the attribute gate (#19, §1e) from class-name access to instance access where the type is
 KNOWN with certainty (a `: Order` annotation or a local `x = Order(...)` construction) — catches
 `order.total_amonut` / `user.get_profile()` when the instance is typed/constructed. Query-derived
 instances stay OUT (not safely inferable). Kept only insofar as the platform+888 zero-FP proof
 stays clean (that proof is the arbiter). Plan-first.
 
-### B. ⛔ DEFERRED BY DECISION (2026-08-17) — the Week-7/8 SECRETS-ONBOARDING gap (deploy gap #1)
+### C. ⛔ DEFERRED BY DECISION (2026-08-17) — the Week-7/8 SECRETS-ONBOARDING gap (deploy gap #1)
 **Deliberately NOT auto-seeded.** A real deploy of an auth+payments app fail-fasts across `AUTH0_*`,
 `STRIPE_CLIENT_ID/SECRET_KEY` (genuinely owner-specific), plus `ENCRYPTION_KEY`/`STRIPE_TOKEN_ENC_KEY`/
 `ALLOWED_ORIGINS` and a `REDIS_URL` + a provisioned Redis (platform-generatable) — none of which the
@@ -531,23 +596,33 @@ re-validated repair via the `_collect_stubs` flag → retry → fail pattern; ev
 checkpoint/re-validate model. **Measured on 1105: build-time detection is solved; the frontier is
 now (1) gating the QA regeneration loop and (2) the Week-7 secrets/redis deploy onboarding.**
 
-## 6. GIT + STATE AT HANDOFF
-On `origin/master`: `Fix #16` (`90169ee`), `Fix #17` (`5a640a1`), and the run-1105 CONTEXT commits.
-**FIX #18 (QA-regen gate, §1d) is code + tests + this CONTEXT update — commit + push it** (`qa/
-orchestrator.py`, new `tests/test_qa_regen_gate_offline.py`, `tests/fixtures/
-stripe_stripeoauthstate_1105.py`, the two QA-mock signature fixes, CONTEXT.md). Verify `git status`
-clean + `git log origin/master -1` after. github.com/Rajkumar2002-Rk/ai-org (private). Permanent
-rules: **no `Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
-- **Backend image REBUILT** with Fix #18. ⚠️ The always-on platform backend `ai-org-backend-1` is
-  **STOPPED** (the user asked to stop everything that spends money before a break). Restart when
-  resuming real runs: `docker compose up -d backend`. Offline suites don't need it (they use
-  ephemeral `docker compose run` containers) and cost nothing.
-- **Run 1105 fully TORN DOWN** — all `aiorg_p1105_*` containers removed (incl. the hand-added
-  `_redis`) AND project 1105's DB rows deleted. It was never a reusable fixture (needed live
-  secret+table hand-seeding). 888 remains the only end-to-end-usable demo.
-- **Nothing is spending money** — the platform backend is stopped; all pipeline stages are manually
-  triggered; no monitors/loops running. Only idle containers remain: `ai-org-postgres-1`,
-  `ai-org-redis-1`, `ai-org-frontend-1`, and the local `deploy888` stack (no idle LLM spend).
+## 6. GIT + STATE AT HANDOFF (2026-08-17 late)
+**EVERYTHING COMMITTED + PUSHED. `HEAD == origin/master == `6947af0`, 0 ahead, clean tree.** All fixes
+#16–#23 are on `origin/master`, one commit each, in order: `90169ee` #16, `5a640a1` #17, `5963e1d`
+#18, `cf4563d` #19, `81a2d8c` #20, `e5405e4` #21, `3a3854c` #22, `6947af0` #23 (plus the run-1105
+CONTEXT commits `5754caa`/`6f0c7fd` between #17 and #18). github.com/Rajkumar2002-Rk/ai-org (private).
+Permanent rules: **no `Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
+- **This CONTEXT.md handoff update is the only uncommitted change at the moment of writing — commit +
+  push it as the final act.** Nothing else is local-only. Candidate FIX #24 is NOT written (proposal
+  only, §5.A / §1j).
+- **THE RUNNING BACKEND `ai-org-backend-1` HAS Fix #16–#23 LIVE** (rebuilt after #23). ⚠️ It does NOT
+  yet include this CONTEXT commit — no code changed after #23, so no rebuild needed; but a fresh
+  session should `docker compose build backend && docker compose up -d backend` from latest to be
+  safe, then verify all 8 gate families import (one-liner):
+  `docker exec ai-org-backend-1 python -c "from app.developers import agents as a; from app.devops import health, manifest; from app.architect import builder; from app.qa import orchestrator as qo; from app.reviewer import reviewer as rv; print(all([hasattr(a,'import_symbol_mismatches'),hasattr(a,'python_syntax_error'),hasattr(qo,'_gate_regenerated'),hasattr(a,'attribute_access_mismatches'),'failed_layer' in health.ProbeResult.__dataclass_fields__,'handle_path /api/*' in manifest._caddyfile('x',True,True,''),hasattr(builder,'_frontend_homepage_ticket'),hasattr(rv,'_confirmed_critical')]))"`
+  → must print `True` (that covers #16/#17/#18/#19/#20/#21/#22/#23 respectively).
+- **`.env` config live:** `SECURITY_REVIEW_ENABLED=true`, `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`;
+  OpenAI + Anthropic + Gemini + scoped `MENU_EXTRACTION_API_KEY` all present & pinged live this session.
+- **All 14 offline suites PASS** (run: `docker compose run --rm --no-deps -e PYTHONPATH=/app -v
+  "$PWD/backend:/app" backend python tests/<suite>.py`). Suites: architect, background,
+  d4_force_dynamic, developers, devops, documentation, menu_onboarding, qa, smoke_boot_gate,
+  venv_pinning, qa_classification, qa_retry_loop, qa_teardown, qa_regen_gate.
+- **PROJECT 1289 LEFT IN THE DB** (status `security_blocked`) — its `database.py` (FND-2) is the Fix
+  #24 regression fixture; grab it before any cleanup. No 1289 deploy containers exist (it never
+  deployed). The `qa-build-*` ephemeral instance from the diagnosis was torn down.
+- **NOTHING IS SPENDING MONEY** — verified 0 llm_usage in the last 3 min; no host pollers / log tails;
+  no monitors/loops (backend runs pipeline stages only when manually POSTed). Running containers are
+  all idle: `ai-org-backend/frontend/postgres/redis` + the local `deploy888` demo (no idle LLM spend).
 
 ---
 
