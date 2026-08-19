@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-17, late) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#23 all DONE + COMMITTED + PUSHED (HEAD 6947af0). Run 1289 then hit REAL QA 500s (order/notification endpoints); root cause DIAGNOSED (get_db swallows HTTPException→500) → candidate **FIX #24** (deterministic, NOT built). NEXT = decide Fix #24 (plan-first) vs accept-as-QA's-job (§5/§1j). Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22); gap #1 (secrets/redis) deliberately deferred. Fix #19 slice 2 optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-19) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#24 all DONE + COMMITTED + PUSHED (HEAD 290ff82). Run 1289's REAL QA 500s (order/notification endpoints) were root-caused to get_db swallowing HTTPException→500 → **FIX #24 = BUILT + tested + live** (AST build-gate detector + QA-regen gate + backend prompt rule; deterministic; §1k). NEXT = re-run 1289 QA→deploy to reach the honest Week-7/8 secrets/redis gap (deploy gap #1, deferred by decision — do NOT auto-seed). Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22). Fix #19 slice 2 still optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -440,7 +440,39 @@ build Fix #24, or accept this as QA's job and move on.**
 gap honestly (Fix #20's layered health check reports it as `failed` "backend layer", no false live).
 
 **Project 1289 is LEFT IN THE DB** (status `security_blocked` from the 1st review; the 2nd review +
-QA ran after). Its `database.py` is the Fix #24 regression fixture source — capture it before cleanup.
+QA ran after). Its `database.py` is the Fix #24 regression fixture source — captured (see §1k).
+
+## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
+Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
+- **Root cause (confirmed, §1j step 6):** the generated `database.py` (FND-2) `get_db` wrapped
+  `yield session` in `except Exception: raise HTTPException(500, "Internal server error")`. FastAPI
+  runs the request INSIDE the generator's `yield`, so a downstream `HTTPException(401/404/422)` was
+  caught by the broad except and re-raised as a 500 — masking every intended 4xx on every DB endpoint
+  (all 20 QA failures). Public `GET /menu` (no error path) was unaffected.
+- **Detector `agents.http_exception_swallow(content, filepath) -> [{file,line,function,detail}]`:**
+  AST check that flags a DEPENDENCY GENERATOR (a function whose `try` body contains a `yield` —
+  walked, so `async with … yield` nesting counts) whose handler (1) catches broad
+  `Exception`/`BaseException`/bare-`except`, (2) raises/returns HTTP 500 (positional `500`,
+  `status_code=500`, or `status.HTTP_500_*`), and (3) does NOT preserve already-HTTPException errors
+  — no bare `raise`, no `isinstance(_, HTTPException)` guard, no earlier `except HTTPException` sibling
+  on the same `try`. `.py` only; `SyntaxError` → `[]` (syntax gate #17 owns that).
+- **Zero-FP by the two discriminators (proven):** (a) broad-only → gen888's `get_db` catching a
+  SPECIFIC `SQLAlchemyError` is NOT flagged; (b) try-must-wrap-a-yield → plain route handlers that
+  legitimately `raise HTTPException(500)` (gen888 menu_upload, 1105 stripe, 1071 order_be_3) are NOT
+  flagged. Proven **0 findings** across the platform's own backend modules + 888's `gen888` files +
+  the 1105/1071 fixtures; **true positive** on the captured 1289 `database.py` (flags `get_db`).
+- **Wiring (mirrors #16/#17/#19):** `developers/orchestrator._collect_stubs` and
+  `qa/orchestrator._gate_regenerated` set `http_swallow_repairs` → `agents.repair_instructions`
+  renders a targeted `HTTP_EXCEPTION_SWALLOW` ticket → the existing flag→bounded-retry→fail / reject
+  loop. Backend `_system("backend")` gained a get_db error-propagation prompt rule (let framework
+  HTTPExceptions propagate unchanged; prefer plain `async with … yield`; catch specific
+  `SQLAlchemyError`, never broad `Exception`, and re-raise HTTPException first if you must catch).
+- **Fixture:** `backend/tests/fixtures/database_get_db_swallow_1289.py` (the real 1289 FND-2, id 2717).
+- **Tests (all 14 offline suites pass):** `test_developers_offline.test_http_exception_swallow_gate`
+  (true positive; the 5 negatives — specific-exc / HTTPException-sibling / isinstance-guard / bare-raise
+  / route-handler-no-yield; zero-FP corpus; gate integration + repair text) +
+  `test_qa_regen_gate_offline.test_gate_http_swallow`. Backend REBUILT; the 9-gate liveness one-liner
+  (extended with `http_exception_swallow`) prints `True`. Committed `290ff82`, pushed.
 
 ## 2. THE THREE MEASUREMENT RUNS (1007, 1038, 1039) — proof + the ROOT-CAUSE diagnosis
 All three: same idea (Bella Vista Italian restaurant, **PDF menu upload**, Quick launch),
@@ -538,18 +570,13 @@ Code-integrity gates (#16–#19) + security-verdict fix (#23) are solid and VALI
 (§1j: real Opus PASSED, first ever). DEPLOY GAPS #2/#3/#4 ALL CLOSED (#20/#21/#22). The one open,
 concrete item is the run-1289 QA finding, already fully diagnosed:
 
-### A. ⭐ THE OPEN DECISION — candidate FIX #24 (get_db swallows HTTPException → 500)
-Root cause CONFIRMED (§1j step 6): `get_db` (FND-2 `database.py`) wraps `yield session` in a broad
-`except Exception` that re-raises as `HTTPException(500)`, masking every 401/404/422 on every DB
-endpoint → the 20 QA failures. **RECURRING, deterministically-detectable + preventable** (my read).
-**Decision to make first:** build Fix #24, or accept it as QA's job (QA did catch it). If building —
-plan-first, same rigor as #16–#23: AST detector in `developers/agents.py` (flag a `get_db`-style
-dependency generator whose `yield`-wrapping `except` catches broad `Exception`/bare-`except` and
-raises/returns 500 without re-raising an already-`HTTPException`), wired into
-`developers/orchestrator._collect_stubs` + `qa/orchestrator._gate_regenerated`; a FND-2/backend prompt
-rule; zero-FP proof vs the platform's own 64 modules + 888's `gen888` fixtures; regression test on the
-CAPTURED 1289 `database.py` (grab it from the DB before any 1289 cleanup). Then re-run QA→deploy to
-reach the honest secrets gap.
+### A. ✅ DONE — FIX #24 (get_db swallows HTTPException → 500). See §1k for the full record.
+BUILT + tested + live + pushed (`290ff82`, HEAD). AST detector `agents.http_exception_swallow` wired
+into `_collect_stubs` + `_gate_regenerated`, backend prompt rule added, zero-FP proven, regression test
+on the captured 1289 `database.py`. **Next concrete step:** re-run 1289 QA→deploy (or hand-fix its
+get_db) to reach the honest Week-7/8 secrets/redis gap — deploy gap #1, DEFERRED by decision (§5.C);
+do NOT auto-seed secrets. Fix #20's layered health check will report the secrets failure honestly
+("backend layer" failed, no false `live`).
 
 ### B. (OPTIONAL) Fix #19 slice 2 — annotated/constructed INSTANCE attribute access
 Extends the attribute gate (#19, §1e) from class-name access to instance access where the type is
@@ -597,10 +624,12 @@ checkpoint/re-validate model. **Measured on 1105: build-time detection is solved
 now (1) gating the QA regeneration loop and (2) the Week-7 secrets/redis deploy onboarding.**
 
 ## 6. GIT + STATE AT HANDOFF (2026-08-17 late)
-**EVERYTHING COMMITTED + PUSHED. `HEAD == origin/master == `6947af0`, 0 ahead, clean tree.** All fixes
-#16–#23 are on `origin/master`, one commit each, in order: `90169ee` #16, `5a640a1` #17, `5963e1d`
-#18, `cf4563d` #19, `81a2d8c` #20, `e5405e4` #21, `3a3854c` #22, `6947af0` #23 (plus the run-1105
-CONTEXT commits `5754caa`/`6f0c7fd` between #17 and #18). github.com/Rajkumar2002-Rk/ai-org (private).
+**FIX #24 COMMITTED + PUSHED. `HEAD == origin/master == 290ff82` (Fix #24); this CONTEXT update is the
+only uncommitted change at the moment of writing.** All fixes #16–#24 are on `origin/master`, one
+commit each, in order: `90169ee` #16, `5a640a1` #17, `5963e1d` #18, `cf4563d` #19, `81a2d8c` #20,
+`e5405e4` #21, `3a3854c` #22, `6947af0` #23, `290ff82` #24 (plus the run-1105 CONTEXT commits
+`5754caa`/`6f0c7fd` between #17 and #18, and the milestone handoff commit `ab2ed44` before #24).
+github.com/Rajkumar2002-Rk/ai-org (private).
 Permanent rules: **no `Co-Authored-By`, ever**; never commit `.env`; keep the repo private.
 - **This CONTEXT.md handoff update is the only uncommitted change at the moment of writing — commit +
   push it as the final act.** Nothing else is local-only. Candidate FIX #24 is NOT written (proposal
@@ -609,8 +638,8 @@ Permanent rules: **no `Co-Authored-By`, ever**; never commit `.env`; keep the re
   yet include this CONTEXT commit — no code changed after #23, so no rebuild needed; but a fresh
   session should `docker compose build backend && docker compose up -d backend` from latest to be
   safe, then verify all 8 gate families import (one-liner):
-  `docker exec ai-org-backend-1 python -c "from app.developers import agents as a; from app.devops import health, manifest; from app.architect import builder; from app.qa import orchestrator as qo; from app.reviewer import reviewer as rv; print(all([hasattr(a,'import_symbol_mismatches'),hasattr(a,'python_syntax_error'),hasattr(qo,'_gate_regenerated'),hasattr(a,'attribute_access_mismatches'),'failed_layer' in health.ProbeResult.__dataclass_fields__,'handle_path /api/*' in manifest._caddyfile('x',True,True,''),hasattr(builder,'_frontend_homepage_ticket'),hasattr(rv,'_confirmed_critical')]))"`
-  → must print `True` (that covers #16/#17/#18/#19/#20/#21/#22/#23 respectively).
+  `docker exec ai-org-backend-1 python -c "from app.developers import agents as a; from app.devops import health, manifest; from app.architect import builder; from app.qa import orchestrator as qo; from app.reviewer import reviewer as rv; print(all([hasattr(a,'import_symbol_mismatches'),hasattr(a,'python_syntax_error'),hasattr(qo,'_gate_regenerated'),hasattr(a,'attribute_access_mismatches'),'failed_layer' in health.ProbeResult.__dataclass_fields__,'handle_path /api/*' in manifest._caddyfile('x',True,True,''),hasattr(builder,'_frontend_homepage_ticket'),hasattr(rv,'_confirmed_critical'),hasattr(a,'http_exception_swallow')]))"`
+  → must print `True` (that covers #16/#17/#18/#19/#20/#21/#22/#23/#24 respectively).
 - **`.env` config live:** `SECURITY_REVIEW_ENABLED=true`, `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`;
   OpenAI + Anthropic + Gemini + scoped `MENU_EXTRACTION_API_KEY` all present & pinged live this session.
 - **All 14 offline suites PASS** (run: `docker compose run --rm --no-deps -e PYTHONPATH=/app -v
