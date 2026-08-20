@@ -19,6 +19,7 @@ records them as Level 1 failures with root-cause tracing like any other bug.
 """
 import ast
 import asyncio
+import json
 import logging
 import os
 import re
@@ -353,6 +354,10 @@ class TestEnv:
     # ticket_id per filepath, so a failure can be traced back to its ticket.
     ticket_of: dict[str, str] = field(default_factory=dict)
     logs: str = ""
+    # Structured third-party import findings (run 1496): a `from <pkg> import Y`
+    # where <pkg> is installed but Y/the submodule does not exist. Populated by
+    # `_third_party_import_errors`; consumed by the build-stage bounded repair.
+    import_errors: list[dict] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ helpers
@@ -405,11 +410,11 @@ def _third_party_imports(code: str) -> set[str]:
 
 
 def _run(cmd: list[str], cwd: str | None = None, timeout: int = 60,
-         env: dict | None = None) -> tuple[int, str]:
+         env: dict | None = None, stdin: str | None = None) -> tuple[int, str]:
     """Run a command, capture combined output, never raise on failure."""
     try:
         proc = subprocess.run(
-            cmd, cwd=cwd, timeout=timeout, env=env,
+            cmd, cwd=cwd, timeout=timeout, env=env, input=stdin,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         return proc.returncode, proc.stdout or ""
@@ -555,6 +560,124 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
             f"Installer output: {out[-600:]}",
         )]
     return []
+
+
+# In-project roots — resolved by Fix #16 (import_symbol_mismatches), NOT here.
+_IN_PROJECT_ROOTS = {"backend", "app"}
+
+# A probe (run in the VENV, where the app's real deps ARE installed) that, for each
+# `from <module> import <names>`, confirms the module imports and each name exists.
+# Only reports a THIRD-PARTY package that IS installed but whose SUBMODULE/NAME the
+# generated code guessed wrong (run 1496: `from stripe.api_resources import
+# PaymentIntent` — the real path is `from stripe import PaymentIntent`). A package
+# that is not installed at all is _install_deps' domain, so its root is skipped here.
+_IMPORT_PROBE = r'''
+import importlib, json, sys
+out = []
+for item in json.load(sys.stdin):
+    mod, names = item["module"], item["names"]
+    root = mod.split(".")[0]
+    try:
+        rootmod = importlib.import_module(root)
+    except Exception:
+        continue                      # package not installed -> not our finding
+    try:
+        m = importlib.import_module(mod)
+    except ModuleNotFoundError as ex:
+        # Only OUR finding when the MISSING module is the path itself (or a parent) —
+        # NOT a transitive dependency. `starlette.middleware.sessions` is a real module
+        # that raises ModuleNotFoundError('itsdangerous') when that optional dep is
+        # absent: a wrong-dep problem, not a wrong path. Skip those (zero false positive).
+        miss = getattr(ex, "name", "") or ""
+        if miss and (miss == mod or mod.startswith(miss + ".")):
+            avail = [n for n in names if n != "*" and hasattr(rootmod, n)]
+            out.append({"module": mod, "kind": "no_submodule",
+                        "names": names, "root": root, "on_root": avail})
+        continue
+    except Exception:
+        continue                      # some other import-time error -> don't guess
+    missing = [n for n in names if n != "*" and not hasattr(m, n)]
+    if missing:
+        out.append({"module": mod, "kind": "no_attr", "names": missing, "root": root})
+print(json.dumps(out))
+'''
+
+
+def _third_party_import_candidates(written: dict[str, str]) -> list[dict]:
+    """(file, line, module, names) for every `from <third-party> import ...` — skips
+    in-project (backend/app), stdlib, relative, and bare `import x`. NAMES exclude
+    aliases-as-written but keep the real attribute names."""
+    out: list[dict] = []
+    for rel, content in written.items():
+        if not rel.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+                continue
+            root = node.module.split(".")[0]
+            if root in _IN_PROJECT_ROOTS or root in _STDLIB_SKIP:
+                continue
+            names = [a.name for a in node.names if a.name != "*"]
+            if not names:
+                continue
+            out.append({"file": rel, "line": node.lineno,
+                        "module": node.module, "names": names})
+    return out
+
+
+def _third_party_import_errors(venv_dir: str, written: dict[str, str]) -> list[dict]:
+    """Structured findings for wrong third-party import PATHS/SYMBOLS, verified in the
+    venv. Each: {file, line, module, kind, names, root, on_root?}. Empty when clean or
+    when the probe cannot run (never a false positive). Zero-FP: only an INSTALLED
+    package with a wrong submodule/name is flagged."""
+    candidates = _third_party_import_candidates(written)
+    if not candidates:
+        return []
+    # De-dupe module -> union(names) for the probe; keep per-occurrence for findings.
+    by_module: dict[str, set] = {}
+    for c in candidates:
+        by_module.setdefault(c["module"], set()).update(c["names"])
+    probe_input = json.dumps([{"module": m, "names": sorted(ns)}
+                              for m, ns in by_module.items()])
+    code, out = _run([_venv_python(venv_dir), "-c", _IMPORT_PROBE, ], timeout=60,
+                     stdin=probe_input)
+    if code != 0 or not out.strip():
+        return []
+    try:
+        problems = {p["module"]: p for p in json.loads(out.strip().splitlines()[-1])}
+    except (ValueError, KeyError):
+        return []
+    findings: list[dict] = []
+    for c in candidates:
+        p = problems.get(c["module"])
+        if not p:
+            continue
+        if p["kind"] == "no_submodule":
+            findings.append({**c, "kind": "no_submodule",
+                             "root": p["root"], "on_root": p.get("on_root", [])})
+        else:
+            bad = [n for n in c["names"] if n in set(p["names"])]
+            if bad:
+                findings.append({**c, "kind": "no_attr", "root": p["root"], "names": bad})
+    return findings
+
+
+def _import_error_reason(e: dict) -> str:
+    """Human/agent-readable reason for one third-party import finding."""
+    names = ", ".join(e.get("names") or [])
+    if e["kind"] == "no_submodule":
+        sug = (f" Import {'/'.join(e['on_root'])} directly from `{e['root']}` "
+               f"(e.g. `from {e['root']} import {(e.get('on_root') or [names])[0]}`)."
+               if e.get("on_root") else
+               f" `{e['module']}` is not a real submodule of `{e['root']}`.")
+        return (f"{e['file']} line {e.get('line')}: `from {e['module']} import {names}` — "
+                f"the submodule `{e['module']}` does not exist.{sug}")
+    return (f"{e['file']} line {e.get('line')}: `{e['module']}` has no {names} — that "
+            f"name is not exported by the installed `{e['root']}` package.")
 
 
 def _find_app_module(written: dict[str, str]) -> str | None:
@@ -803,7 +926,22 @@ async def assemble(files: list[dict],
         if fails:
             return env
 
-        env.failures.extend(_install_deps(venv_dir, written))
+        inst_fails = _install_deps(venv_dir, written)
+        env.failures.extend(inst_fails)
+
+        # Third-party import symbol gate (run 1496): with the real deps now installed,
+        # catch a `from <pkg> import Y` whose submodule/name doesn't exist (the LLM
+        # guessed an internal path) — a PRECISE, deterministic finding instead of a
+        # 45s boot crash. Skipped when an install already failed (that is a different,
+        # missing-package finding). A hit means the app cannot import, so stop here.
+        if not inst_fails:
+            env.import_errors = _third_party_import_errors(venv_dir, written)
+            for e in env.import_errors:
+                env.failures.append(Failure(
+                    f"assembly: bad third-party import in {e['file']}",
+                    _import_error_reason(e)))
+            if env.import_errors:
+                return env
 
         env.db_name = f"qa_test_{secrets.token_hex(6)}"
         db_url, fails = await _provision_db(env.db_name)

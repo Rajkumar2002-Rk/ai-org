@@ -203,6 +203,76 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
     return [r for r in built if r.get("status") == agents.STUB_STATUS]
 
 
+async def repair_import_errors(project_id: int, blueprint: dict,
+                               import_errors: list[dict]) -> bool:
+    """Regenerate the file(s) with a wrong THIRD-PARTY import path/symbol (run 1496:
+    `from stripe.api_resources import PaymentIntent`), using a targeted repair, and
+    persist. Returns True if any file was rewritten. Runs AFTER smoke_boot (the venv
+    is where the error is detectable); the caller bounds the retries. Mirrors the
+    _collect_stubs flag→structured-repair→retry pattern, but for the venv-only class."""
+    if not import_errors:
+        return False
+    from app.qa import assembly as qa_assembly  # local: avoid a load cycle
+    tickets = blueprint.get("sprint_tickets", [])
+    routing = blueprint.get("llm_routing", {})
+    contract = _contract_text(blueprint)
+
+    async with async_session() as db:
+        rows = (await db.execute(select(GeneratedFile).where(
+            GeneratedFile.project_id == project_id))).scalars().all()
+        existing = [{"ticket_id": r.ticket_id, "filename": r.filename,
+                     "filepath": r.filepath, "content": r.content,
+                     "agent_type": r.agent_type} for r in rows]
+
+    by_file: dict[str, list] = {}
+    for e in import_errors:
+        by_file.setdefault(e["file"], []).append(e)
+
+    def _ticket_for(path: str):
+        for t in tickets:
+            if (t.get("filepath") or "") == path:
+                return t
+        for t in tickets:
+            tp = t.get("filepath") or ""
+            if tp and (tp.endswith(path) or path.endswith(tp)):
+                return t
+        return None
+
+    changed = False
+    for filepath, errs in by_file.items():
+        ticket = _ticket_for(filepath)
+        if ticket is None:
+            logger.warning("Import-repair: no ticket owns %s (project %s)",
+                           filepath, project_id)
+            continue
+        reasons = "\n".join(qa_assembly._import_error_reason(e) for e in errs)
+        repair = ("\n=== THIRD_PARTY_IMPORT — repair ONLY this file, do not touch any "
+                  "other file ===\n" + reasons + "\nRepair: import each symbol from the "
+                  "package's correct PUBLIC location — usually the package top level "
+                  "(e.g. `from stripe import PaymentIntent`), NOT a guessed internal "
+                  "submodule. Keep the file's behaviour and public names unchanged.")
+        new = await agents.build_ticket(ticket, _model_for(ticket, routing),
+                                        existing, contract, repair)
+        if not new or new.get("status") == agents.STUB_STATUS or not new.get("content"):
+            continue
+        tid = new.get("ticket_id") or ticket.get("id") or ""
+        async with async_session() as db:
+            row = (await db.execute(select(GeneratedFile).where(
+                GeneratedFile.project_id == project_id,
+                GeneratedFile.ticket_id == tid))).scalars().first()
+            if row is not None:
+                row.content = new["content"]
+                row.status = new.get("status", "generated")
+                await db.commit()
+                changed = True
+                logger.info("Import-repair: rewrote %s (ticket %s) for project %s",
+                            filepath, tid, project_id)
+        for e2 in existing:                       # reflect for the next file's context
+            if e2.get("ticket_id") == tid:
+                e2["content"] = new["content"]
+    return changed
+
+
 async def run(project_id: int, blueprint: dict) -> dict:
     """Build all tickets. Records a pipeline_status 'building' stage.
 

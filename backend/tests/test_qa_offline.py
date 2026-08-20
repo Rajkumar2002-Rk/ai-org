@@ -371,6 +371,72 @@ def test_mixed_import_styles_single_module():
           _python_path(root) == root)
 
 
+def test_third_party_import_gate():
+    """Run 1496: the generated integrate.py wrote `from stripe.api_resources import
+    PaymentIntent` — stripe IS installed but that submodule doesn't exist, so the app
+    ImportErrors at boot. The venv-based gate catches a wrong third-party submodule/name
+    deterministically. True positives use INSTALLED packages (the venv fallback is the
+    platform python); zero false positives on real generated code."""
+    import os
+    import glob
+    from app.qa.assembly import (_third_party_import_errors, _third_party_import_candidates,
+                                  _import_error_reason)
+    V = "/nonexistent-venv"     # -> _venv_python falls back to the platform python
+
+    # True positives against installed packages: a wrong NAME and a wrong SUBMODULE.
+    w = {"backend/app/routes/pay.py": "from httpx import NotARealThing\n"
+                                       "from httpx import AsyncClient\n",
+         "backend/app/routes/x.py": "from fastapi.totally_fake_sub import Thing\n"}
+    res = _third_party_import_errors(V, w)
+    kinds = {(r["module"], r["kind"]) for r in res}
+    check("a wrong third-party NAME is flagged (httpx.NotARealThing)",
+          ("httpx", "no_attr") in kinds, str(kinds))
+    check("a wrong third-party SUBMODULE is flagged (fastapi.totally_fake_sub)",
+          ("fastapi.totally_fake_sub", "no_submodule") in kinds, str(kinds))
+    check("exactly the two bad imports are flagged (AsyncClient is fine)", len(res) == 2, str(res))
+    check("the reason is actionable", "does not exist" in _import_error_reason(res[0])
+          or "no " in _import_error_reason(res[0]))
+
+    # In-project / stdlib / relative / star / correct imports are NEVER flagged.
+    clean = {"a.py": "from fastapi import FastAPI\n"           # correct third-party
+                     "from backend.app.models import Order\n"  # in-project (Fix #16's job)
+                     "from app.database import get_db\n"       # in-project
+                     "import os\nfrom typing import List\n"    # stdlib
+                     "from .local import x\n"                  # relative
+                     "from httpx import *\n"}                  # star -> unverifiable
+    check("no false positives on correct/in-project/stdlib/relative/star imports",
+          _third_party_import_errors(V, clean) == [], str(_third_party_import_errors(V, clean)))
+
+    # Zero-FP across the platform's own backend + 888's real generated files.
+    app_dir = os.path.join(os.path.dirname(__file__), "..", "app")
+    plat = {("backend/" + os.path.relpath(p, os.path.join(app_dir, ".."))): open(p, encoding="utf-8").read()
+            for p in glob.glob(os.path.join(app_dir, "**", "*.py"), recursive=True)}
+    check(f"ZERO false positives across the platform's own {len(plat)} modules",
+          _third_party_import_errors(V, plat) == [],
+          str([(x["file"], x["module"]) for x in _third_party_import_errors(V, plat)][:6]))
+    # NOTE: gen888 is NOT a clean corpus for THIS gate — its security.py genuinely
+    # imports `from starlette.middleware.ratelimit import ...`, a module that does not
+    # exist in starlette (dead code in the fixture). The gate is CORRECT to flag it, so
+    # asserting zero there would be asserting the gate MISSES a real bug. The platform's
+    # own 68 modules (all deps present, all imports correct) are the clean corpus; the
+    # explicit correct/in-project/stdlib/relative/star cases above cover the FP classes.
+    # A real submodule that only fails on a MISSING OPTIONAL DEP (starlette sessions ->
+    # itsdangerous) is proven NOT flagged:
+    dep_case = {"s.py": "from starlette.middleware.sessions import SessionMiddleware\n"}
+    check("a real submodule failing only on a missing optional dep is NOT flagged",
+          _third_party_import_errors(V, dep_case) == [], str(_third_party_import_errors(V, dep_case)))
+
+    # The real 1496 fixture: stripe isn't installed HERE so the check skips it, but the
+    # candidate extractor must still SEE the offending import (it would be caught in the
+    # assembly venv where stripe is installed).
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "integrate_stripe_api_resources_1496.py")
+    if os.path.isfile(fx):
+        cands = _third_party_import_candidates({"backend/app/routes/integrate.py": open(fx, encoding="utf-8").read()})
+        hit = [c for c in cands if c["module"] == "stripe.api_resources"]
+        check("the 1496 fixture's `from stripe.api_resources import ...` is a checked candidate",
+              hit and "PaymentIntent" in hit[0]["names"], str(cands))
+
+
 async def test_certificate_drift_detection():
     print("\n=== F: certificate detects drift from ANY source ===")
     from app.reviewer import orchestrator as ro
@@ -634,6 +700,7 @@ async def main():
     await test_partial_boot_is_assembly_failure()
     test_file_targeting()
     test_mixed_import_styles_single_module()
+    test_third_party_import_gate()
     await test_certificate_drift_detection()
     await test_missing_certificate_fails_closed()
     test_env_autodiscovery()

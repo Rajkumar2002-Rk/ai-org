@@ -85,6 +85,16 @@ def _system(agent_type: str) -> str:
         # Stripe Connect account (owner onboarding): the platform connects the OWNER's
         # Stripe account BEFORE deploy and injects its id as STRIPE_CONNECTED_ACCOUNT_ID.
         # The app must charge ON that account so money reaches the owner, not the platform.
+        # Third-party import paths (run 1496): `from stripe.api_resources import
+        # PaymentIntent` — the LLM guessed an INTERNAL submodule; the real path is
+        # `from stripe import PaymentIntent`. ImportError at startup, boot fails.
+        " CRITICAL third-party import rule: import third-party symbols from their "
+        "DOCUMENTED PUBLIC location — almost always the package's TOP LEVEL (e.g. "
+        "`from stripe import PaymentIntent`, `import stripe` then `stripe.Charge`; "
+        "`from pypdf import PdfReader`). Do NOT guess internal submodule paths such as "
+        "`stripe.api_resources`, `pypdf.errors`, or `<pkg>.models` unless you are certain "
+        "they are the package's public API — a wrong path is an ImportError that crashes "
+        "the app at startup."
         " CRITICAL Stripe-account rule: if this app takes payments via Stripe Connect, "
         "read the owner's connected account id from the environment variable "
         "`STRIPE_CONNECTED_ACCOUNT_ID`. When it is set, treat the account as ALREADY "

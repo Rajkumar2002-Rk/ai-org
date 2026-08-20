@@ -120,7 +120,23 @@ async def _run_build(project_id: int) -> None:
                 await db.commit()
                 await db.refresh(gate)
                 gate_id = gate.id
-            booted, boot_err = await _smoke_boot(project_id, blueprint)
+            booted, boot_err, import_errs = await _smoke_boot(project_id, blueprint)
+            # Deterministic self-heal for the venv-only third-party import class
+            # (run 1496: `from stripe.api_resources import PaymentIntent`): regenerate
+            # the offending file(s) with a targeted repair and re-boot, BOUNDED. This
+            # is the venv-stage analogue of the build gate's flag→repair→retry (#16).
+            _IMPORT_REPAIR_MAX = 2
+            attempt = 0
+            while not booted and import_errs and attempt < _IMPORT_REPAIR_MAX:
+                attempt += 1
+                logger.warning("Smoke-boot: %d bad third-party import(s) for project "
+                               "%s — repair attempt %d/%d", len(import_errs),
+                               project_id, attempt, _IMPORT_REPAIR_MAX)
+                repaired = await orchestrator.repair_import_errors(
+                    project_id, blueprint, import_errs)
+                if not repaired:
+                    break
+                booted, boot_err, import_errs = await _smoke_boot(project_id, blueprint)
             async with async_session() as db:
                 gate = await db.get(PipelineStatus, gate_id)
                 gate.status = "done" if booted else "error"
@@ -183,8 +199,9 @@ async def _smoke_boot(project_id: int, blueprint: dict) -> tuple[bool, str]:
         # failure is diagnosable from the smoke_boot stage WITHOUT re-running the boot.
         parts = [f"{f.test_name}: {f.reason}".strip() for f in env.failures]
         reason = "\n".join(p for p in parts if p) or "the app did not start"
+    import_errors = list(getattr(env, "import_errors", []) or [])
     await assembly.teardown(env)
-    return booted, reason
+    return booted, reason, import_errors
 
 
 async def _run_deploy(project_id: int) -> None:
