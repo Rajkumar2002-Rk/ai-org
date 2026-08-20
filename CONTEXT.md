@@ -514,6 +514,15 @@ next slice = BA Stripe click-to-connect; Auth0 = per-project (later).
   signing/tamper/expiry, authorize URL (configured-only, no secret leak), callback (exchange+persist, bad
   state refused, Stripe-rejection body not leaked), BA stage (payment-intent, skip, ORDER, composed UI).
   All 15 offline suites pass; `app.main` imports.
+- **✅ VALIDATED LIVE END-TO-END (2026-08-20):** operator created a Stripe **test-mode** Connect app and set
+  `STRIPE_CLIENT_ID`/`STRIPE_SECRET_KEY` (`sk_test_`)/`STRIPE_REDIRECT_URI=http://localhost:8000/connect/stripe/callback`
+  in `.env`. Fixes this session: (a) `docker-compose.yml` now forwards the owner-onboarding platform vars
+  (STRIPE_*/SMTP_*/SENDER_EMAIL/TWILIO_*/AUTH0_MGMT_*) into the backend — they weren't listed before, so the
+  container never saw them; (b) `_exchange_code` uses HTTP basic-auth (secret as username) per current Stripe
+  docs. Then the OWNER clicked through the real Stripe test OAuth → callback → **`STRIPE_CONNECTED_ACCOUNT_ID`
+  (`acct_…`) persisted encrypted in `secrets_store` for project 1289; `is_connected(1289)` True.** First real
+  owner-account connection through the platform. Committed `06771fd`. (Stripe test mode = full Connect flow, no
+  real ID/EIN/business verification — the §7 Stripe setup is doable in a Sandbox in minutes.)
 - **⚠️ FOLLOW-UP (flagged, NOT done):** the connected account id is captured + persisted, but the generated
   `stripe.py` currently captures its OWN connection at RUNTIME and does NOT read `STRIPE_CONNECTED_ACCOUNT_ID`.
   To make the deployed app USE the pre-connected account (plan §3 Design 2), add a backend CODEGEN contract
