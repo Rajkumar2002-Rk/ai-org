@@ -475,6 +475,24 @@ owner half (`PLAN_owner_onboarding.md`, still not built). New module **`devops/p
   NEXT piece — the owner onboarding (`PLAN_owner_onboarding.md`): Stripe click-to-connect in a BA stage,
   Auth0 platform auto-provision, platform email. Fix #26 does NOT make 1289 fully boot on its own.
 
+## 1n. OWNER ONBOARDING — SLICE 1: platform-held provider credentials injected at deploy (DONE 2026-08-20)
+First slice of `PLAN_owner_onboarding.md` (problem #1) — the "platform-held" half. Committed `fd5dc66`.
+- **`config.py`:** platform-held settings the operator sets ONCE in `.env` (like the scoped menu key):
+  `stripe_client_id/secret_key/redirect_uri`, `smtp_host/port/user/password`, `sender_email`, `twilio_*`.
+  Absent → that provider's feature is unavailable + the app fail-fasts honestly (Fix #20); nothing faked.
+- **`provisioning.platform_provided(needed, existing)`** → `(secret_values, nonsecret_values)` split so
+  STEP 5 guards only real secrets (Stripe secret, SMTP password, Twilio token) and NEVER redacts an
+  identifier like `SMTP_PORT`. Injects ONLY vars the app reads; an owner-supplied value always wins; an
+  unset platform var is omitted (honest fail-fast, logged per-provider).
+- **STEP 5 wiring:** platform secrets before `guard()`, non-secret identifiers after — alongside Fix #26.
+- **Tests:** `test_devops_offline.test_provisioning` extended (secret/non-secret split, unconfigured-omitted,
+  owner-wins, reads-only). All 14 offline suites pass. Backend rebuilt; `platform_provided` live.
+- **NOT YET (next slices):** (2) **Auth0 per-project auto-provision** via the Management API — deliberately
+  NOT statically injected; (3) the **BA `connect_accounts` stage + Stripe Connect OAuth endpoints** (the
+  owner-facing click-to-connect + `/connect/stripe/callback` → `secrets_store`); (4) **SMS** decide/defer.
+  All need the one-time HUMAN platform setup (`PLAN_owner_onboarding.md` §7) to run for real; the CODE +
+  offline (mocked) tests are buildable without it.
+
 ## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
 Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
 - **Root cause (confirmed, §1j step 6):** the generated `database.py` (FND-2) `get_db` wrapped
