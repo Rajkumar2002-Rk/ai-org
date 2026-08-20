@@ -120,23 +120,33 @@ async def _run_build(project_id: int) -> None:
                 await db.commit()
                 await db.refresh(gate)
                 gate_id = gate.id
-            booted, boot_err, import_errs = await _smoke_boot(project_id, blueprint)
-            # Deterministic self-heal for the venv-only third-party import class
-            # (run 1496: `from stripe.api_resources import PaymentIntent`): regenerate
-            # the offending file(s) with a targeted repair and re-boot, BOUNDED. This
-            # is the venv-stage analogue of the build gate's flag→repair→retry (#16).
-            _IMPORT_REPAIR_MAX = 2
+            booted, boot_err, finds = await _smoke_boot(project_id, blueprint)
+            # Deterministic self-heal for boot failures the build gate can't see until
+            # the app is assembled+booted: a wrong third-party import path (run 1496:
+            # `from stripe.api_resources import PaymentIntent`) or a designed endpoint
+            # that was never generated (run 1557: GET /orders/{order_id}). Regenerate
+            # the offending file(s) with a targeted repair and re-boot, BOUNDED — the
+            # boot-stage analogue of the build gate's flag→repair→retry (#16/#27).
+            _BOOT_REPAIR_MAX = 2
             attempt = 0
-            while not booted and import_errs and attempt < _IMPORT_REPAIR_MAX:
+            while not booted and attempt < _BOOT_REPAIR_MAX and (
+                    finds.get("import_errors") or finds.get("missing_endpoints")):
                 attempt += 1
-                logger.warning("Smoke-boot: %d bad third-party import(s) for project "
-                               "%s — repair attempt %d/%d", len(import_errs),
-                               project_id, attempt, _IMPORT_REPAIR_MAX)
-                repaired = await orchestrator.repair_import_errors(
-                    project_id, blueprint, import_errs)
+                logger.warning("Smoke-boot repair attempt %d/%d for project %s "
+                               "(%d import, %d missing-endpoint finding[s])",
+                               attempt, _BOOT_REPAIR_MAX, project_id,
+                               len(finds.get("import_errors") or []),
+                               len(finds.get("missing_endpoints") or []))
+                repaired = False
+                if finds.get("import_errors"):
+                    repaired |= await orchestrator.repair_import_errors(
+                        project_id, blueprint, finds["import_errors"])
+                if finds.get("missing_endpoints"):
+                    repaired |= await orchestrator.repair_missing_endpoints(
+                        project_id, blueprint, finds["missing_endpoints"])
                 if not repaired:
                     break
-                booted, boot_err, import_errs = await _smoke_boot(project_id, blueprint)
+                booted, boot_err, finds = await _smoke_boot(project_id, blueprint)
             async with async_session() as db:
                 gate = await db.get(PipelineStatus, gate_id)
                 gate.status = "done" if booted else "error"
@@ -199,9 +209,12 @@ async def _smoke_boot(project_id: int, blueprint: dict) -> tuple[bool, str]:
         # failure is diagnosable from the smoke_boot stage WITHOUT re-running the boot.
         parts = [f"{f.test_name}: {f.reason}".strip() for f in env.failures]
         reason = "\n".join(p for p in parts if p) or "the app did not start"
-    import_errors = list(getattr(env, "import_errors", []) or [])
+    findings = {
+        "import_errors": list(getattr(env, "import_errors", []) or []),
+        "missing_endpoints": list(getattr(env, "missing_endpoints", []) or []),
+    }
     await assembly.teardown(env)
-    return booted, reason, import_errors
+    return booted, reason, findings
 
 
 async def _run_deploy(project_id: int) -> None:

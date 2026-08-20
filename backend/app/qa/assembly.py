@@ -358,6 +358,10 @@ class TestEnv:
     # where <pkg> is installed but Y/the submodule does not exist. Populated by
     # `_third_party_import_errors`; consumed by the build-stage bounded repair.
     import_errors: list[dict] = field(default_factory=list)
+    # Designed endpoints missing from the BOOTED app (run 1557: GET /orders/{order_id}
+    # was never generated). Populated by `_check_designed_endpoints`; consumed by the
+    # build-stage bounded repair (orchestrator.repair_missing_endpoints).
+    missing_endpoints: list[str] = field(default_factory=list)
 
 
 # ------------------------------------------------------------------ helpers
@@ -863,7 +867,8 @@ def _norm_path(path: str) -> str:
     return re.sub(r"\{[^}]*\}", "{}", (path or "").rstrip("/")) or "/"
 
 
-async def _check_designed_endpoints(base_url: str, expected: list[str]) -> list[Failure]:
+async def _check_designed_endpoints(base_url: str, expected: list[str]
+                                    ) -> tuple[list[Failure], list[str]]:
     """A partially-booted app is a FAILED assembly, not a passing test run.
 
     Generated entrypoints tend to guard router imports; a broken router then gets
@@ -872,25 +877,25 @@ async def _check_designed_endpoints(base_url: str, expected: list[str]) -> list[
     never loaded. Compare what booted against what the Architect designed.
     """
     if not expected:
-        return []
+        return [], []
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(f"{base_url}/openapi.json")
             spec = r.json() if r.status_code == 200 else {}
     except Exception as exc:
-        return [Failure("assembly: app's API is unreadable", str(exc)[:300])]
+        return [Failure("assembly: app's API is unreadable", str(exc)[:300])], []
 
     live = {_norm_path(p) for p in (spec.get("paths") or {})}
     missing = [p for p in expected if _norm_path(p) not in live]
     if not missing:
-        return []
+        return [], []
     return [Failure(
         "assembly: designed features are missing from the running app",
         f"The app started but {len(missing)} of {len(expected)} designed "
         f"endpoints are not there: {', '.join(missing[:8])}. This usually means "
         f"a module failed to import and was silently skipped, so those features "
         f"would be untested and unavailable.",
-    )]
+    )], missing
 
 
 async def assemble(files: list[dict],
@@ -998,9 +1003,11 @@ async def assemble(files: list[dict],
             return env
 
         # Booted — but a partially-loaded app must NOT be reported as healthy.
-        missing = await _check_designed_endpoints(env.base_url, expected_endpoints or [])
-        if missing:
-            env.failures.extend(missing)
+        ep_fails, missing_eps = await _check_designed_endpoints(
+            env.base_url, expected_endpoints or [])
+        if ep_fails:
+            env.failures.extend(ep_fails)
+            env.missing_endpoints = missing_eps
             return env      # ok stays False: this is a failed assembly
 
         env.ok = True

@@ -366,6 +366,42 @@ def test_no_stub_prompt_rule():
               "silently do nothing" in sysp, at)
 
 
+def test_missing_endpoint_attribution():
+    """Run 1557: GET /orders/{order_id} was designed but never generated. The
+    endpoint-completeness repair attributes a missing endpoint to the route file
+    sharing the longest path-prefix with it, so the regeneration lands in the right
+    place. Tests the deterministic building blocks (the full repair is exercised live)."""
+    from app.developers import orchestrator as orch
+
+    # _routes_in reconstructs full paths including an APIRouter(prefix=...).
+    check("_routes_in reads a plain decorator path",
+          orch._routes_in("@router.post('/orders')\n") == ["/orders"])
+    check("_routes_in normalises a path param",
+          orch._routes_in("@router.get('/orders/{order_id}/pay')\n") == ["/orders/{}/pay"])
+    check("_routes_in prepends an APIRouter prefix",
+          orch._routes_in("router = APIRouter(prefix='/orders')\n@router.get('/{id}')\n")
+          == ["/orders/{}"])
+
+    check("_shared_segments counts the common path prefix",
+          orch._shared_segments("/orders/{}", "/orders/{}/pay") == 2
+          and orch._shared_segments("/orders/{}", "/menu") == 0)
+
+    # Attribution: /orders/{order_id} should map to the file with the longest shared
+    # prefix — order_be_2 (/orders/{}/pay, 2 segments) over order (/orders, 1 segment).
+    order_py = "router = APIRouter()\n@router.post('/orders')\n"
+    order2_py = "router = APIRouter()\n@router.post('/orders/{order_id}/pay')\n"
+    menu_py = "router = APIRouter()\n@router.get('/menu')\n"
+    files = {"order.py": order_py, "order2.py": order2_py, "menu.py": menu_py}
+    from app.qa.assembly import _norm_path
+    nmp = _norm_path("/orders/{order_id}")
+    scored = {name: max((orch._shared_segments(nmp, r) for r in orch._routes_in(c)), default=0)
+              for name, c in files.items()}
+    best = max(scored, key=scored.get)
+    check("a missing /orders/{order_id} attributes to the deepest /orders route file",
+          best == "order2.py" and scored["order2.py"] == 2, str(scored))
+    check("an unrelated route file is not a candidate (score 0)", scored["menu.py"] == 0)
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -999,6 +1035,7 @@ async def main():
         test_attribute_resolution_gate()
         test_attribute_zero_false_positives()
         test_http_exception_swallow_gate()
+        test_missing_endpoint_attribution()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

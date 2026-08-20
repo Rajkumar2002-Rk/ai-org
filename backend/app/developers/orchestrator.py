@@ -7,6 +7,7 @@ in generated_files; pipeline_status tracks the build stage.
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -268,6 +269,122 @@ async def repair_import_errors(project_id: int, blueprint: dict,
                 logger.info("Import-repair: rewrote %s (ticket %s) for project %s",
                             filepath, tid, project_id)
         for e2 in existing:                       # reflect for the next file's context
+            if e2.get("ticket_id") == tid:
+                e2["content"] = new["content"]
+    return changed
+
+
+_ROUTE_DECORATOR_RE = re.compile(
+    r"@\s*\w+\.(get|post|put|patch|delete)\(\s*['\"]([^'\"]+)['\"]", re.I)
+_ROUTER_PREFIX_RE = re.compile(
+    r"APIRouter\([^)]*?prefix\s*=\s*['\"]([^'\"]+)['\"]", re.S)
+
+
+def _routes_in(content: str) -> list[str]:
+    """Full normalised route paths a generated file defines (decorator path with any
+    APIRouter(prefix=...) prepended). Used to attribute a MISSING endpoint to the
+    route file that already owns that resource."""
+    from app.qa.assembly import _norm_path
+    prefix_m = _ROUTER_PREFIX_RE.search(content or "")
+    prefix = prefix_m.group(1).rstrip("/") if prefix_m else ""
+    out = []
+    for _method, path in _ROUTE_DECORATOR_RE.findall(content or ""):
+        out.append(_norm_path(prefix + path))
+    return out
+
+
+def _shared_segments(a: str, b: str) -> int:
+    sa, sb = a.strip("/").split("/"), b.strip("/").split("/")
+    n = 0
+    for x, y in zip(sa, sb):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+async def repair_missing_endpoints(project_id: int, blueprint: dict,
+                                   missing_paths: list[str]) -> bool:
+    """Regenerate the route file(s) that SHOULD own a designed endpoint the booted app
+    is missing (run 1557: GET /orders/{order_id} was never generated), instructing the
+    developer to ADD the missing endpoint(s) while keeping the existing ones. Attributes
+    each missing path to the route file sharing the longest path-prefix with it. Returns
+    True if any file was rewritten. Caller bounds the retries."""
+    if not missing_paths:
+        return False
+    from app.qa.assembly import _norm_path
+    tickets = blueprint.get("sprint_tickets", [])
+    routing = blueprint.get("llm_routing", {})
+    contract = _contract_text(blueprint)
+    endpoints = blueprint.get("api_endpoints", []) or []
+    # path -> (method, purpose) from the design, so the repair is specific.
+    meta = {_norm_path(e.get("path", "")): (e.get("method", ""), e.get("purpose", ""),
+                                            e.get("path", ""))
+            for e in endpoints}
+
+    async with async_session() as db:
+        rows = (await db.execute(select(GeneratedFile).where(
+            GeneratedFile.project_id == project_id))).scalars().all()
+        existing = [{"ticket_id": r.ticket_id, "filename": r.filename,
+                     "filepath": r.filepath, "content": r.content,
+                     "agent_type": r.agent_type} for r in rows]
+
+    # Attribute each missing endpoint to the best-matching route file.
+    route_files = [f for f in existing if (f.get("filepath") or "").endswith(".py")
+                   and _routes_in(f.get("content") or "")]
+    by_file: dict[str, list] = {}
+    for mp in missing_paths:
+        nmp = _norm_path(mp)
+        best, best_score = None, 0
+        for f in route_files:
+            score = max((_shared_segments(nmp, r) for r in _routes_in(f["content"])),
+                        default=0)
+            if score > best_score or (score == best_score and score > 0 and best
+                                      and len(_routes_in(f["content"]))
+                                      < len(_routes_in(best["content"]))):
+                best, best_score = f, score
+        if best is not None and best_score > 0:
+            by_file.setdefault(best["filepath"], []).append(mp)
+
+    def _ticket_for(path: str):
+        for t in tickets:
+            if (t.get("filepath") or "") == path:
+                return t
+        return None
+
+    changed = False
+    for filepath, mps in by_file.items():
+        ticket = _ticket_for(filepath)
+        if ticket is None:
+            continue
+        lines = []
+        for mp in mps:
+            method, purpose, orig = meta.get(_norm_path(mp), ("", "", mp))
+            lines.append(f"- {method or 'the designed method'} {orig or mp}"
+                         + (f"  ({purpose})" if purpose else ""))
+        repair = ("\n=== MISSING_ENDPOINT — repair ONLY this file, do not touch any "
+                  "other file ===\nThe booted app is missing these designed endpoint(s), "
+                  "which this file should serve:\n" + "\n".join(lines) +
+                  "\nRepair: ADD the missing endpoint(s) with a real, working "
+                  "implementation, keeping ALL existing endpoints and the same router. "
+                  "Use the EXACT path shown (including the path parameter name).")
+        new = await agents.build_ticket(ticket, _model_for(ticket, routing),
+                                        existing, contract, repair)
+        if not new or new.get("status") == agents.STUB_STATUS or not new.get("content"):
+            continue
+        tid = new.get("ticket_id") or ticket.get("id") or ""
+        async with async_session() as db:
+            row = (await db.execute(select(GeneratedFile).where(
+                GeneratedFile.project_id == project_id,
+                GeneratedFile.ticket_id == tid))).scalars().first()
+            if row is not None:
+                row.content = new["content"]
+                row.status = new.get("status", "generated")
+                await db.commit()
+                changed = True
+                logger.info("Endpoint-repair: rewrote %s to add %s (project %s)",
+                            filepath, mps, project_id)
+        for e2 in existing:
             if e2.get("ticket_id") == tid:
                 e2["content"] = new["content"]
     return changed
