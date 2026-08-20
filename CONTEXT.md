@@ -5,7 +5,7 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-19) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#24 all DONE + COMMITTED + PUSHED (HEAD 290ff82). Run 1289's REAL QA 500s (order/notification endpoints) were root-caused to get_db swallowing HTTPException→500 → **FIX #24 = BUILT + tested + live** (AST build-gate detector + QA-regen gate + backend prompt rule; deterministic; §1k). **Validated live: hand-fixed 1289's get_db → QA 103/1 (all 20 500s resolved, §1k). Then re-secured 1289 (real Opus PASS, Fix #23 holds) + deploy → HONESTLY failed at the backend/secrets wall (Fix #20 holds, no false live; §1l).** ⭐ NEW GAP FOUND: the security reviewer's fix loop is UNGATED — it reintroduced the get_db swallow → **candidate FIX #25** (gate `reviewer._fix` with the build detectors, like Fix #18 did for QA; plan-first, NOT built; §1l). NEXT = decide FIX #25 (plan-first) and/or the deferred deploy gap #1 (secrets onboarding — do NOT auto-seed). Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22). Fix #19 slice 2 still optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-19) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#24 all DONE + COMMITTED + PUSHED (HEAD 290ff82). Run 1289's REAL QA 500s (order/notification endpoints) were root-caused to get_db swallowing HTTPException→500 → **FIX #24 = BUILT + tested + live** (AST build-gate detector + QA-regen gate + backend prompt rule; deterministic; §1k). **Validated live: hand-fixed 1289's get_db → QA 103/1 (all 20 500s resolved, §1k). Then re-secured 1289 (real Opus PASS, Fix #23 holds) + deploy → HONESTLY failed at the backend/secrets wall (Fix #20 holds, no false live; §1l).** ⭐ FOUND: the security reviewer's fix loop is UNGATED — it reintroduced the get_db swallow → **candidate FIX #25** (gate `reviewer._fix` with the build detectors, like Fix #18 did for QA; plan-first, NOT built; §1l). **FIX #26 DONE (§1m): platform provisioning — the 3 platform-solvable pieces of deploy gap #1 (mint+persist crypto keys, provision Redis, config defaults). Live + tested + pushed (HEAD e847b40).** NEXT = the OWNER half of gap #1 (`PLAN_owner_onboarding.md`: Stripe click-to-connect in a BA stage + Auth0 auto-provision + platform email) — then 1289 boots fully. Also open: candidate FIX #25. Do NOT auto-seed owner secrets. Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22). Fix #19 slice 2 optional.
 
 > This block is the AUTHORITATIVE resume point. Everything below it is supporting
 > detail/history. A fresh session with zero memory of the prior conversation should be
@@ -441,6 +441,39 @@ gap honestly (Fix #20's layered health check reports it as `failed` "backend lay
 
 **Project 1289 is LEFT IN THE DB** (status `security_blocked` from the 1st review; the 2nd review +
 QA ran after). Its `database.py` is the Fix #24 regression fixture source — captured (see §1k).
+
+## 1m. FIX #26 — PLATFORM PROVISIONING (deploy gap #1, the 3 platform-solvable fixes) (DONE + tested + live 2026-08-20)
+The platform-solvable HALF of the secrets gap — the parts NO human owns, which the platform supplies
+itself. Built plan-first (user approved: new module + exact-origin ALLOWED_ORIGINS). Companion to the
+owner half (`PLAN_owner_onboarding.md`, still not built). New module **`devops/provisioning.py`**:
+- **`required_env(files)`** — deterministic scan of the generated BACKEND `.py` for `os.getenv("X")` /
+  `os.environ[...]` → the set of env vars the app actually reads. The gate for all three fixes (nothing
+  fires for a var an app doesn't use).
+- **Fix A `ensure_crypto_keys(project_id, needed, existing)`** — mint + **PERSIST** the platform-mintable
+  crypto keys the app needs: `FERNET_KEY` / `TOKEN_ENCRYPTION_KEY` / `STRIPE_TOKEN_ENC_KEY` =
+  `Fernet.generate_key()` (the code does `Fernet(key)`), `SESSION_SECRET_KEY` = `secrets.token_urlsafe`.
+  Persisted via `secrets_store.set_secret` so a **redeploy reuses the SAME key** (a fresh key would make
+  already-encrypted rows unreadable). Wired into deploy `orchestrator.py` STEP 5, merged into `env` +
+  guarded (redacted) BEFORE the non-secret config. **NEVER mints an owner secret** (STRIPE_SECRET_KEY /
+  AUTH0_* still fail-fast honestly — Fix #20).
+- **Fix B `needs_redis(files)`** — `manifest._compose` gained a `needs_redis` param: adds an isolated
+  `redis:7-alpine` service (own `appnet`, **NO published host port**) + `REDIS_URL: redis://redis:6379`
+  internal wiring + a health-gated `depends_on`, ONLY when the app reads `REDIS_URL`. `build()` computes
+  it from `files`, so BOTH local + AWS get it uniformly.
+- **Fix C `config_defaults(needed, existing)`** — non-secret defaults for referenced vars
+  (`ENVIRONMENT=production`, `SQL_ECHO=false`, `RATE_LIMIT_TIMES/SECONDS`), added to `env` AFTER guard so
+  values like "production" aren't redacted from logs; an owner-set value always wins. **`ALLOWED_ORIGINS`**
+  is set at DRIVER level (local.py → `https://localhost:{https_port}`; aws.py → `https://{subdomain}`)
+  because the host port is chosen dynamically in the driver, not in STEP 5.
+- **Tests (all 14 offline suites pass):** `test_devops_offline.test_provisioning` — required_env
+  extraction (ignores frontend/plain), redis gate both ways, config defaults (ALLOWED_ORIGINS excluded,
+  never-referenced excluded, owner-wins), crypto keys (needed-only, valid Fernet, persisted via set_secret,
+  STABLE across a 2nd redeploy, never an owner secret), compose redis present-only-when-needed with no host
+  port. Backend REBUILT; `provisioning` imports live. Committed `e847b40`, pushed.
+- **⚠️ EXPECTED:** after Fix #26, run 1289 STILL walls on the problem #1 owner vars (`AUTH0_DOMAIN`,
+  `API_AUDIENCE`, `STRIPE_CLIENT_ID`, `STRIPE_SECRET_KEY`, `STRIPE_REDIRECT_URI`, SMTP/Twilio). That is the
+  NEXT piece — the owner onboarding (`PLAN_owner_onboarding.md`): Stripe click-to-connect in a BA stage,
+  Auth0 platform auto-provision, platform email. Fix #26 does NOT make 1289 fully boot on its own.
 
 ## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
 Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
