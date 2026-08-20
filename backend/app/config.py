@@ -24,6 +24,29 @@ class Settings(BaseSettings):
     # the app says so honestly (it never fakes an extraction).
     menu_extraction_api_key: str | None = None
 
+    # --- Platform-held OWNER-ONBOARDING provider credentials (deploy gap #1) ------
+    # The platform holds ONE of each; DevOps injects them ONLY into deployed apps
+    # that actually read the corresponding env var (see devops/provisioning.py).
+    # These are the "platform-held" half of problem #1 (PLAN_owner_onboarding.md):
+    # the same for every app, set ONCE by the platform operator (never per-owner).
+    # Absent -> that provider's feature is unavailable and the app fail-fasts
+    # honestly (Fix #20); NOTHING is faked. The genuinely owner-specific piece (the
+    # owner's CONNECTED Stripe account) is captured separately by the BA connect flow.
+    # Stripe Connect application (the platform's own Connect client):
+    stripe_client_id: str | None = None
+    stripe_secret_key: str | None = None            # SECRET
+    stripe_redirect_uri: str | None = None
+    # Platform transactional email (sends on the owner's behalf):
+    smtp_host: str | None = None
+    smtp_port: str | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None                # SECRET
+    sender_email: str | None = None
+    # Platform SMS (Twilio) — optional; may be deferred:
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None            # SECRET
+    twilio_phone_number: str | None = None
+
     # LLM routing for the BA agent (locked per CONTEXT.md).
     ba_model: str = "gpt-4o-mini"
     ba_temperature: float = 0.7

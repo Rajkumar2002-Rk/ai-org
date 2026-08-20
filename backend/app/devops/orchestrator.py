@@ -231,10 +231,22 @@ async def run(project_id: int) -> dict:
                 logger.info("Provisioned %d platform crypto key(s) for project %s: %s",
                             len(minted), project_id, ", ".join(sorted(minted)))
 
+        # ---- Platform-held provider credentials (deploy gap #1, owner-onboarding):
+        # the platform's own Stripe Connect client, email sender, and Twilio — the
+        # same for every app, injected ONLY for the vars this app reads. Secrets are
+        # added BEFORE guard (redacted); non-secret identifiers (SMTP_HOST/PORT, etc.)
+        # are added AFTER guard so they are never redacted from logs. An unset
+        # provider is skipped -> the app fail-fasts honestly (never faked). ----
+        plat_secrets, plat_nonsecrets = provisioning.platform_provided(needed_env, env)
+        if plat_secrets:
+            env.update(plat_secrets)
+            secret_names = sorted(set(secret_names) | set(plat_secrets))
+
         # Register secret VALUES for redaction, and protect the root handlers so
-        # nothing in this deploy can emit them. (Crypto keys above are secrets and
-        # are included here; the non-secret config defaults below are added AFTER,
-        # so values like "production"/"false" are never redacted from logs.)
+        # nothing in this deploy can emit them. (Crypto keys + platform provider
+        # secrets above are included here; the non-secret config defaults + provider
+        # identifiers below are added AFTER, so values like "production"/"587"/an
+        # SMTP host are never redacted from logs.)
         secrets_store.guard(env.values())
         secrets_store.protect_root_handlers()
 
@@ -243,6 +255,7 @@ async def run(project_id: int) -> dict:
         # is set by the driver (the deploy port is chosen there). Owner-set values
         # always win (config_defaults never overrides an existing key). ----
         env.update(provisioning.config_defaults(needed_env, env))
+        env.update(plat_nonsecrets)
 
         # ---- STEP 2/3/6: assemble + build + bring up (isolated) ----------
         root = tempfile.mkdtemp(prefix=f"devops-{project_id}-")

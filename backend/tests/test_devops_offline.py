@@ -417,6 +417,48 @@ def test_provisioning():
     check("an app that needs no redis gets NO redis service and NO REDIS_URL wiring",
           "image: redis:7-alpine" not in c_no and 'REDIS_URL: "' not in c_no)
 
+    # --- Platform-held provider credentials (owner-onboarding, deploy gap #1) ---
+    # Referenced env set: Stripe (client_id + secret + redirect) + SMTP (host/port/pw) +
+    # sender + a var the platform hasn't configured.
+    p_needed = {"STRIPE_CLIENT_ID", "STRIPE_SECRET_KEY", "STRIPE_REDIRECT_URI",
+                "SMTP_HOST", "SMTP_PORT", "SMTP_PASSWORD", "SENDER_EMAIL",
+                "TWILIO_ACCOUNT_SID"}
+    saved = {k: getattr(settings, k) for k in
+             ("stripe_client_id", "stripe_secret_key", "stripe_redirect_uri",
+              "smtp_host", "smtp_port", "smtp_password", "sender_email",
+              "twilio_account_sid")}
+    try:
+        settings.stripe_client_id = "ca_platform_123"
+        settings.stripe_secret_key = "sk_live_PLATFORM_SECRET"
+        settings.stripe_redirect_uri = "https://platform/connect/stripe/callback"
+        settings.smtp_host = "smtp.platform.test"
+        settings.smtp_port = "587"
+        settings.smtp_password = "SMTP_SECRET_PW"
+        settings.sender_email = "no-reply@platform.test"
+        settings.twilio_account_sid = None            # deliberately unconfigured
+        sec, nonsec = provisioning.platform_provided(p_needed, {})
+        check("secrets go in the SECRET bucket (Stripe secret, SMTP password)",
+              set(sec) == {"STRIPE_SECRET_KEY", "SMTP_PASSWORD"}, str(sorted(sec)))
+        check("identifiers go in the NON-secret bucket (client id, redirect, host/port, sender)",
+              set(nonsec) == {"STRIPE_CLIENT_ID", "STRIPE_REDIRECT_URI", "SMTP_HOST",
+                              "SMTP_PORT", "SENDER_EMAIL"}, str(sorted(nonsec)))
+        check("SMTP_PORT is NON-secret (never redacted as if it were a secret)",
+              nonsec.get("SMTP_PORT") == "587")
+        check("an UNCONFIGURED platform var (TWILIO_ACCOUNT_SID) is omitted -> app fail-fasts",
+              "TWILIO_ACCOUNT_SID" not in sec and "TWILIO_ACCOUNT_SID" not in nonsec)
+        # An owner who supplied their own value keeps it (platform never overrides).
+        sec2, nonsec2 = provisioning.platform_provided(
+            p_needed, {"STRIPE_SECRET_KEY": "owner_key"})
+        check("owner-supplied value is not overridden by the platform",
+              "STRIPE_SECRET_KEY" not in sec2)
+        # A var the app never reads is never injected, even if the platform set it.
+        sec3, nonsec3 = provisioning.platform_provided({"STRIPE_CLIENT_ID"}, {})
+        check("only injects vars the app actually reads",
+              set(sec3) == set() and set(nonsec3) == {"STRIPE_CLIENT_ID"})
+    finally:
+        for k, v in saved.items():
+            setattr(settings, k, v)
+
 
 # ------------------------------------------------------------------ E. cost
 def test_cost():

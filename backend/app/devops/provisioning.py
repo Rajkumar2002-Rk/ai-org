@@ -125,3 +125,55 @@ def needs_redis(files: list[dict]) -> bool:
     """True if the generated backend reads REDIS_URL (e.g. FastAPI-Limiter). The
     compose service + REDIS_URL wiring is added by manifest.py; this is the gate."""
     return _REDIS_ENV in required_env(files)
+
+
+# ------------------------------------------------- platform-held provider secrets (gap #1)
+# The "platform-held" half of owner onboarding (PLAN_owner_onboarding.md): provider
+# credentials the platform holds ONCE for every app (Stripe Connect client, platform
+# email sender, platform Twilio). Each maps an env var the generated code reads to the
+# settings attribute that holds it, and whether it is a SECRET (guard/redact) or a
+# non-secret identifier (must NOT be redacted — e.g. SMTP_PORT="587"). Auth0
+# (AUTH0_DOMAIN/API_AUDIENCE) is deliberately absent here — it is provisioned PER
+# PROJECT via the Management API in its own slice, not statically injected. The
+# owner's CONNECTED Stripe account is captured by the BA connect flow, also separate.
+_PLATFORM_HELD: dict[str, tuple[str, bool]] = {
+    # env var name           (settings attr,          is_secret)
+    "STRIPE_CLIENT_ID":      ("stripe_client_id",     False),
+    "STRIPE_SECRET_KEY":     ("stripe_secret_key",    True),
+    "STRIPE_REDIRECT_URI":   ("stripe_redirect_uri",  False),
+    "SMTP_HOST":             ("smtp_host",            False),
+    "SMTP_PORT":             ("smtp_port",            False),
+    "SMTP_USER":             ("smtp_user",            False),
+    "SMTP_PASSWORD":         ("smtp_password",        True),
+    "SENDER_EMAIL":          ("sender_email",         False),
+    "TWILIO_ACCOUNT_SID":    ("twilio_account_sid",   False),
+    "TWILIO_AUTH_TOKEN":     ("twilio_auth_token",    True),
+    "TWILIO_PHONE_NUMBER":   ("twilio_phone_number",  False),
+}
+
+
+def platform_provided(needed: set[str], existing: dict[str, str]
+                      ) -> tuple[dict[str, str], dict[str, str]]:
+    """Return (secret_values, nonsecret_values) for the platform-held provider vars the
+    app READS and that the platform has configured (settings set) and the owner has not
+    already supplied. Split by secrecy so STEP 5 guards only the real secrets (never a
+    value like SMTP_PORT). A referenced var whose platform setting is UNSET is simply
+    omitted -> the app fail-fasts on it honestly (the feature is genuinely unconfigured).
+    Missing settings are logged per-provider so the operator knows what to configure."""
+    from app.config import settings
+    secret_out: dict[str, str] = {}
+    nonsecret_out: dict[str, str] = {}
+    missing: list[str] = []
+    for env_name, (attr, is_secret) in _PLATFORM_HELD.items():
+        if env_name not in needed or env_name in existing:
+            continue
+        value = getattr(settings, attr, None)
+        if not value:
+            missing.append(env_name)
+            continue
+        (secret_out if is_secret else nonsecret_out)[env_name] = str(value)
+    if missing:
+        logger.warning("Platform provider credentials NOT configured for %s — the "
+                       "deployed app will fail-fast on them until the platform sets "
+                       "these (PLAN_owner_onboarding.md §7).", ", ".join(sorted(missing)))
+    return secret_out, nonsecret_out
