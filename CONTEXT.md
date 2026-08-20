@@ -641,7 +641,27 @@ Second fresh full run (coffee shop, Quick, 18 tickets). Chain of tail bugs, each
   provisioning: Auth0 auto-provision + Stripe/SMTP inject at deploy), OR run another fresh run. Both projects
   1496/1557 left in the DB.
 - Fix #27's prompt rule + gate + Fix #28 mean the recurring boot-tail classes (bad third-party import,
-  missing endpoint) now SELF-HEAL at smoke_boot instead of stopping the build. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
+  missing endpoint) now SELF-HEAL at smoke_boot instead of stopping the build.
+
+## 1t. FRESH RUN 1614 + probe hardening + FIX #29 (pin broken fastapi-limiter) — fresh gen BOOTS CLEAN (2026-08-20)
+Third fresh full run (coffee shop, 21 tickets). Build ✅ 21/21 → smoke_boot flagged `from fastapi_limiter
+import FastAPILimiter` as a bad import. **Investigation (important):** NOT a codegen bug — that import is
+CORRECT and works in fastapi-limiter 0.1.6/0.1.5, but an unpinned `pip install fastapi-limiter` resolves to a
+BROKEN **0.2.0** (empty `__init__`, no FastAPILimiter). So the gate saw a real failure but the fix is
+version-pinning, not regeneration (the self-heal correctly bounded out — the code was already right).
+- **Probe hardening (part of `cfe7a5b`):** the import probe used `hasattr()`, which false-flags names that
+  ARE importable but not static attributes (jose.jwt submodule; lazily-bound names). Rewrote it to run the
+  EXACT `from <mod> import <name>` statement in the venv — GROUND TRUTH, same as boot — classifying only the
+  specific error (ModuleNotFoundError of the path → no_submodule; `cannot import name` → no_attr; a missing
+  transitive dep / runtime side-effect → NOT flagged). Robustly fixes the jose class with no special-casing.
+- **FIX #29 (`cfe7a5b`):** curated `_EXTRA_PINS` map (`fastapi-limiter==0.1.6`) consulted by `pin_spec`, so
+  BOTH the QA/smoke_boot venv AND the deployed image install the working version; aliased import root
+  `fastapi_limiter → fastapi-limiter`. Verified against the real packages (clean on 0.1.6, still flags
+  httpx.NotARealThing / fastapi.fake_sub). All 15 offline suites pass.
+- **✅ 1614 NOW BOOTS CLEAN (first attempt, imports=[], missing=[]), `build:status:1614=done`** — a FRESH
+  full-scope generation that assembles + boots with ZERO hand-fixing of code (tail handled by self-heal +
+  the pin). Cost so far ~$1.5. NEXT = continue 1614 → secure → QA → deploy (finally exercising onboarding
+  provisioning at deploy). Projects 1496/1557/1614 in the DB. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
   human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
   (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
   those, a fresh full-scope run → QA → deploy should BOOT fully (Stripe test connect + Auth0 provisioned +
