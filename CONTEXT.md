@@ -493,6 +493,35 @@ First slice of `PLAN_owner_onboarding.md` (problem #1) — the "platform-held" h
   All need the one-time HUMAN platform setup (`PLAN_owner_onboarding.md` §7) to run for real; the CODE +
   offline (mocked) tests are buildable without it.
 
+## 1o. OWNER ONBOARDING — SLICE 2: Stripe click-to-connect (BA stage + Connect OAuth) (DONE 2026-08-20)
+The owner-facing Stripe piece of `PLAN_owner_onboarding.md`. Committed `9ff8df6`. User chose (this session):
+next slice = BA Stripe click-to-connect; Auth0 = per-project (later).
+- **`app/onboarding/stripe_connect.py`** (new package `app/onboarding`): platform side of Stripe Connect
+  OAuth. `start(project_id)` → authorize URL with a signed, short-TTL, project-bound **state** (Fernet over
+  `secrets_enc_key`; CSRF/replay-safe, 600s TTL). `handle_callback(code, state)` → verify state → exchange
+  code at Stripe's token endpoint (httpx) → **persist** the owner's connected account id in `secrets_store`
+  as `STRIPE_CONNECTED_ACCOUNT_ID`; raises `ConnectError` WITHOUT leaking Stripe's error body. `is_configured()`
+  (platform Connect app set?) + `is_connected(project_id)` gate honestly (unconfigured → 503, never faked).
+- **`main.py` endpoints:** `GET /connect/stripe/start` (307 → Stripe), `GET /connect/stripe/callback`
+  (verify+exchange+store → minimal self-contained result page). Probed live: 503 unconfigured / 404 missing
+  project / 400 cancelled.
+- **BA `connect_accounts` stage** (`ba/state.py` ORDER just before CONFIRM; `ba/controller.py`): shown ONLY
+  when the idea implies taking money (`_needs_payments` deterministic keyword scan; a stored `needs_payments`
+  flag overrides). Renders a "Connect your Stripe" button (`ui.kind == "connect_accounts"`) with live
+  connected status; **skippable** (`ingest` records `payments_connect_skipped`; deploy then walls on payments
+  honestly via Fix #20).
+- **Tests:** new **`test_onboarding_offline.py`** (28 checks, the 15th offline suite) — state
+  signing/tamper/expiry, authorize URL (configured-only, no secret leak), callback (exchange+persist, bad
+  state refused, Stripe-rejection body not leaked), BA stage (payment-intent, skip, ORDER, composed UI).
+  All 15 offline suites pass; `app.main` imports.
+- **⚠️ FOLLOW-UP (flagged, NOT done):** the connected account id is captured + persisted, but the generated
+  `stripe.py` currently captures its OWN connection at RUNTIME and does NOT read `STRIPE_CONNECTED_ACCOUNT_ID`.
+  To make the deployed app USE the pre-connected account (plan §3 Design 2), add a backend CODEGEN contract
+  (generated stripe.py reads `STRIPE_CONNECTED_ACCOUNT_ID` from env as a pre-seeded connection). Separate slice.
+- **STILL NEXT:** (2) Auth0 per-project auto-provision (Management API); (4) SMS decide/defer; the codegen
+  consumption contract above. All need the one-time HUMAN platform setup (`PLAN_owner_onboarding.md` §7) for a
+  real end-to-end run.
+
 ## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
 Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
 - **Root cause (confirmed, §1j step 6):** the generated `database.py` (FND-2) `get_db` wrapped
