@@ -592,7 +592,35 @@ CONTRACTS (prompt rules) + the deploy wiring to feed them, mirroring Fix #21's A
   owner-onboarding provisioning stack is proven against real providers, all on free/test tiers.**
 - **OWNER-ONBOARDING EPIC — where it stands:** slices 1–4 DONE (platform-held injection; Stripe
   click-to-connect; Auth0 per-project auto-provision; codegen consumption contracts) — ALL LIVE-VERIFIED. SMS
-  deferred. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
+  deferred.
+
+## 1r. FRESH FULL RUN 1496 + FIX #27 — third-party import gate + build self-heal (2026-08-20)
+First fresh full-scope run with ALL onboarding work live (coffee shop w/ ordering+payments+auth+tips, Quick).
+- **Run 1496 result:** BA (✅ the new `connect_accounts` stage fired for a payments app; driver skipped it),
+  PI ✅, Architect ✅ (22 tickets, Stripe Connect + notifications), Build ✅ 22/22 files, **smoke_boot ❌**.
+  Root cause: generated `routes/integrate.py` wrote `from stripe.api_resources import PaymentIntent` →
+  `ModuleNotFoundError` (stripe installed, that internal submodule doesn't exist). Cost $1.42. **WIN inside
+  it:** the same file wrote `STRIPE_CONNECTED_ACCOUNT_ID = os.getenv(...)` — slice-4 Contract 1 worked in a
+  fresh gen. Fixture captured: `backend/tests/fixtures/integrate_stripe_api_resources_1496.py`.
+- **FIX #27 (committed `f5b71cc`):** the deferred third-party-import class (Fix #16 can't catch it — stripe
+  isn't importable in the platform process). `qa/assembly._third_party_import_errors(venv, files)` AST-extracts
+  every `from <third-party> import <names>` (skips in-project/stdlib/relative/star/bare-import) and probes them
+  in the ASSEMBLY VENV (where the app's real deps are installed) → flags a wrong submodule path or a
+  non-exported name. **Zero-FP:** only an INSTALLED package is checked; a `ModuleNotFoundError` is a finding
+  ONLY when the missing module IS the path/parent, never a transitive/optional dep
+  (`starlette.middleware.sessions`→`itsdangerous` is NOT flagged, via `ModuleNotFoundError.name` matching).
+  Wired into `assemble()` after `_install_deps` → precise Failure + early return (no 45s crash);
+  `TestEnv.import_errors` carries it. **Bounded self-heal (NEW — no auto-repair on boot failure existed
+  before, runs just stopped):** `_smoke_boot` returns the findings; `main._run_build` regenerates the offending
+  file(s) via `orchestrator.repair_import_errors` (targeted THIRD_PARTY_IMPORT repair, reuses
+  `_contract_text`/`_model_for`/`build_ticket`) and re-boots, ≤2 attempts — the venv-stage analogue of #16's
+  flag→repair→retry. Plus a backend prompt rule (import from the public top level, not a guessed submodule).
+  Tests: `test_qa_offline.test_third_party_import_gate` (wrong-name + wrong-submodule flagged via installed
+  pkgs; zero-FP on the platform's 68 modules + correct/in-project/stdlib/relative/star + missing-optional-dep;
+  1496 fixture parsed as a candidate). All 15 offline suites pass; backend rebuilt.
+- **NEXT:** re-run a fresh full-scope build — with Fix #27's self-heal + the prompt rule, the stripe-import
+  class should now repair itself at smoke_boot and the run should proceed to secure→QA→deploy (where the
+  onboarding provisioning fires). Project 1496 left in the DB (status build/boot_failed). **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
   human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
   (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
   those, a fresh full-scope run → QA → deploy should BOOT fully (Stripe test connect + Auth0 provisioned +
