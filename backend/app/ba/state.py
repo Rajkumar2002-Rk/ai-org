@@ -25,6 +25,7 @@ PRESENT_PLAN = "present_plan"
 ASK_DESIGN_VIBE = "ask_design_vibe"
 ASK_DESIGN_REFS = "ask_design_refs"
 ASK_DESIGN_COLOR = "ask_design_color"
+CONNECT_ACCOUNTS = "connect_accounts"  # owner connects payments (Stripe) before deploy
 CONFIRM = "confirm"
 DONE = "done"
 
@@ -49,6 +50,7 @@ ORDER = [
     ASK_DESIGN_VIBE,
     ASK_DESIGN_REFS,
     ASK_DESIGN_COLOR,
+    CONNECT_ACCOUNTS,
     CONFIRM,
     DONE,
 ]

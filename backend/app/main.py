@@ -32,6 +32,7 @@ from app.reviewer import orchestrator as reviewer_orchestrator
 from app.devops import graph as devops_graph
 from app.documentation import graph as documentation_graph
 from app.background import autofix, cost_tracker, dashboard as dashboard_mod, monitor
+from app.onboarding import stripe_connect
 from sqlalchemy import func as sqlfunc, select
 from app.redis_client import redis_client
 from app.schemas import (
@@ -415,6 +416,50 @@ async def conversation_message(
 )
 async def research_status(project_id: int):
     return ResearchStatusResponse(ready=await controller.ci_ready(project_id))
+
+
+# --- Owner onboarding: Stripe Connect (click-to-connect, before deploy) --------
+@app.get("/connect/stripe/start")
+async def connect_stripe_start(project_id: int):
+    """Send the owner's browser to Stripe to connect THEIR account. The signed,
+    short-TTL `state` binds the callback to this project (CSRF/replay-safe)."""
+    from fastapi.responses import RedirectResponse
+    async with async_session() as db:
+        if await db.get(Project, project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        return RedirectResponse(stripe_connect.start(project_id), status_code=307)
+    except stripe_connect.ConnectError as exc:
+        # Misconfiguration is an operational problem, not the owner's fault.
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/connect/stripe/callback")
+async def connect_stripe_callback(
+    state: str, code: str | None = None, error: str | None = None
+):
+    """Stripe redirects the owner here after they Allow. Verify + exchange + store,
+    then show a minimal, self-contained result page (no owner data echoed)."""
+    from fastapi.responses import HTMLResponse
+
+    def _page(ok: bool, msg: str) -> HTMLResponse:
+        title = "Stripe connected" if ok else "Connection not completed"
+        return HTMLResponse(
+            f"<!doctype html><meta charset=utf-8><title>{title}</title>"
+            f"<body style='font-family:system-ui;max-width:32rem;margin:4rem auto;"
+            f"text-align:center'><h1>{'✅ ' if ok else ''}{title}</h1><p>{msg}</p>"
+            f"<p>You can close this tab and return to the chat.</p></body>",
+            status_code=200 if ok else 400,
+        )
+
+    if error or not code:
+        return _page(False, "Stripe reported the connection was cancelled. "
+                            "You can try connecting again from the chat.")
+    try:
+        await stripe_connect.handle_callback(code, state)
+    except stripe_connect.ConnectError as exc:
+        return _page(False, str(exc))
+    return _page(True, "Your Stripe account is connected. Payments will go to you.")
 
 
 @app.post("/pipeline/review", response_model=ReviewResponse)

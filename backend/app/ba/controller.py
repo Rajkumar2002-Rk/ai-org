@@ -263,6 +263,12 @@ def ingest(state: st.BAState, message: str) -> None:
         f["reference_sites"] = None if msg.lower() in _SKIP_WORDS else msg
     elif stage == st.ASK_DESIGN_COLOR:
         f["brand_color"] = msg
+    elif stage == st.CONNECT_ACCOUNTS:
+        # Informational stage: proceeding is allowed. Record an explicit skip so a
+        # later deploy can note the owner chose to connect payments later (the app
+        # still fail-fasts honestly on payments until they do).
+        if any(w in msg.lower() for w in ("skip", "later", "not now", "no thanks")):
+            f["payments_connect_skipped"] = True
     elif stage == st.ASK_PLATFORM:
         f["platform"], f["mobile_choice"] = _parse_platform(msg)
     elif stage == st.MOBILE_CHOICE:
@@ -336,10 +342,33 @@ def _needs_market_research(f: dict) -> bool:
     return bool(f.get("is_local", False) and f.get("customer_facing", True))
 
 
+# Payment-intent signals in the idea — a deterministic keyword scan (no LLM). At BA
+# time the exact feature set isn't fixed yet, so we infer payment intent from the
+# owner's own description; the connect step only appears when this fires.
+_PAYMENT_WORDS = (
+    "payment", "pay ", "checkout", "check out", "order", "ordering", "buy", "sell",
+    "selling", "store", "shop", "ecommerce", "e-commerce", "subscription",
+    "subscribe", "booking", "reservation", "ticket", "donat", "marketplace",
+    "cart", "purchase", "invoice", "billing", "stripe",
+)
+
+
+def _needs_payments(state: st.BAState) -> bool:
+    """True if the idea implies taking money (→ the owner should connect Stripe).
+    Scans the build text + summary; an explicit stored flag wins if present."""
+    f = state.fields
+    if "needs_payments" in f:
+        return bool(f["needs_payments"])
+    text = f"{f.get('build', '')} {f.get('build_summary', '')}".lower()
+    return any(w in text for w in _PAYMENT_WORDS)
+
+
 def _should_skip(stage: str, state: st.BAState) -> bool:
     f = state.fields
     if stage == st.ASK_PLATFORM and f.get("mobile_choice"):
         return True  # platform already known from the idea
+    if stage == st.CONNECT_ACCOUNTS and not _needs_payments(state):
+        return True  # no payments in this idea → nothing for the owner to connect
     if stage == st.ASK_LOCATION and not _needs_market_research(f):
         return True
     if stage == st.ASK_MENU and not f.get("is_food", False):
@@ -520,6 +549,33 @@ async def compose(state: st.BAState) -> dict:
     if stage == st.ASK_DESIGN_COLOR:
         return _text("Do you have a brand color? Tell me the color — or I can "
                      "pick one that fits your style.")
+    if stage == st.CONNECT_ACCOUNTS:
+        from app.onboarding import stripe_connect
+        connected = await stripe_connect.is_connected(state.project_id)
+        biz = state.fields.get("business_name") or "your app"
+        if connected:
+            reply = (f"Your Stripe account is connected — {biz} is ready to take "
+                     "payments, and the money goes straight to you. Say 'next' "
+                     "when you're ready to review everything.")
+        else:
+            reply = (f"Since {biz} takes payments, it needs to connect to Stripe so "
+                     "the money goes to YOUR account. Tap the button to connect (it "
+                     "opens Stripe in a new tab) — then come back and say 'next'. "
+                     "You can also say 'skip' to set this up later.")
+        return {
+            "reply": reply,
+            "ui": {
+                "kind": "connect_accounts",
+                "connected": connected,
+                "skippable": True,
+                "providers": [{
+                    "id": "stripe",
+                    "label": "Stripe connected ✓" if connected else "Connect your Stripe",
+                    "connected": connected,
+                    "url": f"/connect/stripe/start?project_id={state.project_id}",
+                }],
+            },
+        }
     if stage == st.CONFIRM:
         return {
             "reply": _summary(state),
