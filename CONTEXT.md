@@ -522,6 +522,31 @@ next slice = BA Stripe click-to-connect; Auth0 = per-project (later).
   consumption contract above. All need the one-time HUMAN platform setup (`PLAN_owner_onboarding.md` §7) for a
   real end-to-end run.
 
+## 1p. OWNER ONBOARDING — SLICE 3: Auth0 per-project auto-provision (DONE 2026-08-20)
+Owner does NOTHING — the platform auto-creates a per-project Auth0 login. Committed `a428425`. User chose
+Auth0 next; per-project (not shared tenant).
+- **`config.py`:** platform Auth0 Management settings (`auth0_tenant_domain`, `auth0_mgmt_client_id`,
+  `auth0_mgmt_client_secret`). Absent → provisioning skipped, app fail-fasts on `AUTH0_*` honestly.
+- **`app/onboarding/auth0_provision.py`** `ensure_provisioned(project_id, subdomain, needed)`: client-
+  credentials mgmt token → create resource-server (API, identifier = per-project audience `https://{subdomain}/api`)
+  + login client → returns `(secret, nonsecret)` env values (`AUTH0_DOMAIN`/`API_AUDIENCE`/`AUTH0_CLIENT_ID`
+  non-secret, `AUTH0_CLIENT_SECRET` secret). **IDEMPOTENT** — persists to `secrets_store`, reuses on redeploy
+  (no duplicate Auth0 apps, no calls). Skips when the app reads no Auth0 config or the platform is
+  unconfigured; a Management-API failure returns `({},{})` (never raises into the deploy — health gate reports it).
+- **`orchestrator.py` STEP 5:** provisions Auth0 alongside platform secrets — client secret before `guard()`,
+  identifiers after.
+- **Tests:** `test_onboarding_offline.test_auth0_provision` (mocked Management API) — unconfigured-skip,
+  reads-no-auth0-skip, happy-path create+split+persist, idempotent reuse (no calls), failure-safe. All 15
+  offline suites pass; `app.main` imports.
+- **NOTE:** provisions + injects `AUTH0_CLIENT_ID/SECRET`, but the FRONTEND login wiring
+  (`NEXT_PUBLIC_AUTH0_*`) is a separate frontend/codegen concern; this slice unblocks the BACKEND boot
+  (`AUTH0_DOMAIN` + `API_AUDIENCE` JWT validation).
+- **REMAINING owner-onboarding work:** (a) **codegen consumption contracts** — generated `stripe.py` reads
+  `STRIPE_CONNECTED_ACCOUNT_ID` (slice 2 follow-up); generated frontend reads `NEXT_PUBLIC_AUTH0_*`; (b) **SMS**
+  decide/defer (Twilio number provisioning); (c) the one-time HUMAN platform setup (`PLAN_owner_onboarding.md`
+  §7: create the platform Stripe Connect app, Auth0 tenant + Management app, email sender) — needed for a real
+  end-to-end 1289 deploy. After all that: re-run 1289 QA→deploy should BOOT fully.
+
 ## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
 Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
 - **Root cause (confirmed, §1j step 6):** the generated `database.py` (FND-2) `get_db` wrapped
