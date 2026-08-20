@@ -596,7 +596,17 @@ for item in json.load(sys.stdin):
         continue
     except Exception:
         continue                      # some other import-time error -> don't guess
-    missing = [n for n in names if n != "*" and not hasattr(m, n)]
+    # A name that is neither an attribute NOR an importable submodule is missing.
+    # `from jose import jwt` / `from stripe import checkout` import a SUBMODULE that
+    # `import jose` does not auto-load, so hasattr() alone would false-positive.
+    missing = []
+    for n in names:
+        if n == "*" or hasattr(m, n):
+            continue
+        try:
+            importlib.import_module(mod + "." + n)
+        except Exception:
+            missing.append(n)
     if missing:
         out.append({"module": mod, "kind": "no_attr", "names": missing, "root": root})
 print(json.dumps(out))

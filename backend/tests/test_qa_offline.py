@@ -407,6 +407,14 @@ def test_third_party_import_gate():
     check("no false positives on correct/in-project/stdlib/relative/star imports",
           _third_party_import_errors(V, clean) == [], str(_third_party_import_errors(V, clean)))
 
+    # Run 1557 regression: `from <pkg> import <submodule>` (jose.jwt, stripe.checkout)
+    # imports a SUBMODULE that `import <pkg>` does not auto-load — must NOT be flagged
+    # (hasattr alone would false-positive; the probe must try importing pkg.name).
+    submod = {"a.py": "from starlette import middleware\n"    # real starlette submodule
+                      "from starlette import applications\n"}
+    check("a `from pkg import <submodule>` import is NOT a false positive (1557: jose.jwt)",
+          _third_party_import_errors(V, submod) == [], str(_third_party_import_errors(V, submod)))
+
     # Zero-FP across the platform's own backend + 888's real generated files.
     app_dir = os.path.join(os.path.dirname(__file__), "..", "app")
     plat = {("backend/" + os.path.relpath(p, os.path.join(app_dir, ".."))): open(p, encoding="utf-8").read()
