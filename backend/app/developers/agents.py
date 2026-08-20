@@ -82,6 +82,17 @@ def _system(agent_type: str) -> str:
         # in `except Exception: raise HTTPException(500)`. FastAPI runs the request
         # inside the yield, so a downstream HTTPException(401) got re-raised as a 500 —
         # every 401/404/422 on every DB endpoint became "Internal server error".
+        # Stripe Connect account (owner onboarding): the platform connects the OWNER's
+        # Stripe account BEFORE deploy and injects its id as STRIPE_CONNECTED_ACCOUNT_ID.
+        # The app must charge ON that account so money reaches the owner, not the platform.
+        " CRITICAL Stripe-account rule: if this app takes payments via Stripe Connect, "
+        "read the owner's connected account id from the environment variable "
+        "`STRIPE_CONNECTED_ACCOUNT_ID`. When it is set, treat the account as ALREADY "
+        "connected (do NOT require the runtime OAuth connect flow just to take a payment) "
+        "and pass it on every Stripe API call that acts for the owner — either the "
+        "`Stripe-Account: <id>` header or the `stripe_account=<id>` parameter — so charges "
+        "and payouts go to the OWNER's account. Fall back to any stored/OAuth-obtained "
+        "account only when STRIPE_CONNECTED_ACCOUNT_ID is absent."
         " CRITICAL error-propagation rule: a database-session dependency generator "
         "(`get_db` and any `Depends`-ed generator that `yield`s) MUST let framework "
         "`HTTPException`s (401/404/422/400) propagate UNCHANGED. Do NOT wrap the `yield` "
@@ -107,6 +118,17 @@ def _system(agent_type: str) -> str:
         "NEXT_PUBLIC_BACKEND_URL). The platform sets NEXT_PUBLIC_API_BASE_URL at build "
         "time and routes it to the backend; any other name leaves the UI unable to "
         "reach the API."
+        # Auth0 login (owner onboarding): the platform auto-provisions a per-project
+        # Auth0 app and injects these PUBLIC values at build time. The frontend MUST read
+        # these EXACT names — nothing else is provisioned. NOTE: must match
+        # manifest.FRONTEND_AUTH0_ENVS; test_devops_offline asserts they agree.
+        " CRITICAL Auth0 login rule: if this app has user login/accounts, implement it "
+        "with Auth0 and read the configuration from EXACTLY these build-time environment "
+        "variables — `process.env.NEXT_PUBLIC_AUTH0_DOMAIN`, "
+        "`process.env.NEXT_PUBLIC_AUTH0_CLIENT_ID`, and "
+        "`process.env.NEXT_PUBLIC_AUTH0_AUDIENCE` (the API audience for access tokens). "
+        "Do NOT hardcode an Auth0 domain/client id and do NOT invent other env-var names. "
+        "The platform sets these at build time; any other name leaves login unconfigured."
     ) if agent_type == "frontend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "

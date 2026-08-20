@@ -44,6 +44,35 @@ FRONTEND_PORT = 3000
 FRONTEND_API_BASE_ENV = "NEXT_PUBLIC_API_BASE_URL"
 FRONTEND_API_BASE_VALUE = "/api"
 
+# Frontend Auth0 login config (owner onboarding): the platform auto-provisions a
+# per-project Auth0 app and the frontend logs users in with these PUBLIC values. Like
+# the API base they must be BUILD ARGs (Next inlines NEXT_PUBLIC_* at build). Their
+# VALUES are per-project and come from the provisioned Auth0 (backend AUTH0_DOMAIN /
+# AUTH0_CLIENT_ID / API_AUDIENCE); the driver maps them via FRONTEND_AUTH0_FROM_BACKEND.
+# Keep these names in sync with the frontend developer prompt; test_devops_offline asserts it.
+FRONTEND_AUTH0_ENVS = (
+    "NEXT_PUBLIC_AUTH0_DOMAIN",
+    "NEXT_PUBLIC_AUTH0_CLIENT_ID",
+    "NEXT_PUBLIC_AUTH0_AUDIENCE",
+)
+# frontend public env name -> backend provisioned env name it takes its value from.
+FRONTEND_AUTH0_FROM_BACKEND = {
+    "NEXT_PUBLIC_AUTH0_DOMAIN": "AUTH0_DOMAIN",
+    "NEXT_PUBLIC_AUTH0_CLIENT_ID": "AUTH0_CLIENT_ID",
+    "NEXT_PUBLIC_AUTH0_AUDIENCE": "API_AUDIENCE",
+}
+
+
+def frontend_public_env(backend_env: dict) -> dict:
+    """Map the provisioned backend Auth0 values to the frontend NEXT_PUBLIC_* build
+    args. Only includes a var when its backend source is present, so an app without
+    Auth0 (or before provisioning) gets none — never an empty/placeholder inlined."""
+    out = {}
+    for pub, src in FRONTEND_AUTH0_FROM_BACKEND.items():
+        if backend_env.get(src):
+            out[pub] = backend_env[src]
+    return out
+
 # Always needed to run a generated FastAPI + async SQLAlchemy app, whether or not
 # the code imports them by a name the scanner sees.
 _BACKEND_BASE_REQS = [
@@ -197,11 +226,15 @@ def _frontend_dockerfile() -> str:
     # `NEXT_PUBLIC_*` into the client bundle during `npm run build`, so a runtime-only
     # env would never reach the browser (the run-1105 bug). The caller passes it via
     # `--build-arg`/compose `build.args`; the ENV makes it visible to `npm run build`.
+    # Auth0 login config (owner onboarding) is also inlined at build; empty default so
+    # an app without Auth0 builds fine. Values are passed per-project by the driver.
+    auth0_args = "".join(
+        f"ARG {e}=\nENV {e}=${e}\n" for e in FRONTEND_AUTH0_ENVS)
     return f'''FROM node:20-slim
 WORKDIR /app
 ARG {FRONTEND_API_BASE_ENV}={FRONTEND_API_BASE_VALUE}
 ENV {FRONTEND_API_BASE_ENV}=${FRONTEND_API_BASE_ENV}
-COPY package.json ./
+{auth0_args}COPY package.json ./
 RUN npm install
 COPY . .
 RUN npm run build
@@ -274,7 +307,8 @@ COPY Caddyfile /etc/caddy/Caddyfile
 
 def _compose(names: dict, has_frontend: bool, https_host_port: int,
              http_host_port: int, subdomain: str, *, use_images: bool,
-             image_refs: dict | None = None, needs_redis: bool = False) -> str:
+             image_refs: dict | None = None, needs_redis: bool = False,
+             frontend_public: dict | None = None) -> str:
     """docker-compose for one isolated app. `use_images=False` builds locally;
     `use_images=True` references pushed images (the AWS/EC2 path). `needs_redis`
     adds an isolated redis service + wires REDIS_URL into the backend (Fix B)."""
@@ -293,20 +327,25 @@ def _compose(names: dict, has_frontend: bool, https_host_port: int,
         # NEXT_PUBLIC_* at build time), not just a runtime env. For the pushed-image
         # (AWS) path the arg is passed by the buildx build; here (local compose build)
         # it rides in `build.args`. The runtime `environment:` mirrors it (harmless,
-        # and covers any server-side read).
+        # and covers any server-side read). Owner-onboarding: the per-project Auth0
+        # NEXT_PUBLIC_* values ride alongside it (empty when the app has no Auth0).
+        fp = {k: v for k, v in (frontend_public or {}).items() if k in FRONTEND_AUTH0_ENVS}
+        arg_lines = "".join(f"        {k}: \"{v}\"\n" for k, v in fp.items())
+        env_lines = "".join(f"      {k}: \"{v}\"\n" for k, v in fp.items())
         if use_images:
             fe_source = f"    image: {image_refs.get('frontend')}"
         else:
             fe_source = (f"    build:\n"
                          f"      context: ./frontend\n"
                          f"      args:\n"
-                         f"        {FRONTEND_API_BASE_ENV}: \"{FRONTEND_API_BASE_VALUE}\"")
+                         f"        {FRONTEND_API_BASE_ENV}: \"{FRONTEND_API_BASE_VALUE}\"\n"
+                         f"{arg_lines}".rstrip("\n"))
         frontend_block = f'''  frontend:
 {fe_source}
     container_name: {names['frontend_container']}
     environment:
       {FRONTEND_API_BASE_ENV}: "{FRONTEND_API_BASE_VALUE}"
-    depends_on:
+{env_lines}    depends_on:
       - backend
     networks: [appnet]
     restart: unless-stopped
@@ -400,7 +439,8 @@ def build(files: list[dict], root: str, names: dict, *, subdomain: str,
           has_frontend_override: bool | None = None, local: bool = True,
           le_email: str = "", https_host_port: int = 443,
           http_host_port: int = 80, use_images: bool = False,
-          image_refs: dict | None = None) -> Manifest:
+          image_refs: dict | None = None,
+          frontend_public: dict | None = None) -> Manifest:
     """Write every build context + the compose file under `root`. Never raises —
     problems are returned as `Manifest.failures` (the QA-agent convention)."""
     failures: list[str] = []
@@ -506,7 +546,7 @@ def build(files: list[dict], root: str, names: dict, *, subdomain: str,
     with open(compose_path, "w", encoding="utf-8") as fh:
         fh.write(_compose(names, has_frontend, https_host_port, http_host_port,
                           subdomain, use_images=use_images, image_refs=image_refs,
-                          needs_redis=needs_redis))
+                          needs_redis=needs_redis, frontend_public=frontend_public))
 
     return Manifest(
         root=root,

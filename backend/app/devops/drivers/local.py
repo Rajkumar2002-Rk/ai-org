@@ -63,6 +63,7 @@ class LocalDockerDriver(DeployDriver):
             le_email=req.le_email,
             https_host_port=https_port, http_host_port=http_port,
             use_images=False,
+            frontend_public=manifest.frontend_public_env(req.env),
         )
 
         fatal = [f for f in m.failures if "no FastAPI entrypoint" in f]

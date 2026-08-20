@@ -165,9 +165,13 @@ class AwsDriver(DeployDriver):
                 uri = f"{registry}/{repo}:latest"
                 # gap #2: the frontend needs the API base as a BUILD ARG so Next.js
                 # inlines it into the client bundle (a runtime env is too late).
-                extra = (["--build-arg",
-                          f"{manifest.FRONTEND_API_BASE_ENV}={manifest.FRONTEND_API_BASE_VALUE}"]
-                         if kind == "frontend" else [])
+                extra = []
+                if kind == "frontend":
+                    extra = ["--build-arg",
+                             f"{manifest.FRONTEND_API_BASE_ENV}={manifest.FRONTEND_API_BASE_VALUE}"]
+                    # Owner onboarding: per-project Auth0 NEXT_PUBLIC_* build args.
+                    for k, v in manifest.frontend_public_env(req.env).items():
+                        extra += ["--build-arg", f"{k}={v}"]
                 code, out = await run_cmd(
                     ["docker", "buildx", "build", "--platform", _TARGET_PLATFORM,
                      *extra, "-t", uri, "--push", ctx],
@@ -220,6 +224,7 @@ class AwsDriver(DeployDriver):
                 "frontend": f"{registry}/{req.names['image_frontend']}:latest",
                 "caddy": f"{registry}/{req.names['image_caddy']}:latest",
             },
+            frontend_public=manifest.frontend_public_env(req.env),
         )
         fatal = [f for f in m.failures if "no FastAPI entrypoint" in f]
         if fatal:

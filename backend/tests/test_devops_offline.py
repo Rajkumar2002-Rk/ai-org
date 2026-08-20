@@ -325,6 +325,59 @@ def test_secrets():
         settings.secrets_enc_key = saved
 
 
+def test_auth0_frontend_wiring():
+    """Owner onboarding — the frontend Auth0 consumption contract: the per-project
+    NEXT_PUBLIC_AUTH0_* values (from provisioning) must reach the frontend as BUILD ARGs
+    (Next inlines NEXT_PUBLIC_* at build), the codegen prompt must read those EXACT
+    names, and an app WITHOUT Auth0 must inline none."""
+    from app.developers import agents
+
+    # Mapping: backend provisioned values -> frontend NEXT_PUBLIC_* (source-present only).
+    be = {"AUTH0_DOMAIN": "t.us.auth0.com", "AUTH0_CLIENT_ID": "cid_1",
+          "API_AUDIENCE": "https://app/api", "FERNET_KEY": "secret"}
+    fp = manifest.frontend_public_env(be)
+    check("frontend_public_env maps domain/client_id/audience to NEXT_PUBLIC_*",
+          fp == {"NEXT_PUBLIC_AUTH0_DOMAIN": "t.us.auth0.com",
+                 "NEXT_PUBLIC_AUTH0_CLIENT_ID": "cid_1",
+                 "NEXT_PUBLIC_AUTH0_AUDIENCE": "https://app/api"}, str(fp))
+    check("frontend_public_env never leaks a non-Auth0 secret (no FERNET_KEY)",
+          "FERNET_KEY" not in fp and "secret" not in str(fp))
+    check("an app without provisioned Auth0 gets an empty frontend_public_env",
+          manifest.frontend_public_env({"FERNET_KEY": "x"}) == {})
+
+    root = tempfile.mkdtemp(prefix="devops-a0-")
+    names = naming.names(4242, "Loginful")
+    files = _synthetic_backend() + [
+        {"id": 9, "ticket_id": "FE-1", "filename": "page.tsx",
+         "filepath": "frontend/app/page.tsx",
+         "content": "export default function P(){return <div/>;}\n",
+         "agent_type": "frontend"}]
+    m = manifest.build(files, root, names, subdomain=names["subdomain"], local=True,
+                       frontend_public=fp)
+    compose = open(m.compose_path).read()
+    fe_dockerfile = open(os.path.join(m.frontend_context, "Dockerfile")).read()
+    check("frontend Dockerfile declares each Auth0 var as a build ARG",
+          all(f"ARG {e}=" in fe_dockerfile for e in manifest.FRONTEND_AUTH0_ENVS))
+    check("compose passes the Auth0 values as build ARGs (Next inlines at build)",
+          'NEXT_PUBLIC_AUTH0_DOMAIN: "t.us.auth0.com"' in compose
+          and 'NEXT_PUBLIC_AUTH0_AUDIENCE: "https://app/api"' in compose)
+
+    # An app WITHOUT Auth0 provisioning inlines nothing (no empty placeholders leaking).
+    root2 = tempfile.mkdtemp(prefix="devops-noa0-")
+    m2 = manifest.build(files, root2, naming.names(7, "Plain"),
+                        subdomain="x", local=True, frontend_public={})
+    check("an app without Auth0 has no NEXT_PUBLIC_AUTH0 in its compose",
+          "NEXT_PUBLIC_AUTH0" not in open(m2.compose_path).read())
+
+    # Drift guard: the frontend codegen prompt reads EXACTLY the manifest's names.
+    fe_prompt = agents._system("frontend")
+    check("the frontend codegen prompt names every manifest Auth0 var (no drift)",
+          all(e in fe_prompt for e in manifest.FRONTEND_AUTH0_ENVS))
+    # Contract 1 drift guard: the backend prompt reads the connected-account var.
+    check("the backend codegen prompt reads STRIPE_CONNECTED_ACCOUNT_ID (contract 1)",
+          "STRIPE_CONNECTED_ACCOUNT_ID" in agents._system("backend"))
+
+
 def test_provisioning():
     print("\nD2. Platform provisioning (deploy gap #1, the 3 platform-solvable fixes)")
 
@@ -699,6 +752,7 @@ def main():
     test_isolation()
     test_manifest()
     test_frontend_wiring()
+    test_auth0_frontend_wiring()
     test_secrets()
     test_provisioning()
     test_cost()
