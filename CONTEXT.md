@@ -576,7 +576,16 @@ CONTRACTS (prompt rules) + the deploy wiring to feed them, mirroring Fix #21's A
   exact manifest vars). All 15 offline suites pass; prompts live in the rebuilt backend.
 - **⚠️ NOTE:** these change CODEGEN, so a FRESH generation consumes the connected Stripe account + provisioned
   Auth0. Run 1289's existing files predate the contracts — a full 1289 boot needs a fresh gen (or hand-wiring).
-- **STILL OPEN:** (b) SMS decide/defer; (c) remaining §7 human creds (Auth0 test tenant + Mgmt app; email sender).
+- **SMS DECIDED (2026-08-20): DEFERRED by user.** No per-number Twilio provisioning built. Slice 1's
+  platform-held Twilio injection already covers it — set `TWILIO_*` → injected/used; absent → the app
+  fail-fasts on SMS ONLY (everything else works). Revisit if a launch actually needs texting.
+- **OWNER-ONBOARDING EPIC — where it stands:** slices 1–4 DONE (platform-held injection; Stripe
+  click-to-connect, LIVE-verified; Auth0 per-project auto-provision; codegen consumption contracts). SMS
+  deferred. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
+  human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
+  (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
+  those, a fresh full-scope run → QA → deploy should BOOT fully (Stripe test connect + Auth0 provisioned +
+  crypto keys/Redis/config from Fix #26). Deploy gap #1 would then be genuinely closed for test-mode.
 
 ## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
 Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
