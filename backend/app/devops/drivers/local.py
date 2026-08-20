@@ -16,7 +16,7 @@ import logging
 import os
 
 from app.config import settings
-from app.devops import manifest, secrets_store
+from app.devops import manifest, provisioning, secrets_store
 from app.devops.drivers.base import DeployDriver, DeployRequest, DeployResult
 from app.qa import assembly as qa
 
@@ -49,6 +49,13 @@ class LocalDockerDriver(DeployDriver):
         has_frontend = any(manifest._is_frontend(f) for f in req.files)
         https_port = qa._free_port()
         http_port = qa._free_port()
+
+        # Fix C: set ALLOWED_ORIGINS to this deploy's EXACT origin, now that the host
+        # port is known (chosen here, not in STEP 5). Only when the app reads it and
+        # the owner has not set it. Same-origin via Caddy, so the HTTPS origin suffices.
+        if ("ALLOWED_ORIGINS" in provisioning.required_env(req.files)
+                and "ALLOWED_ORIGINS" not in req.env):
+            req.env["ALLOWED_ORIGINS"] = f"https://localhost:{https_port}"
 
         m = manifest.build(
             req.files, req.root, req.names,

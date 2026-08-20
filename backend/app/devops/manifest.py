@@ -274,9 +274,10 @@ COPY Caddyfile /etc/caddy/Caddyfile
 
 def _compose(names: dict, has_frontend: bool, https_host_port: int,
              http_host_port: int, subdomain: str, *, use_images: bool,
-             image_refs: dict | None = None) -> str:
+             image_refs: dict | None = None, needs_redis: bool = False) -> str:
     """docker-compose for one isolated app. `use_images=False` builds locally;
-    `use_images=True` references pushed images (the AWS/EC2 path)."""
+    `use_images=True` references pushed images (the AWS/EC2 path). `needs_redis`
+    adds an isolated redis service + wires REDIS_URL into the backend (Fix B)."""
     image_refs = image_refs or {}
     db_url = (f"postgresql+asyncpg://{names['db_user']}:{names['db_password']}"
               f"@db:5432/{names['db_name']}")
@@ -311,6 +312,28 @@ def _compose(names: dict, has_frontend: bool, https_host_port: int,
     restart: unless-stopped
 '''
 
+    # Fix B: optional isolated Redis service + backend wiring. Only present when the
+    # generated backend reads REDIS_URL (e.g. FastAPI-Limiter). `redis:6379` is the
+    # app's OWN network DNS — no port is published to the host (isolation preserved).
+    from app.devops.provisioning import REDIS_INTERNAL_URL
+    if needs_redis:
+        _redis_backend_env = f'      REDIS_URL: "{REDIS_INTERNAL_URL}"\n'
+        _redis_backend_depends = "      redis:\n        condition: service_healthy\n"
+        _redis_service = f'''  redis:
+    image: redis:7-alpine
+    container_name: {names['backend_container']}-redis
+    networks: [appnet]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+'''
+    else:
+        _redis_backend_env = _redis_backend_depends = _redis_service = ""
+
     return f'''# DevOps-generated deployment for project {names['project_id']} — ISOLATED:
 # its own network, its own database + credentials, its own containers. No name
 # here is shared with any other project (all derived from project_id).
@@ -337,17 +360,19 @@ services:
   backend:
 {_svc_source('backend', 'backend')}
     container_name: {names['backend_container']}
-    # DATABASE_URL is safe to inline (per-project, internal); real SECRETS come
-    # from the 0600 --env-file the driver passes, never from this file.
+    # DATABASE_URL (and REDIS_URL, when present) are safe to inline — per-project,
+    # internal compose DNS. Real SECRETS come from the 0600 --env-file the driver
+    # passes, never from this file.
     environment:
       DATABASE_URL: "{db_url}"
-    env_file:
+{_redis_backend_env}    env_file:
       - deploy.env
     depends_on:
       db:
         condition: service_healthy
-    networks: [appnet]
+{_redis_backend_depends}    networks: [appnet]
     restart: unless-stopped
+{_redis_service}
 
 {frontend_block}  caddy:
 {_svc_source('caddy', 'caddy')}
@@ -472,10 +497,16 @@ def build(files: list[dict], root: str, names: dict, *, subdomain: str,
         fh.write(_caddy_dockerfile())
 
     # ---- compose ----
+    # Fix B (deploy gap #1, platform infra): provision a Redis service when the
+    # generated backend reads REDIS_URL (e.g. FastAPI-Limiter). Local import avoids
+    # a module-load cycle (provisioning scans via manifest._is_frontend).
+    from app.devops import provisioning
+    needs_redis = provisioning.needs_redis(files)
     compose_path = os.path.join(root, "docker-compose.deploy.yml")
     with open(compose_path, "w", encoding="utf-8") as fh:
         fh.write(_compose(names, has_frontend, https_host_port, http_host_port,
-                          subdomain, use_images=use_images, image_refs=image_refs))
+                          subdomain, use_images=use_images, image_refs=image_refs,
+                          needs_redis=needs_redis))
 
     return Manifest(
         root=root,

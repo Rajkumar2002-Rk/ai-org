@@ -30,7 +30,7 @@ from app import usage
 from app.config import settings
 from app.database import async_session
 from app.devops import cost as cost_mod
-from app.devops import health, manifest, naming, secrets_store, sizing as sizing_mod
+from app.devops import health, manifest, naming, provisioning, secrets_store, sizing as sizing_mod
 from app.devops.drivers.base import DeployRequest
 from app.models import Blueprint, Deployment, GeneratedFile, Project
 from app.redis_client import redis_client
@@ -216,10 +216,33 @@ async def run(project_id: int) -> dict:
                                "reading will be unavailable until the platform key "
                                "is configured.", project_id)
 
+        # ---- Fix A (deploy gap #1, platform crypto): mint + PERSIST the crypto
+        # keys the app needs but no human owns (FERNET_KEY, TOKEN_ENCRYPTION_KEY,
+        # STRIPE_TOKEN_ENC_KEY, SESSION_SECRET_KEY). Persisted so a redeploy reuses
+        # the SAME key — a fresh key would make already-encrypted rows unreadable.
+        # Only mints what the generated code actually reads; never fabricates an
+        # OWNER secret (STRIPE_SECRET_KEY / AUTH0_* still fail-fast honestly). ----
+        needed_env = provisioning.required_env(files)
+        if settings.secrets_enc_key:
+            minted = await provisioning.ensure_crypto_keys(project_id, needed_env, env)
+            if minted:
+                env.update(minted)
+                secret_names = sorted(set(secret_names) | set(minted))
+                logger.info("Provisioned %d platform crypto key(s) for project %s: %s",
+                            len(minted), project_id, ", ".join(sorted(minted)))
+
         # Register secret VALUES for redaction, and protect the root handlers so
-        # nothing in this deploy can emit them.
+        # nothing in this deploy can emit them. (Crypto keys above are secrets and
+        # are included here; the non-secret config defaults below are added AFTER,
+        # so values like "production"/"false" are never redacted from logs.)
         secrets_store.guard(env.values())
         secrets_store.protect_root_handlers()
+
+        # ---- Fix C (deploy gap #1, config defaults): non-secret vars with obvious
+        # deploy-time answers (ENVIRONMENT, SQL_ECHO, RATE_LIMIT_*). ALLOWED_ORIGINS
+        # is set by the driver (the deploy port is chosen there). Owner-set values
+        # always win (config_defaults never overrides an existing key). ----
+        env.update(provisioning.config_defaults(needed_env, env))
 
         # ---- STEP 2/3/6: assemble + build + bring up (isolated) ----------
         root = tempfile.mkdtemp(prefix=f"devops-{project_id}-")

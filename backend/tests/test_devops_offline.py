@@ -28,7 +28,7 @@ from app.config import settings
 # A real key so the encrypted store is exercised (never plaintext).
 settings.secrets_enc_key = Fernet.generate_key().decode()
 
-from app.devops import cost, health, manifest, naming, secrets_store, sizing
+from app.devops import cost, health, manifest, naming, provisioning, secrets_store, sizing
 from app.devops.drivers import aws as aws_driver
 
 _failures: list[str] = []
@@ -325,6 +325,99 @@ def test_secrets():
         settings.secrets_enc_key = saved
 
 
+def test_provisioning():
+    print("\nD2. Platform provisioning (deploy gap #1, the 3 platform-solvable fixes)")
+
+    # Inline fixtures: a backend file reading a mix of crypto/config/infra/owner vars,
+    # a frontend file (must be ignored), and a backend file with no env at all.
+    be = {"filepath": "backend/app/security.py", "content": (
+        "import os\n"
+        "FERNET_KEY = os.getenv('FERNET_KEY')\n"
+        "SESSION_SECRET_KEY = os.getenv(\"SESSION_SECRET_KEY\")\n"
+        "REDIS_URL = os.getenv('REDIS_URL')\n"
+        "ENVIRONMENT = os.getenv('ENVIRONMENT', 'production')\n"
+        "ALLOWED = os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000')\n"
+        "STRIPE = os.environ['STRIPE_SECRET_KEY']\n")}
+    fe = {"filepath": "frontend/app/page.tsx",
+          "content": "const x = process.env.NEXT_PUBLIC_API_BASE_URL\n"}
+    plain = {"filepath": "backend/app/models.py", "content": "class M:\n    pass\n"}
+    files = [be, fe, plain]
+
+    # --- required_env: extracts backend env names, ignores frontend/plain ---
+    ne = provisioning.required_env(files)
+    check("required_env finds getenv + environ[...] names",
+          {"FERNET_KEY", "SESSION_SECRET_KEY", "REDIS_URL", "ENVIRONMENT",
+           "ALLOWED_ORIGINS", "STRIPE_SECRET_KEY"} <= ne, str(sorted(ne)))
+    check("required_env ignores frontend NEXT_PUBLIC_* (not a backend os.getenv)",
+          "NEXT_PUBLIC_API_BASE_URL" not in ne)
+    check("required_env on a file with no env is empty",
+          provisioning.required_env([plain]) == set())
+
+    # --- needs_redis: gate is exactly 'reads REDIS_URL' ---
+    check("needs_redis True when the app reads REDIS_URL", provisioning.needs_redis(files))
+    check("needs_redis False when it does not", not provisioning.needs_redis([plain]))
+
+    # --- Fix C config defaults: referenced-only, ALLOWED_ORIGINS excluded, owner wins ---
+    cfg = provisioning.config_defaults(ne, {})
+    check("config_defaults sets ENVIRONMENT/SQL_ECHO-style vars that are referenced",
+          cfg.get("ENVIRONMENT") == "production", str(cfg))
+    check("config_defaults does NOT include ALLOWED_ORIGINS (driver sets it)",
+          "ALLOWED_ORIGINS" not in cfg)
+    check("config_defaults does NOT set a var the app never reads (no RATE_LIMIT here)",
+          "RATE_LIMIT_TIMES" not in cfg)
+    check("an owner-set value is never overridden by a default",
+          provisioning.config_defaults(ne, {"ENVIRONMENT": "staging"}).get("ENVIRONMENT")
+          is None)
+
+    # --- Fix A crypto: mint valid keys, only what's needed, never an owner secret ---
+    async def _mint():
+        recorded: dict[str, str] = {}
+
+        async def _fake_set(pid, key, value):
+            recorded[key] = value
+        orig = secrets_store.set_secret
+        secrets_store.set_secret = _fake_set
+        try:
+            first = await provisioning.ensure_crypto_keys(4242, ne, {})
+            # Second pass with the minted keys now 'existing' -> nothing re-minted.
+            second = await provisioning.ensure_crypto_keys(4242, ne, dict(first))
+            return first, second, recorded
+        finally:
+            secrets_store.set_secret = orig
+
+    first, second, recorded = asyncio.run(_mint())
+    check("mints exactly the crypto keys the app needs (FERNET + SESSION here)",
+          set(first) == {"FERNET_KEY", "SESSION_SECRET_KEY"}, str(sorted(first)))
+    check("NEVER mints an owner secret (no STRIPE_SECRET_KEY)",
+          "STRIPE_SECRET_KEY" not in first and "STRIPE_SECRET_KEY" not in recorded)
+    check("Fernet-type keys are VALID Fernet keys (Fernet(key) works)",
+          Fernet(first["FERNET_KEY"]) is not None)
+    check("SESSION_SECRET_KEY is a non-trivial random string",
+          isinstance(first["SESSION_SECRET_KEY"], str) and len(first["SESSION_SECRET_KEY"]) >= 32)
+    check("every minted key is PERSISTED via set_secret (redeploy reuse)",
+          set(recorded) == {"FERNET_KEY", "SESSION_SECRET_KEY"}, str(sorted(recorded)))
+    check("a redeploy re-mints NOTHING when the keys already exist (stable)",
+          second == {}, str(second))
+
+    # --- Fix B compose: redis service present only when needed, no host port ---
+    names = {"project_id": 1, "compose_project": "p1", "db_container": "db",
+             "db_user": "u", "db_password": "pw", "db_name": "d",
+             "backend_container": "be", "frontend_container": "fe",
+             "caddy_container": "cad", "network": "net", "db_volume": "vol"}
+    c_yes = manifest._compose(names, True, 8443, 8080, "x", use_images=False, needs_redis=True)
+    c_no = manifest._compose(names, True, 8443, 8080, "x", use_images=False, needs_redis=False)
+    check("needs_redis adds a redis:7 service",
+          "  redis:\n    image: redis:7-alpine" in c_yes, "no redis service")
+    check("needs_redis wires REDIS_URL into the backend (internal DNS)",
+          'REDIS_URL: "redis://redis:6379"' in c_yes)
+    check("backend waits for redis to be healthy",
+          "redis:\n        condition: service_healthy" in c_yes)
+    check("redis publishes NO host port (isolation preserved)",
+          "6379:" not in c_yes)
+    check("an app that needs no redis gets NO redis service and NO REDIS_URL wiring",
+          "image: redis:7-alpine" not in c_no and 'REDIS_URL: "' not in c_no)
+
+
 # ------------------------------------------------------------------ E. cost
 def test_cost():
     print("\nE. Cost — from the concrete resources, with a staleness tripwire")
@@ -565,6 +658,7 @@ def main():
     test_manifest()
     test_frontend_wiring()
     test_secrets()
+    test_provisioning()
     test_cost()
     test_health()
     test_health_probe()

@@ -25,7 +25,7 @@ import logging
 import uuid
 
 from app.config import settings
-from app.devops import manifest, secrets_store
+from app.devops import manifest, provisioning, secrets_store
 from app.devops.drivers.base import DeployDriver, DeployRequest, DeployResult
 from app.devops.drivers.local import run_cmd
 
@@ -203,6 +203,12 @@ class AwsDriver(DeployDriver):
         """
         account_id = await self._account_id()
         registry = self._ecr_registry(account_id)
+
+        # Fix C: ALLOWED_ORIGINS = the public subdomain origin (known here), only when
+        # the app reads it and the owner has not set it. Goes to SSM with the rest.
+        if ("ALLOWED_ORIGINS" in provisioning.required_env(req.files)
+                and "ALLOWED_ORIGINS" not in req.env):
+            req.env["ALLOWED_ORIGINS"] = f"https://{req.subdomain}"
 
         m = manifest.build(
             req.files, req.root, req.names, subdomain=req.subdomain, local=False,
