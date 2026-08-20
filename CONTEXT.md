@@ -550,11 +550,33 @@ Auth0 next; per-project (not shared tenant).
 - **NOTE:** provisions + injects `AUTH0_CLIENT_ID/SECRET`, but the FRONTEND login wiring
   (`NEXT_PUBLIC_AUTH0_*`) is a separate frontend/codegen concern; this slice unblocks the BACKEND boot
   (`AUTH0_DOMAIN` + `API_AUDIENCE` JWT validation).
-- **REMAINING owner-onboarding work:** (a) **codegen consumption contracts** — generated `stripe.py` reads
-  `STRIPE_CONNECTED_ACCOUNT_ID` (slice 2 follow-up); generated frontend reads `NEXT_PUBLIC_AUTH0_*`; (b) **SMS**
+- **REMAINING owner-onboarding work:** (a) ~~codegen consumption contracts~~ DONE (§1q); (b) **SMS**
   decide/defer (Twilio number provisioning); (c) the one-time HUMAN platform setup (`PLAN_owner_onboarding.md`
-  §7: create the platform Stripe Connect app, Auth0 tenant + Management app, email sender) — needed for a real
-  end-to-end 1289 deploy. After all that: re-run 1289 QA→deploy should BOOT fully.
+  §7: Stripe Connect app DONE in test mode; Auth0 tenant + Management app + email sender still to set) —
+  needed for a real end-to-end 1289 deploy. NOTE: 1289's EXISTING generated files predate the codegen
+  contracts, so a full boot needs a FRESH generation (or hand-wiring) + the remaining §7 creds.
+
+## 1q. OWNER ONBOARDING — SLICE 4: codegen consumption contracts (Stripe account + Auth0 frontend) (DONE 2026-08-20)
+Makes the deployed app actually USE what onboarding provisions. Committed `d8a7974`. Both are codegen
+CONTRACTS (prompt rules) + the deploy wiring to feed them, mirroring Fix #21's API-base contract.
+- **Contract 1 — backend Stripe** (`agents._system("backend")`): read the owner's connected account from
+  `STRIPE_CONNECTED_ACCOUNT_ID` and charge ON it (`Stripe-Account` header / `stripe_account=`) so money reaches
+  the OWNER; treat it as already-connected (no runtime OAuth needed just to charge); OAuth is the fallback.
+  Deploy INJECTION is already automatic — the id lives in `secrets_store` from slice 2, so STEP 5's
+  `get_secrets` puts it in `deploy.env`. No deploy change needed.
+- **Contract 2 — frontend Auth0** (`agents._system("frontend")`): read login config from
+  `NEXT_PUBLIC_AUTH0_DOMAIN`/`_CLIENT_ID`/`_AUDIENCE`. Deploy wires these as **BUILD ARGs** (Next inlines
+  `NEXT_PUBLIC_*` at build), values mapped from the provisioned Auth0 (`AUTH0_DOMAIN`/`AUTH0_CLIENT_ID`/
+  `API_AUDIENCE`) via `manifest.frontend_public_env()`. New manifest constants `FRONTEND_AUTH0_ENVS` +
+  `FRONTEND_AUTH0_FROM_BACKEND`; `_frontend_dockerfile` declares the ARGs; `_compose`/`build` thread
+  `frontend_public` into the frontend `build.args` + runtime env; local + aws drivers compute
+  `frontend_public_env(req.env)` (aws adds a `--build-arg` per value). An app WITHOUT Auth0 inlines none.
+- **Tests:** `test_devops_offline.test_auth0_frontend_wiring` — mapping (source-present only, no secret leak),
+  Dockerfile ARGs, compose build-args, no-Auth0-inlines-none, and DRIFT GUARDS (both codegen prompts name the
+  exact manifest vars). All 15 offline suites pass; prompts live in the rebuilt backend.
+- **⚠️ NOTE:** these change CODEGEN, so a FRESH generation consumes the connected Stripe account + provisioned
+  Auth0. Run 1289's existing files predate the contracts — a full 1289 boot needs a fresh gen (or hand-wiring).
+- **STILL OPEN:** (b) SMS decide/defer; (c) remaining §7 human creds (Auth0 test tenant + Mgmt app; email sender).
 
 ## 1k. FIX #24 — get_db swallows HTTPException → 500 (DONE + tested + live 2026-08-19)
 Built exactly as scoped in §5.A / §1j, same rigor as #16–#23. Closes the run-1289 QA-500 class.
