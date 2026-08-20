@@ -92,11 +92,13 @@ async def _exchange_code(code: str) -> str:
     """Exchange an authorization `code` for the owner's connected account id
     (Stripe `stripe_user_id`). Raises ConnectError on any failure."""
     async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(_TOKEN_URL, data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "client_secret": settings.stripe_secret_key,
-        })
+        # Stripe authenticates the token exchange with the secret key as HTTP basic-auth
+        # username (per current docs: `curl ... -u sk_...:`), not a body field.
+        resp = await client.post(
+            _TOKEN_URL,
+            data={"grant_type": "authorization_code", "code": code},
+            auth=(settings.stripe_secret_key or "", ""),
+        )
     if resp.status_code != 200:
         # Stripe returns an error body; do NOT echo it (may reference the secret).
         raise ConnectError(f"Stripe token exchange failed (HTTP {resp.status_code})")

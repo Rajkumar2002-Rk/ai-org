@@ -49,6 +49,23 @@ services:
       # Scoped platform vision key for menu PDF extraction (Week 10). DevOps
       # injects it only into deployed apps that shipped the PDF menu feature.
       MENU_EXTRACTION_API_KEY: ${MENU_EXTRACTION_API_KEY:-}
+      # ---- Owner-onboarding platform credentials (deploy gap #1) ----
+      # Platform-held provider creds the platform holds ONCE; DevOps injects them
+      # into deployed apps that read them. Absent -> that feature fail-fasts honestly.
+      STRIPE_CLIENT_ID: ${STRIPE_CLIENT_ID:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_REDIRECT_URI: ${STRIPE_REDIRECT_URI:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SENDER_EMAIL: ${SENDER_EMAIL:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      AUTH0_TENANT_DOMAIN: ${AUTH0_TENANT_DOMAIN:-}
+      AUTH0_MGMT_CLIENT_ID: ${AUTH0_MGMT_CLIENT_ID:-}
+      AUTH0_MGMT_CLIENT_SECRET: ${AUTH0_MGMT_CLIENT_SECRET:-}
       CODEGEN_MODE: ${CODEGEN_MODE:-real}
       # Paid Opus security review. Default ON. Set false during a LOCAL codegen /
       # feature-debug phase to drop each iteration from ~$3 to ~$1; ignored for an

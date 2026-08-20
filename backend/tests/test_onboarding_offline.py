@@ -54,8 +54,8 @@ class _FakeClient:
     async def __aexit__(self, *a):
         return False
 
-    async def post(self, url, data=None):
-        _FakeClient.posted = {"url": url, "data": data}
+    async def post(self, url, data=None, **kwargs):
+        _FakeClient.posted = {"url": url, "data": data, "auth": kwargs.get("auth")}
         return _FakeClient._resp
 
 
@@ -127,6 +127,9 @@ def test_callback():
         check("the code exchange POSTs to Stripe's token endpoint with the code",
               _FakeClient.posted["url"] == sc._TOKEN_URL
               and _FakeClient.posted["data"]["code"] == "auth_code_abc")
+        check("the exchange uses HTTP basic-auth (secret key), not a client_secret body field",
+              isinstance(_FakeClient.posted["auth"], tuple)
+              and "client_secret" not in _FakeClient.posted["data"])
 
         # A bad state never reaches Stripe and stores nothing.
         stored.clear()
