@@ -618,9 +618,30 @@ First fresh full-scope run with ALL onboarding work live (coffee shop w/ orderin
   Tests: `test_qa_offline.test_third_party_import_gate` (wrong-name + wrong-submodule flagged via installed
   pkgs; zero-FP on the platform's 68 modules + correct/in-project/stdlib/relative/star + missing-optional-dep;
   1496 fixture parsed as a candidate). All 15 offline suites pass; backend rebuilt.
-- **NEXT:** re-run a fresh full-scope build — with Fix #27's self-heal + the prompt rule, the stripe-import
-  class should now repair itself at smoke_boot and the run should proceed to secure→QA→deploy (where the
-  onboarding provisioning fires). Project 1496 left in the DB (status build/boot_failed). **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
+## 1s. FRESH RUN 1557 + FIX #27 FP-fix + FIX #28 (endpoint-completeness self-heal) (2026-08-20)
+Second fresh full run (coffee shop, Quick, 18 tickets). Chain of tail bugs, each now durably handled:
+1. **Build ✅ 18/18 → smoke_boot: Fix #27 FIRED + self-healed** — but on a FALSE POSITIVE: `from jose import
+   jwt` flagged as "jose has no jwt". `jwt` is a SUBMODULE (`jose.jwt`) that `import jose` doesn't auto-load →
+   `hasattr` alone false-positived. **Fixed (`c0ec4cb`):** the probe now tries `import pkg.name` before
+   concluding a name is missing. Regression test added. (Self-heal mechanism itself worked correctly.)
+2. **Re-boot: NEW tail bug — missing designed endpoint** `GET /orders/{order_id}` (Architect designed it, no
+   ticket generated it; app booted with 11/12 endpoints). → **FIX #28.**
+- **FIX #28 (endpoint-completeness self-heal, `30ea220`):** the runtime check (`_check_designed_endpoints`,
+  reads the booted app's `/openapi.json`, FP-free) now returns the STRUCTURED missing paths →
+  `TestEnv.missing_endpoints`. `_smoke_boot` returns a combined findings dict `{import_errors,
+  missing_endpoints}`; `main._run_build` runs ONE bounded boot-repair loop (≤2) that repairs EITHER class and
+  re-boots. `orchestrator.repair_missing_endpoints` attributes each missing endpoint to the route file with
+  the longest shared path-prefix (1557: `/orders/{order_id}` → the `/orders` route file) and regenerates it
+  with a targeted MISSING_ENDPOINT repair (method+path+purpose from the blueprint), keeping existing routes.
+  Tests: `test_developers_offline.test_missing_endpoint_attribution` (`_routes_in` w/ APIRouter prefix,
+  `_shared_segments`, longest-prefix attribution). All 15 suites pass.
+- **✅ VALIDATED LIVE:** ran the boot-repair loop on 1557 → attempt 1 regenerated the owning file to add
+  `GET /orders/{order_id}` → **app BOOTED with all 12 endpoints**, `build:status:1557=done`. 1557 cost $0.64.
+- **NOW:** 1557 boots fully. NEXT = continue 1557 → secure → QA → deploy (finally exercising the onboarding
+  provisioning: Auth0 auto-provision + Stripe/SMTP inject at deploy), OR run another fresh run. Both projects
+  1496/1557 left in the DB.
+- Fix #27's prompt rule + gate + Fix #28 mean the recurring boot-tail classes (bad third-party import,
+  missing endpoint) now SELF-HEAL at smoke_boot instead of stopping the build. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
   human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
   (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
   those, a fresh full-scope run → QA → deploy should BOOT fully (Stripe test connect + Auth0 provisioned +
