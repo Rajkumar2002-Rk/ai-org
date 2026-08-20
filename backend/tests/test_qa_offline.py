@@ -380,7 +380,12 @@ def test_third_party_import_gate():
     import os
     import glob
     from app.qa.assembly import (_third_party_import_errors, _third_party_import_candidates,
-                                  _import_error_reason)
+                                  _import_error_reason, pin_spec)
+    # Run 1614: `pip install fastapi-limiter` unpinned resolves to a BROKEN 0.2.0 (no
+    # FastAPILimiter); the curated pin forces a working version for assembly AND deploy.
+    check("fastapi-limiter is pinned to a working version (run 1614)",
+          pin_spec("fastapi_limiter").endswith("==0.1.6")
+          and pin_spec("fastapi-limiter").endswith("==0.1.6"), pin_spec("fastapi-limiter"))
     V = "/nonexistent-venv"     # -> _venv_python falls back to the platform python
 
     # True positives against installed packages: a wrong NAME and a wrong SUBMODULE.

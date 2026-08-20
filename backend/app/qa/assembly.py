@@ -149,6 +149,7 @@ _PACKAGE_ALIASES = {
     "httpx": "httpx",
     "pydantic_settings": "pydantic-settings",
     "email_validator": "email-validator",
+    "fastapi_limiter": "fastapi-limiter",
 }
 
 
@@ -214,15 +215,26 @@ def _load_platform_pins() -> dict[str, str]:
 PLATFORM_PINS: dict[str, str] = _load_platform_pins()
 
 
+# Curated pins for third-party packages the PLATFORM does not itself use (so they are
+# absent from requirements.txt) but generated apps commonly need — and whose LATEST on
+# PyPI is broken/incompatible, so an unpinned `pip install` boots-fails. Run 1614:
+# `pip install fastapi-limiter` resolves to 0.2.0 (empty package, no FastAPILimiter),
+# while 0.1.6 exports it correctly. Keyed by canonical name; applied by pin_spec to BOTH
+# the QA/smoke_boot venv and the deployed image, so they can never diverge.
+_EXTRA_PINS: dict[str, str] = {
+    "fastapi-limiter": "0.1.6",
+}
+
+
 def pin_spec(pkg: str) -> str:
     """Pin a pip requirement (which may carry extras, e.g. `uvicorn[standard]`) to
     the platform version, preserving the extras: `uvicorn[standard]` ->
     `uvicorn[standard]==0.34.0`. A package the platform does not pin is returned
-    unchanged. Used by BOTH the QA venv install and the DevOps manifest so the two
-    can never diverge on a platform package."""
+    unchanged (unless it is in `_EXTRA_PINS`). Used by BOTH the QA venv install and the
+    DevOps manifest so the two can never diverge on a package version."""
     if "==" in pkg or ">=" in pkg or "<" in pkg:   # already version-qualified
         return pkg
-    ver = PLATFORM_PINS.get(_canon(pkg))
+    ver = PLATFORM_PINS.get(_canon(pkg)) or _EXTRA_PINS.get(_canon(pkg))
     return f"{pkg}=={ver}" if ver else pkg
 
 
@@ -584,35 +596,32 @@ for item in json.load(sys.stdin):
     try:
         rootmod = importlib.import_module(root)
     except Exception:
-        continue                      # package not installed -> not our finding
-    try:
-        m = importlib.import_module(mod)
-    except ModuleNotFoundError as ex:
-        # Only OUR finding when the MISSING module is the path itself (or a parent) —
-        # NOT a transitive dependency. `starlette.middleware.sessions` is a real module
-        # that raises ModuleNotFoundError('itsdangerous') when that optional dep is
-        # absent: a wrong-dep problem, not a wrong path. Skip those (zero false positive).
-        miss = getattr(ex, "name", "") or ""
-        if miss and (miss == mod or mod.startswith(miss + ".")):
-            avail = [n for n in names if n != "*" and hasattr(rootmod, n)]
-            out.append({"module": mod, "kind": "no_submodule",
-                        "names": names, "root": root, "on_root": avail})
-        continue
-    except Exception:
-        continue                      # some other import-time error -> don't guess
-    # A name that is neither an attribute NOR an importable submodule is missing.
-    # `from jose import jwt` / `from stripe import checkout` import a SUBMODULE that
-    # `import jose` does not auto-load, so hasattr() alone would false-positive.
-    missing = []
+        continue                      # package not installed -> _install_deps' domain
     for n in names:
-        if n == "*" or hasattr(m, n):
+        if n == "*":
             continue
+        # Run the EXACT statement the app runs at boot — ground truth, no guessing.
+        # `from jose import jwt` (submodule) and `from fastapi_limiter import
+        # FastAPILimiter` (lazily-bound name) both SUCCEED here, so neither is a false
+        # positive; only a genuinely wrong path/name raises the specific error.
         try:
-            importlib.import_module(mod + "." + n)
+            exec("from %s import %s" % (mod, n), {})
+        except ModuleNotFoundError as ex:
+            miss = getattr(ex, "name", "") or ""
+            # The module PATH is wrong (stripe.api_resources) — but NOT when the missing
+            # thing is a transitive dep (starlette.middleware.sessions -> itsdangerous).
+            if miss and (miss == mod or mod.startswith(miss + ".")):
+                avail = [a for a in names if a != "*" and hasattr(rootmod, a)]
+                out.append({"module": mod, "kind": "no_submodule",
+                            "names": [n], "root": root, "on_root": avail})
+        except ImportError as ex:
+            # `cannot import name 'X' from 'pkg'` — the NAME is genuinely not exported
+            # (run 1039: `from pypdf import PdfReadError`). Any other ImportError (a
+            # missing dependency, etc.) is NOT our finding.
+            if "cannot import name" in str(ex):
+                out.append({"module": mod, "kind": "no_attr", "names": [n], "root": root})
         except Exception:
-            missing.append(n)
-    if missing:
-        out.append({"module": mod, "kind": "no_attr", "names": missing, "root": root})
+            continue                  # a runtime import side-effect -> not our finding
 print(json.dumps(out))
 '''
 
@@ -662,21 +671,32 @@ def _third_party_import_errors(venv_dir: str, written: dict[str, str]) -> list[d
     if code != 0 or not out.strip():
         return []
     try:
-        problems = {p["module"]: p for p in json.loads(out.strip().splitlines()[-1])}
-    except (ValueError, KeyError):
+        raw = json.loads(out.strip().splitlines()[-1])
+    except ValueError:
         return []
+    # The probe emits one entry per bad NAME. Aggregate per module: bad names + the
+    # (single) kind/root/on_root for that module.
+    bad_names: dict[str, set] = {}
+    info: dict[str, dict] = {}
+    for p in raw:
+        try:
+            bad_names.setdefault(p["module"], set()).update(p.get("names") or [])
+            info[p["module"]] = p
+        except (KeyError, TypeError):
+            continue
     findings: list[dict] = []
     for c in candidates:
-        p = problems.get(c["module"])
+        p = info.get(c["module"])
         if not p:
+            continue
+        bad = [n for n in c["names"] if n in bad_names.get(c["module"], set())]
+        if not bad:
             continue
         if p["kind"] == "no_submodule":
             findings.append({**c, "kind": "no_submodule",
                              "root": p["root"], "on_root": p.get("on_root", [])})
         else:
-            bad = [n for n in c["names"] if n in set(p["names"])]
-            if bad:
-                findings.append({**c, "kind": "no_attr", "root": p["root"], "names": bad})
+            findings.append({**c, "kind": "no_attr", "root": p["root"], "names": bad})
     return findings
 
 
