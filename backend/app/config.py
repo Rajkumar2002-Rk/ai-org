@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     twilio_auth_token: str | None = None            # SECRET
     twilio_phone_number: str | None = None
 
+    # Auth0 PLATFORM tenant + Management API app (owner does nothing — the platform
+    # auto-provisions a per-project Auth0 Application + API at deploy). The Management
+    # app needs create:resource_servers + create:clients scopes. Absent -> auth
+    # provisioning is skipped and the app fail-fasts on AUTH0_* honestly (never faked).
+    auth0_tenant_domain: str | None = None          # e.g. your-tenant.us.auth0.com
+    auth0_mgmt_client_id: str | None = None
+    auth0_mgmt_client_secret: str | None = None     # SECRET
+
     # LLM routing for the BA agent (locked per CONTEXT.md).
     ba_model: str = "gpt-4o-mini"
     ba_temperature: float = 0.7

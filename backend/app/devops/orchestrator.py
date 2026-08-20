@@ -31,6 +31,7 @@ from app.config import settings
 from app.database import async_session
 from app.devops import cost as cost_mod
 from app.devops import health, manifest, naming, provisioning, secrets_store, sizing as sizing_mod
+from app.onboarding import auth0_provision
 from app.devops.drivers.base import DeployRequest
 from app.models import Blueprint, Deployment, GeneratedFile, Project
 from app.redis_client import redis_client
@@ -242,6 +243,20 @@ async def run(project_id: int) -> dict:
             env.update(plat_secrets)
             secret_names = sorted(set(secret_names) | set(plat_secrets))
 
+        # ---- Auth0 PER-PROJECT auto-provision (owner-onboarding): create this
+        # project's login Application + API in the platform tenant and inject
+        # AUTH0_DOMAIN / API_AUDIENCE / AUTH0_CLIENT_ID(/_SECRET). Idempotent (reuses
+        # a prior deploy's values); skipped when the app reads no Auth0 config or the
+        # platform Management app is unconfigured (app fail-fasts honestly). ----
+        if settings.secrets_enc_key:
+            auth_secrets, auth_nonsecrets = await auth0_provision.ensure_provisioned(
+                project_id, names.get("subdomain", ""), needed_env)
+            if auth_secrets:
+                env.update(auth_secrets)
+                secret_names = sorted(set(secret_names) | set(auth_secrets))
+        else:
+            auth_nonsecrets = {}
+
         # Register secret VALUES for redaction, and protect the root handlers so
         # nothing in this deploy can emit them. (Crypto keys + platform provider
         # secrets above are included here; the non-secret config defaults + provider
@@ -256,6 +271,7 @@ async def run(project_id: int) -> dict:
         # always win (config_defaults never overrides an existing key). ----
         env.update(provisioning.config_defaults(needed_env, env))
         env.update(plat_nonsecrets)
+        env.update(auth_nonsecrets)
 
         # ---- STEP 2/3/6: assemble + build + bring up (isolated) ----------
         root = tempfile.mkdtemp(prefix=f"devops-{project_id}-")

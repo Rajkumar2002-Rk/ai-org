@@ -19,6 +19,7 @@ from app.config import settings
 settings.secrets_enc_key = settings.secrets_enc_key or Fernet.generate_key().decode()
 
 from app.onboarding import stripe_connect as sc
+from app.onboarding import auth0_provision as a0
 from app.ba import controller, state as st
 
 _failures: list[str] = []
@@ -186,14 +187,114 @@ def test_ba_stage():
           pay.fields.get("payments_connect_skipped") is True)
 
 
+class _Auth0Client:
+    """Fake httpx.AsyncClient dispatching Auth0 Management calls by URL."""
+    calls: list = []
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        _Auth0Client.calls.append(url)
+        if url.endswith("/oauth/token"):
+            return _FakeResp(200, {"access_token": "mgmt_tok"})
+        if url.endswith("/api/v2/resource-servers"):
+            return _FakeResp(201, {"id": "rs_1"})
+        if url.endswith("/api/v2/clients"):
+            return _FakeResp(201, {"client_id": "cid_ABC", "client_secret": "csec_XYZ"})
+        return _FakeResp(500, {})
+
+
+def test_auth0_provision():
+    print("\nE. Auth0 per-project auto-provision — owner does nothing, idempotent")
+    saved = (settings.auth0_tenant_domain, settings.auth0_mgmt_client_id,
+             settings.auth0_mgmt_client_secret)
+    orig_client = a0.httpx.AsyncClient
+    orig_get = a0.secrets_store.get_secrets
+    orig_set = a0.secrets_store.set_secret
+    needed = {a0.DOMAIN_KEY, a0.AUDIENCE_KEY, a0.CLIENT_ID_KEY, a0.CLIENT_SECRET_KEY}
+    try:
+        # Unconfigured platform -> skip, app fail-fasts honestly.
+        settings.auth0_tenant_domain = None
+        s, n = asyncio.run(a0.ensure_provisioned(1, "app.example.com", needed))
+        check("skips when the platform Auth0 Management app is unconfigured",
+              s == {} and n == {})
+
+        settings.auth0_tenant_domain = "tenant.us.auth0.com"
+        settings.auth0_mgmt_client_id = "mgmt_id"
+        settings.auth0_mgmt_client_secret = "mgmt_secret"
+        check("is_configured True when the Management app is set", a0.is_configured())
+
+        # App reads no Auth0 config -> nothing provisioned (no calls).
+        _Auth0Client.calls = []
+        a0.httpx.AsyncClient = _Auth0Client
+        s, n = asyncio.run(a0.ensure_provisioned(1, "app.example.com", {"REDIS_URL"}))
+        check("does nothing when the app reads no Auth0 config",
+              s == {} and n == {} and _Auth0Client.calls == [])
+
+        # Happy path: create API + client, split secret/non-secret, persist.
+        stored: dict = {}
+
+        async def _get(pid):
+            return dict(stored)
+
+        async def _set(pid, key, value):
+            stored[key] = value
+        a0.secrets_store.get_secrets = _get
+        a0.secrets_store.set_secret = _set
+        _Auth0Client.calls = []
+        s, n = asyncio.run(a0.ensure_provisioned(42, "app42.example.com", needed))
+        check("AUTH0_CLIENT_SECRET is in the SECRET bucket",
+              s.get(a0.CLIENT_SECRET_KEY) == "csec_XYZ" and list(s) == [a0.CLIENT_SECRET_KEY])
+        check("domain/audience/client_id are NON-secret",
+              n.get(a0.DOMAIN_KEY) == "tenant.us.auth0.com"
+              and n.get(a0.AUDIENCE_KEY) == "https://app42.example.com/api"
+              and n.get(a0.CLIENT_ID_KEY) == "cid_ABC", str(n))
+        check("it created the resource-server (API) and the client",
+              any("resource-servers" in u for u in _Auth0Client.calls)
+              and any("/clients" in u for u in _Auth0Client.calls))
+        check("provisioned values are PERSISTED for idempotent reuse",
+              stored.get(a0.DOMAIN_KEY) == "tenant.us.auth0.com"
+              and stored.get(a0.AUDIENCE_KEY) == "https://app42.example.com/api")
+
+        # Idempotency: a redeploy reuses stored values and makes NO Auth0 calls.
+        _Auth0Client.calls = []
+        s2, n2 = asyncio.run(a0.ensure_provisioned(42, "app42.example.com", needed))
+        check("a redeploy REUSES stored provisioning (no Auth0 calls)",
+              _Auth0Client.calls == [] and n2.get(a0.AUDIENCE_KEY) == "https://app42.example.com/api")
+
+        # A Management API failure never raises into the deploy.
+        class _Fail(_Auth0Client):
+            async def post(self, url, json=None, headers=None):
+                return _FakeResp(500, {})
+        a0.httpx.AsyncClient = _Fail
+        stored.clear()
+        s3, n3 = asyncio.run(a0.ensure_provisioned(99, "x.example.com", needed))
+        check("a provisioning failure returns empty (deploy proceeds, health gate reports it)",
+              s3 == {} and n3 == {})
+    finally:
+        a0.httpx.AsyncClient = orig_client
+        a0.secrets_store.get_secrets = orig_get
+        a0.secrets_store.set_secret = orig_set
+        (settings.auth0_tenant_domain, settings.auth0_mgmt_client_id,
+         settings.auth0_mgmt_client_secret) = saved
+
+
 def main():
     print("=" * 64)
-    print("Owner onboarding offline proof (no Stripe, no network, no LLM)")
+    print("Owner onboarding offline proof (no Stripe, no Auth0, no network, no LLM)")
     print("=" * 64)
     test_state_signing()
     test_start_url()
     test_callback()
     test_ba_stage()
+    test_auth0_provision()
     print("\n" + "=" * 64)
     if _failures:
         print(f"RESULT: {len(_failures)} check(s) FAILED:")
