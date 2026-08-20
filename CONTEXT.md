@@ -579,8 +579,19 @@ CONTRACTS (prompt rules) + the deploy wiring to feed them, mirroring Fix #21's A
 - **SMS DECIDED (2026-08-20): DEFERRED by user.** No per-number Twilio provisioning built. Slice 1's
   platform-held Twilio injection already covers it — set `TWILIO_*` → injected/used; absent → the app
   fail-fasts on SMS ONLY (everything else works). Revisit if a launch actually needs texting.
+- **✅ ALL THREE PROVIDERS VERIFIED LIVE (2026-08-20)** against real free/test accounts the operator set up:
+  - **Stripe** (test mode): owner account connected, `acct_…` persisted for 1289 (§1o).
+  - **Auth0** (free tenant `dev-eldyvyvbd3kd2gnw.us.auth0.com`, M2M Mgmt app w/ create:resource_servers +
+    create:clients): `ensure_provisioned(1289)` created a real API (audience
+    `https://bella-vista-1523a5.apps.rajkumarai.dev/api`) + login client (client id 32ch, secret 64ch),
+    persisted to secrets_store, idempotent reuse confirmed. Created Auth0 resources named `proj-1289`.
+  - **Email** (Mailtrap sandbox `sandbox.smtp.mailtrap.io:587`): a real STARTTLS+login+send succeeded (test
+    email trapped in the sandbox inbox). Platform SMTP creds valid.
+  `.env` now holds `AUTH0_TENANT_DOMAIN`/`AUTH0_MGMT_CLIENT_ID`/`AUTH0_MGMT_CLIENT_SECRET`, `SMTP_*`,
+  `SENDER_EMAIL`, and the Stripe test keys — all forwarded to the backend via docker-compose. **The entire
+  owner-onboarding provisioning stack is proven against real providers, all on free/test tiers.**
 - **OWNER-ONBOARDING EPIC — where it stands:** slices 1–4 DONE (platform-held injection; Stripe
-  click-to-connect, LIVE-verified; Auth0 per-project auto-provision; codegen consumption contracts). SMS
+  click-to-connect; Auth0 per-project auto-provision; codegen consumption contracts) — ALL LIVE-VERIFIED. SMS
   deferred. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
   human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
   (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
