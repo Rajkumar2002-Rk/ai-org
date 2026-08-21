@@ -676,7 +676,28 @@ version-pinning, not regeneration (the self-heal correctly bounded out — the c
   build time). **NET: backend pipeline + onboarding + deploy-provisioning are PROVEN end-to-end; the last
   frontier is FRONTEND codegen quality (invalid TSX + missing npm deps).** Deploy stack torn down; no live URL.
   Candidate next fixes: a real TSX parse (needs Node, or a smarter Python check) + a frontend npm-dep gate
-  (import → package.json). Or hand-fix 1614's 2 frontend files + redeploy for a live URL. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
+  (import → package.json). Or hand-fix 1614's 2 frontend files + redeploy for a live URL.
+
+## 1u. FIX #30 — durable FRONTEND gates (missing npm dep + CSS-in-TSX) (DONE + tested 2026-08-20)
+The two run-1614 frontend `next build` failures, now caught deterministically in Python (no Node). Committed
+`c08bee5`.
+- **(1) NPM dependency completeness:** `agents.frontend_missing_deps(files)` — every BARE frontend import must
+  be a declared package.json dep (relative/`@/`-alias skipped; `lodash/debounce`→lodash; `@scope/pkg/sub`→
+  @scope/pkg; `lodash.debounce` is its own package). **Deterministic GUARANTEED fix:** `manifest._add_npm_deps`
+  adds any missing package to package.json `dependencies` at "latest" before the frontend build — the frontend
+  analogue of the backend venv's dependency install. (Run 1614: `lodash.debounce`.)
+- **(2) CSS-in-TSX:** `agents.frontend_css_leak(rel, content)` — flags a `.`/`#` CSS selector immediately
+  followed by `{` at brace-depth 0 (after `_strip_code` removes strings/comments, so styled-component template
+  literals are safe; a JS method chain never has `{` after `.foo`, so no FP). Wired into the build gate
+  `_collect_stubs` alongside Fix #15. (Run 1614: `app/page.tsx` appended `.container { … }` after the component.)
+- Zero-FP verified on the platform's own frontend (4 files). Tests:
+  `test_developers_offline.test_frontend_deps_and_css_gate` (both detectors + manifest auto-add + build-gate
+  wiring + negatives: declared/relative/subpath/scoped imports, method chains, styled templates, top-level JS
+  objects). All 15 offline suites pass. Fixture `css_in_page_tsx_1614.tsx`.
+- **NOTE:** the missing-dep class is now auto-fixed at DEPLOY (manifest); the CSS-in-TSX class is caught at the
+  BUILD gate → regenerated. 1614's stored page.tsx still has the CSS (its build predates the gate) — a redeploy
+  of 1614 auto-fixes lodash.debounce but page.tsx would need a regen. NEXT options: regen 1614's page.tsx +
+  redeploy for a live URL, OR a fresh run with ALL gates (backend + frontend) live. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
   human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
   (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
   those, a fresh full-scope run → QA → deploy should BOOT fully (Stripe test connect + Auth0 provisioned +
