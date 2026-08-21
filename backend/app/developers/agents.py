@@ -103,6 +103,16 @@ def _system(agent_type: str) -> str:
         "`Stripe-Account: <id>` header or the `stripe_account=<id>` parameter — so charges "
         "and payouts go to the OWNER's account. Fall back to any stored/OAuth-obtained "
         "account only when STRIPE_CONNECTED_ACCOUNT_ID is absent."
+        # Provider config env-var NAMES must match what the platform injects
+        # (run 1614 fail-fasted on AUTH0_AUDIENCE / STRIPE_CLIENT_SECRET mismatches).
+        " CRITICAL provider-config naming rule: read provider configuration from "
+        "these EXACT environment variable names (the platform injects these): Auth0 "
+        "-> `AUTH0_DOMAIN`, `AUTH0_AUDIENCE` (the API audience), `AUTH0_CLIENT_ID`, "
+        "`AUTH0_CLIENT_SECRET`; Stripe -> `STRIPE_CLIENT_ID`, `STRIPE_CLIENT_SECRET` "
+        "(the secret key), `STRIPE_REDIRECT_URI`, `STRIPE_TOKEN_ENC_KEY`, and "
+        "`STRIPE_STATE_SECRET` if you sign OAuth state. Do NOT invent other spellings "
+        "(not API_AUDIENCE, not STRIPE_SECRET_KEY) - a mismatch makes the app "
+        "fail-fast at startup because the value is not present under the name you read."
         " CRITICAL error-propagation rule: a database-session dependency generator "
         "(`get_db` and any `Depends`-ed generator that `yield`s) MUST let framework "
         "`HTTPException`s (401/404/422/400) propagate UNCHANGED. Do NOT wrap the `yield` "
@@ -814,6 +824,33 @@ def build_symbol_index(project_files: list[dict]) -> dict:
             "classes": classes, "class_imports": class_imports}
 
 
+def _in_project_two_seg_prefixes(modules) -> set:
+    out = set()
+    for m in modules:
+        parts = m.split(".")
+        if len(parts) >= 2:
+            out.add(".".join(parts[:2]))
+    return out
+
+
+def _missing_in_project_module(mod: str, modules: dict, all_paths: set) -> bool:
+    """True if `mod` LOOKS in-project (shares a generated module's 2-segment package
+    prefix, e.g. `backend.app`) but was NEVER generated (run 1614: `backend.app.catalog`
+    imported by order.py). A third-party / genuinely external module has no in-project
+    prefix -> False (skipped, zero false positive). A package dir that CONTAINS generated
+    modules is not 'missing'."""
+    if not mod or mod in modules:
+        return False
+    parts = mod.split(".")
+    if len(parts) < 2 or ".".join(parts[:2]) not in _in_project_two_seg_prefixes(modules):
+        return False
+    if any(gm == mod or gm.startswith(mod + ".") for gm in modules):
+        return False
+    if mod in all_paths:
+        return False
+    return True
+
+
 def import_symbol_mismatches(content: str, filepath: str, index: dict) -> list[dict]:
     """Structured findings for every `from <in-project module> import <symbol>` in a
     generated backend `.py` whose symbol does NOT resolve to a real export of that
@@ -849,6 +886,16 @@ def import_symbol_mismatches(content: str, filepath: str, index: dict) -> list[d
                                  "symbol": y, "available": list(_AUTH_EXPORTS)})
             continue
         if mod not in modules or mod in self_aliases:
+            # Fix B (run 1614): a `from backend.app.<X> import ...` where <X> was never
+            # generated is a MISSING in-project module, not a third-party import. Flag it.
+            if (mod not in self_aliases and mod not in _AUTH_ALIASES
+                    and _missing_in_project_module(mod, modules, all_paths)):
+                for a in node.names:
+                    if a.name == "*" or a.name.startswith("__"):
+                        continue
+                    findings.append({"file": filepath, "line": node.lineno,
+                                     "module": mod, "symbol": a.name,
+                                     "available": [], "missing_module": True})
             continue                                      # out-of-project / self -> skip
         exports = _module_exports(modules[mod])
         if exports is None:
@@ -1077,6 +1124,15 @@ def repair_instructions(result: dict) -> str:
         parts.append("\n=== IMPORT_RESOLUTION_FAILURE — repair ONLY this file, do not "
                      "touch any other file ===")
         for r in repairs:
+            if r.get("missing_module"):
+                parts.append(
+                    f"\nModule: {r['module']} — this in-project module DOES NOT EXIST "
+                    f"(no such file was generated).\n"
+                    f"Requested: {r['symbol']}  (line {r.get('line')})\n"
+                    f"Repair: implement `{r['symbol']}` INLINE in this file, or import it "
+                    f"from a module that actually exists. Do NOT import from "
+                    f"`{r['module']}` — it was never created.")
+                continue
             avail = ", ".join(r.get("available") or []) or "(none — the module exports nothing)"
             parts.append(
                 f"\nModule: {r['module']}\n"

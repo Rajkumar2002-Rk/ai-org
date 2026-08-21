@@ -402,6 +402,32 @@ def test_missing_endpoint_attribution():
     check("an unrelated route file is not a candidate (score 0)", scored["menu.py"] == 0)
 
 
+def test_missing_in_project_module_gate():
+    """Run 1614: order.py did `from backend.app.catalog import get_catalog_prices`, but
+    catalog.py was NEVER generated -> ModuleNotFoundError at boot. Fix #16 used to skip a
+    module not in the set (treated as third-party); now an in-project-SHAPED module that
+    was never generated is flagged. A genuinely third-party module is still skipped."""
+    files = [
+        {"filepath": "backend/app/models.py", "content": "class Order:\n    pass\n"},
+        {"filepath": "backend/app/routes/order.py",
+         "content": "from backend.app.catalog import get_catalog_prices\n"
+                    "from backend.app.models import Order\n"
+                    "from fastapi import APIRouter\nimport sqlalchemy\n"},
+    ]
+    idx = agents.build_symbol_index(files)
+    f = agents.import_symbol_mismatches(files[1]["content"], "backend/app/routes/order.py", idx)
+    missing = [(x["module"], x["symbol"]) for x in f if x.get("missing_module")]
+    check("a missing in-project module (backend.app.catalog) is flagged",
+          ("backend.app.catalog", "get_catalog_prices") in missing, str(f))
+    check("a real in-project import (backend.app.models.Order) is NOT flagged",
+          all(x["module"] != "backend.app.models" for x in f), str(f))
+    check("third-party modules (fastapi, sqlalchemy) are NOT flagged",
+          all(x["module"] not in ("fastapi", "sqlalchemy") for x in f), str(f))
+    rt = agents.repair_instructions({"symbol_repairs": [x for x in f if x.get("missing_module")]})
+    check("repair says the module does not exist",
+          "DOES NOT EXIST" in rt and "backend.app.catalog" in rt, rt)
+
+
 def test_frontend_deps_and_css_gate():
     """Run 1614's TWO frontend `next build` bugs, now gated deterministically (no Node):
     (1) `import from 'lodash.debounce'` not in package.json -> Module not found;
@@ -809,7 +835,8 @@ def test_attribute_resolution_gate():
 
     # Gate integration: _collect_stubs rejects a file with a bad attribute access.
     from app.developers import orchestrator as orch
-    built = [{**_ATTR_MODELS, "ticket_id": "FND-1", "status": "generated"},
+    built = [{**_ATTR_DB, "ticket_id": "FND-2", "status": "generated"},
+             {**_ATTR_MODELS, "ticket_id": "FND-1", "status": "generated"},
              {"ticket_id": "BE-1", "filepath": "backend/app/routes/x.py", "status": "generated",
               "content": "from backend.app.models import Order\ndef a():\n    return Order.total_amonut\n"}]
     stubbed = orch._collect_stubs(built, {}, 1)
@@ -819,7 +846,8 @@ def test_attribute_resolution_gate():
     check("the rejected ticket carries structured attribute_repairs",
           be1.get("attribute_repairs") and be1["attribute_repairs"][0]["attribute"] == "total_amonut",
           str(be1.get("attribute_repairs")))
-    check("the model ticket is left untouched", built[0]["status"] == "generated")
+    check("the model ticket is left untouched",
+          next(b for b in built if b["ticket_id"] == "FND-1")["status"] == "generated")
     rt = agents.repair_instructions(be1)
     check("repair text is an ATTRIBUTE_RESOLUTION_FAILURE naming the class + attribute",
           "ATTRIBUTE_RESOLUTION_FAILURE" in rt and "Order" in rt and "total_amonut" in rt, rt)
@@ -1101,6 +1129,7 @@ async def main():
         test_http_exception_swallow_gate()
         test_missing_endpoint_attribution()
         test_frontend_deps_and_css_gate()
+        test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

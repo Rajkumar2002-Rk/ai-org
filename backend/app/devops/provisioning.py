@@ -71,6 +71,9 @@ _CRYPTO_KEYS: dict[str, callable] = {
     "TOKEN_ENCRYPTION_KEY": _fernet_key,
     "STRIPE_TOKEN_ENC_KEY": _fernet_key,
     "SESSION_SECRET_KEY": _random_secret,
+    # A per-app signing secret some generated stripe.py needs (run 1614) — a random
+    # value the platform can mint, not an owner secret.
+    "STRIPE_STATE_SECRET": _random_secret,
 }
 
 
@@ -140,6 +143,8 @@ _PLATFORM_HELD: dict[str, tuple[str, bool]] = {
     # env var name           (settings attr,          is_secret)
     "STRIPE_CLIENT_ID":      ("stripe_client_id",     False),
     "STRIPE_SECRET_KEY":     ("stripe_secret_key",    True),
+    # Generated code varies: some read STRIPE_CLIENT_SECRET for the same secret key.
+    "STRIPE_CLIENT_SECRET":  ("stripe_secret_key",    True),
     "STRIPE_REDIRECT_URI":   ("stripe_redirect_uri",  False),
     "SMTP_HOST":             ("smtp_host",            False),
     "SMTP_PORT":             ("smtp_port",            False),

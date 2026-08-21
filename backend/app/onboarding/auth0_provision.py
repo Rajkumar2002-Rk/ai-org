@@ -34,10 +34,14 @@ DOMAIN_KEY = "AUTH0_DOMAIN"
 AUDIENCE_KEY = "API_AUDIENCE"
 CLIENT_ID_KEY = "AUTH0_CLIENT_ID"
 CLIENT_SECRET_KEY = "AUTH0_CLIENT_SECRET"
+# The generated backend is inconsistent about the audience var NAME across runs:
+# some read `API_AUDIENCE` (run 1289), some `AUTH0_AUDIENCE` (run 1614). Inject the
+# SAME value under BOTH so whichever spelling the generation used resolves.
+AUDIENCE_ALIASES = ("API_AUDIENCE", "AUTH0_AUDIENCE")
 # Which of the above are secret (guarded/redacted) vs plain identifiers.
 _SECRET_KEYS = {CLIENT_SECRET_KEY}
 # The gate: provision only when the app reads Auth0 config.
-TRIGGER_KEYS = {DOMAIN_KEY, AUDIENCE_KEY, CLIENT_ID_KEY, CLIENT_SECRET_KEY}
+TRIGGER_KEYS = {DOMAIN_KEY, *AUDIENCE_ALIASES, CLIENT_ID_KEY, CLIENT_SECRET_KEY}
 
 
 class ProvisionError(RuntimeError):
@@ -133,7 +137,7 @@ async def ensure_provisioned(project_id: int, subdomain: str, needed: set[str]
         stored = await secrets_store.get_secrets(project_id)
     except Exception:
         stored = {}
-    if DOMAIN_KEY in stored and AUDIENCE_KEY in stored:
+    if DOMAIN_KEY in stored and any(a in stored for a in AUDIENCE_ALIASES):
         vals = {k: stored[k] for k in TRIGGER_KEYS if k in stored}
         logger.info("Reusing existing Auth0 provisioning for project %s.", project_id)
         return _split(vals)
@@ -149,7 +153,8 @@ async def ensure_provisioned(project_id: int, subdomain: str, needed: set[str]
         logger.error("Auth0 provisioning failed for project %s: %s", project_id, exc)
         return {}, {}
 
-    vals = {DOMAIN_KEY: settings.auth0_tenant_domain, AUDIENCE_KEY: audience,
+    vals = {DOMAIN_KEY: settings.auth0_tenant_domain,
+            "API_AUDIENCE": audience, "AUTH0_AUDIENCE": audience,
             CLIENT_ID_KEY: client_id, CLIENT_SECRET_KEY: client_secret}
     # Persist so a redeploy reuses (idempotency) — store only what the app needs.
     for k, v in vals.items():
