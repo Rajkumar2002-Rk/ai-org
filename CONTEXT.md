@@ -4335,3 +4335,29 @@ File access restored → pushed Fix #31 (`a717139`) + rebuilt backend (Fix #31 l
   (b) the Caddy edge probe from a sibling container returns 000 (internal SNI/cert for the container name) —
   the platform's own health gate + host-port URL work, so cosmetic; (c) the provider-name variance is now
   absorbed by aliases, but pinning ONE canonical name in codegen would be cleaner long-term.
+
+## 1x. FIX #32 — frontend LOGIN completeness (the run-1614 "live but unusable" gap) (DONE 2026-08-20)
+User opened 1614's live app and hit "Not authenticated" 401 on every gated action. HONEST diagnosis: the
+app IS live + serving (public `/menu`→200, homepage + pages render, auth gate returns proper 401s — Fix #24
+holds), the onboarding wiring reached the frontend (`NEXT_PUBLIC_AUTH0_*` injected), BUT the **generated
+frontend implemented NO login flow** — no Auth0 sign-in, no `/callback`, no token attached — so a user can
+never authenticate and every protected feature is a dead 401. AUTH-1 only wires the BACKEND to VALIDATE
+tokens; nothing made the FRONTEND obtain one. My earlier "🏆 works end-to-end" was right about infra/serving
+and WRONG about usability — I verified 200s + 401s but never that a person can log in. The honest 1105 lesson
+repeating: "tiers respond, but not usable end-to-end." **FIX #32 (`d6d9f68`):**
+- **Architect FND-7 ticket** (`_frontend_auth_ticket`) commissions `frontend/app/providers.tsx` — Auth0Provider
+  from `NEXT_PUBLIC_AUTH0_*`, Login/Logout (`loginWithRedirect`), an `apiFetch` that attaches
+  `Authorization: Bearer`, and the root layout wraps children in it. Commissioned for any web frontend
+  (auth is mandatory every build), like FND-6.
+- **`agents.frontend_missing_login`** — deterministic WHOLE-APP gate: backend gates endpoints
+  (`Depends(get_current_*)`) + a web frontend exists + NO frontend login evidence (Auth0 SDK OR Bearer token;
+  Stripe's `/authorize` deliberately does NOT count) → flag. Wired into `_collect_stubs`, attributed to the
+  FND-7 providers ticket for regen.
+- **Frontend prompt rule:** you MUST implement login (not just read the vars).
+- Tests: `test_developers_offline.test_frontend_missing_login_gate` + `test_architect_offline` asserts FND-7.
+  All 15 offline suites pass. Backend rebuilt.
+- **⚠️ 1614's existing frontend predates Fix #32** — it has no login and won't get one without regen. A FRESH
+  full run now commissions FND-7 + the gate catches a missing login. **Frontend auth quality (does the
+  generated login actually WORK across layout+pages) is still LLM-dependent** — FND-7 + the prompt give the
+  mandate, the gate catches TOTAL absence, but a partially-wired login isn't deterministically verifiable
+  without Node/a browser. That is the honest remaining frontier.
