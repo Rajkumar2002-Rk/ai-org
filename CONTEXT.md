@@ -661,7 +661,22 @@ version-pinning, not regeneration (the self-heal correctly bounded out — the c
 - **✅ 1614 NOW BOOTS CLEAN (first attempt, imports=[], missing=[]), `build:status:1614=done`** — a FRESH
   full-scope generation that assembles + boots with ZERO hand-fixing of code (tail handled by self-heal +
   the pin). Cost so far ~$1.5. NEXT = continue 1614 → secure → QA → deploy (finally exercising onboarding
-  provisioning at deploy). Projects 1496/1557/1614 in the DB. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
+  provisioning at deploy). Projects 1496/1557/1614 in the DB.
+- **🏆 1614 CONTINUED → secure ✅ Opus PASSED → QA ✅ 100/100 passed, 0 failed, still_certified:True →
+  deploy attempted (2026-08-20).** FIRST fresh full-scope run EVER to reach a **fully clean QA** (100/100, no
+  500s — the get_db/#24 + all gates held) after a real Opus PASS. **⭐ ONBOARDING PROVISIONING FIRED LIVE AT
+  DEPLOY:** `secrets_store` for 1614 now holds `AUTH0_DOMAIN/API_AUDIENCE/AUTH0_CLIENT_ID/AUTH0_CLIENT_SECRET`
+  (Auth0 auto-provisioned a real per-project app during deploy STEP 5) + minted crypto keys
+  (`TOKEN_ENCRYPTION_KEY/STRIPE_TOKEN_ENC_KEY`, Fix #26). Total cost $2.99.
+- **Deploy ❌ FAILED at the FRONTEND `next build`** (backend was fine; this is the FRONTEND quality tail):
+  (1) `app/page.tsx` (FND-6 homepage) has raw CSS appended AFTER the component (`// CSS styles ... .container
+  {...}`) → "Expression expected" TSX syntax error — Fix #15's balance check doesn't catch balanced-but-
+  invalid TSX; only `next build` (Node) does; (2) `frontend/app/payment/page.tsx` imports `lodash.debounce`,
+  not in package.json → "Module not found". Both are FRONTEND codegen bugs with NO current gate (no Node at
+  build time). **NET: backend pipeline + onboarding + deploy-provisioning are PROVEN end-to-end; the last
+  frontier is FRONTEND codegen quality (invalid TSX + missing npm deps).** Deploy stack torn down; no live URL.
+  Candidate next fixes: a real TSX parse (needs Node, or a smarter Python check) + a frontend npm-dep gate
+  (import → package.json). Or hand-fix 1614's 2 frontend files + redeploy for a live URL. **Only remaining for a REAL end-to-end deploy of an auth+payments app:** (1) the remaining §7
   human creds — Auth0 **test tenant + Management app** (free, like Stripe test mode) and an **email sender**;
   (2) a **FRESH generation** (the codegen contracts only affect new gens; 1289's files predate them). With
   those, a fresh full-scope run → QA → deploy should BOOT fully (Stripe test connect + Auth0 provisioned +
