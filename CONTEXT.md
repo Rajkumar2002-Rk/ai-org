@@ -4289,3 +4289,25 @@ Redis keys: `ba:state:{id}`, `ba:ci:{id}`, `pipeline:status:{id}`,
 - **Push cadence:** commit + push at the end of each week (and whenever the user
   asks), so nothing is lost.
 - Normal flow: `git add -A && git commit -m "…" && git push`.
+
+
+## 1v. RUN 1614 DEPLOY CASCADE + FIX #31 (provider env-var contracts + missing-module gate) (2026-08-20)
+Pushing 1614 to a live URL: frontend BUILT (Fix #30 held - lodash.debounce auto-added; page.tsx regenerated
+clean after a first over-correction that imported a non-existent .module.css). Backend then fail-fasted in the
+DEPLOYED stack (QA's throwaway _TEST_ENV had masked it) on PROVIDER ENV-VAR NAME mismatches + a missing module:
+- AUTH0_AUDIENCE (code) vs API_AUDIENCE (provisioner); STRIPE_CLIENT_SECRET vs STRIPE_SECRET_KEY;
+  STRIPE_STATE_SECRET not generated. FIX A: auth0_provision injects the audience under BOTH names
+  (AUDIENCE_ALIASES); provisioning.platform_provided also injects the Stripe secret as STRIPE_CLIENT_SECRET;
+  ensure_crypto_keys mints STRIPE_STATE_SECRET; backend prompt rule pins the exact provider var names.
+- order.py `from backend.app.catalog import ...` but catalog.py NEVER generated -> boot fail (#16 gap: it
+  skipped modules-not-in-set as third-party). FIX B: import_symbol_mismatches now flags an in-project-SHAPED
+  module (shares a generated module's 2-seg prefix) that was never generated; third-party still skipped
+  (zero-FP); repair says the module doesn't exist. Verified live on 1614's catalog import.
+- All 15 offline suites pass. Committed a830c94 LOCALLY.
+- BLOCKER (environment, not code): mid-session macOS revoked this shell's access to `~/Documents/Portfolio
+  Projects` ('Operation not permitted'). Fix #31 was applied+tested+committed via the Docker daemon (which kept
+  access), but the commit is NOT PUSHED (GitHub creds in macOS Keychain, unreachable from a container) and the
+  backend image is NOT REBUILT. TO FINISH: grant the terminal/Claude app Full Disk Access (System Settings ->
+  Privacy & Security), RESTART it, then `git push origin master` + `docker compose build backend && docker
+  compose up -d backend`. 1614 is NOT live: after rebuild, redeploy it (its per-project secret patches
+  AUTH0_AUDIENCE/STRIPE_CLIENT_SECRET/STRIPE_STATE_SECRET are already in its store) + it still needs a catalog.py.
