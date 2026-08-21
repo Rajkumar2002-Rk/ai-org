@@ -181,6 +181,9 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
         fe = agents.frontend_incomplete(rel, content)
         if fe:
             problems.append(f"frontend file {fe}")
+        css = agents.frontend_css_leak(rel, content)
+        if css:
+            problems.append(f"frontend file {css}")
         sym = agents.import_symbol_mismatches(content, rel, sym_index)
         if sym:
             r["symbol_repairs"] = sym

@@ -63,6 +63,25 @@ FRONTEND_AUTH0_FROM_BACKEND = {
 }
 
 
+def _add_npm_deps(package_json: str, missing: list[str]) -> str:
+    """Add each missing package to package.json `dependencies` at "latest" (guaranteed
+    present for `next build`), preserving the rest. Returns the original text unchanged
+    on a parse failure (a malformed package.json is a different, caught problem)."""
+    if not missing:
+        return package_json
+    import json as _json
+    try:
+        pj = _json.loads(package_json or "{}")
+    except (ValueError, TypeError):
+        return package_json
+    deps = pj.setdefault("dependencies", {})
+    if not isinstance(deps, dict):
+        return package_json
+    for pkg in missing:
+        deps.setdefault(pkg, "latest")
+    return _json.dumps(pj, indent=2) + "\n"
+
+
 def frontend_public_env(backend_env: dict) -> dict:
     """Map the provisioned backend Auth0 values to the frontend NEXT_PUBLIC_* build
     args. Only includes a var when its backend source is present, so an app without
@@ -502,6 +521,12 @@ def build(files: list[dict], root: str, names: dict, *, subdomain: str,
         frontend_ctx = os.path.join(root, "frontend")
         os.makedirs(frontend_ctx, exist_ok=True)
         saw_pkg = False
+        # NPM dependency completeness (run 1614): every BARE import the frontend makes
+        # must be a declared dependency, or `next build` dies "Module not found"
+        # (lodash.debounce). Add any that the generated package.json omitted — the
+        # deterministic frontend analogue of the backend venv's dependency install.
+        from app.developers import agents as _dev_agents
+        missing_deps = _dev_agents.frontend_missing_deps(frontend_files)
         for f in frontend_files:
             rel = _rel_for_frontend(f)
             if rel is None:
@@ -509,6 +534,7 @@ def build(files: list[dict], root: str, names: dict, *, subdomain: str,
                 continue
             if rel == "package.json":
                 saw_pkg = True
+                f = {**f, "content": _add_npm_deps(f.get("content") or "", missing_deps)}
             dest = os.path.join(frontend_ctx, rel)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             # D4 (project 860): force the app dynamic via the root server layout so

@@ -402,6 +402,70 @@ def test_missing_endpoint_attribution():
     check("an unrelated route file is not a candidate (score 0)", scored["menu.py"] == 0)
 
 
+def test_frontend_deps_and_css_gate():
+    """Run 1614's TWO frontend `next build` bugs, now gated deterministically (no Node):
+    (1) `import from 'lodash.debounce'` not in package.json -> Module not found;
+    (2) raw CSS appended after the component (`.container { … }`) -> invalid TSX."""
+    import os
+    from app.developers import orchestrator as orch
+    from app.devops import manifest
+
+    # --- npm dependency completeness ---
+    pkg = '{"dependencies":{"next":"14","react":"18"}}'
+    files = [
+        {"filepath": "frontend/package.json", "content": pkg},
+        {"filepath": "frontend/app/payment/page.tsx",
+         "content": "import debounce from 'lodash.debounce'\n"
+                    "import Link from 'next/link'\nimport {useState} from 'react'\n"
+                    "import {api} from '../lib/api'\n"},  # relative -> not a dep
+    ]
+    miss = agents.frontend_missing_deps(files)
+    check("a bare import missing from package.json is flagged (lodash.debounce)",
+          miss == ["lodash.debounce"], str(miss))
+    check("declared deps (next/react) and relative imports are NOT flagged",
+          "next" not in miss and "react" not in miss and not any("/" in m and m.startswith(".") for m in miss))
+    # subpath + scoped resolution
+    check("a subpath import resolves to its package (lodash/debounce -> lodash)",
+          agents._pkg_of_specifier("lodash/debounce") == "lodash"
+          and agents._pkg_of_specifier("@scope/pkg/sub") == "@scope/pkg"
+          and agents._pkg_of_specifier("@/lib/x") is None
+          and agents._pkg_of_specifier("./x") is None)
+    # deterministic manifest fix adds the missing dep at "latest"
+    fixed = manifest._add_npm_deps(pkg, miss)
+    check("the manifest adds the missing dep to package.json (deterministic fix)",
+          json.loads(fixed).get("dependencies", {}).get("lodash.debounce") == "latest")
+    check("nothing missing -> package.json unchanged",
+          manifest._add_npm_deps(pkg, []) == pkg)
+
+    # --- CSS-in-TSX ---
+    fx = os.path.join(os.path.dirname(__file__), "fixtures", "css_in_page_tsx_1614.tsx")
+    if os.path.isfile(fx):
+        check("run 1614's page.tsx (CSS appended after the component) is flagged",
+              agents.frontend_css_leak("frontend/app/page.tsx", open(fx, encoding="utf-8").read())
+              is not None)
+    check("a normal component + method chain is NOT flagged",
+          agents.frontend_css_leak("p.tsx",
+              "export default function P(){return (<div className='c'>x</div>);}\n"
+              "const y = api\n  .get('/x')\n  .then(r=>r);\n") is None)
+    check("CSS inside a styled-component template literal is NOT flagged",
+          agents.frontend_css_leak("s.tsx", "const S = styled.div`\n.inner{color:red;}\n`;\n") is None)
+    check("a top-level JS object/const is NOT flagged",
+          agents.frontend_css_leak("o.tsx", "const styles = { color: 'red' };\nexport default styles;\n") is None)
+    check("a non-JS file is ignored", agents.frontend_css_leak("a.css", ".x{color:red}") is None)
+
+    # --- build gate wiring: a CSS-leak page is rejected ---
+    built = [
+        {"ticket_id": "FE-1", "filepath": "frontend/app/page.tsx",
+         "content": "export default function P(){return <div/>;}\n.container { color: red; }\n",
+         "status": "generated"},
+        {"ticket_id": "FE-2", "filepath": "frontend/app/ok/page.tsx",
+         "content": "export default function P(){return <div/>;}\n", "status": "generated"},
+    ]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("the build gate rejects ONLY the CSS-leak page",
+          [s["ticket_id"] for s in stubbed] == ["FE-1"], str([s["ticket_id"] for s in stubbed]))
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1036,6 +1100,7 @@ async def main():
         test_attribute_zero_false_positives()
         test_http_exception_swallow_gate()
         test_missing_endpoint_attribution()
+        test_frontend_deps_and_css_gate()
         await scenario_all_good()
         await scenario_one_stub()
         await scenario_stub_recovers_on_retry()

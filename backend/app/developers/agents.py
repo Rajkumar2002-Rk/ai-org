@@ -1245,6 +1245,114 @@ def frontend_incomplete(rel: str, content: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- frontend deps + CSS-leak
+# NPM DEPENDENCY COMPLETENESS (run 1614): payment/page.tsx did `import debounce from
+# 'lodash.debounce'`, but lodash.debounce was never added to package.json, so
+# `next build` died with "Module not found". The Python analogue of the assembly's
+# third-party install: every BARE import a frontend file makes must be a declared
+# dependency. Deterministic, no Node needed.
+_IMPORT_FROM_RE = re.compile(r"""import\s+(?:[^'"]+?\s+from\s+)?['"]([^'"]+)['"]""")
+_REQUIRE_RE = re.compile(r"""(?:require|import)\(\s*['"]([^'"]+)['"]\s*\)""")
+
+
+def _pkg_of_specifier(spec: str) -> str | None:
+    """The npm PACKAGE name a bare import specifier resolves to, or None for a local/
+    alias import. `lodash/debounce` -> `lodash`; `lodash.debounce` -> `lodash.debounce`
+    (a distinct package); `@scope/pkg/sub` -> `@scope/pkg`; `./x`, `/x`, `@/x` -> None."""
+    if not spec or spec[0] in "./" or spec.startswith("@/"):
+        return None                      # relative, absolute, or Next '@/' path alias
+    parts = spec.split("/")
+    if spec.startswith("@"):
+        return "/".join(parts[:2]) if len(parts) >= 2 else None
+    return parts[0]
+
+
+def frontend_import_packages(content: str) -> set[str]:
+    """The set of npm PACKAGE names a frontend file imports (bare specifiers only)."""
+    out: set[str] = set()
+    for m in _IMPORT_FROM_RE.finditer(content or ""):
+        pkg = _pkg_of_specifier(m.group(1))
+        if pkg:
+            out.add(pkg)
+    for m in _REQUIRE_RE.finditer(content or ""):
+        pkg = _pkg_of_specifier(m.group(1))
+        if pkg:
+            out.add(pkg)
+    return out
+
+
+def _declared_dependencies(package_json: str) -> set[str]:
+    try:
+        pj = json.loads(package_json or "{}")
+    except (ValueError, TypeError):
+        return set()
+    deps: set[str] = set()
+    for k in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+        v = pj.get(k)
+        if isinstance(v, dict):
+            deps |= set(v.keys())
+    return deps
+
+
+def frontend_missing_deps(files: list[dict]) -> list[str]:
+    """Bare npm packages imported by the frontend but NOT declared in package.json
+    (run 1614: `lodash.debounce`). Sorted, deduped. Empty if there is no package.json
+    (a different, missing-file problem) or nothing is missing. Node built-ins are not
+    importable in a browser bundle, so they are treated as real missing deps too."""
+    pkg_json = None
+    imported: set[str] = set()
+    for f in files:
+        rel = f.get("filepath") or f.get("filename") or ""
+        if rel.endswith("package.json"):
+            pkg_json = f.get("content") or ""
+        elif rel.endswith(_FRONTEND_CODE_EXT):
+            imported |= frontend_import_packages(f.get("content") or "")
+    if pkg_json is None:
+        return []
+    declared = _declared_dependencies(pkg_json)
+    return sorted(imported - declared)
+
+
+# CSS-IN-TSX (run 1614): app/page.tsx appended raw CSS after the component —
+# `.container { max-width: 640px; }` at module top level — a JS SyntaxError
+# ("Expression expected") that only `next build` (Node) catches, NOT the balance check
+# above. Signal: at brace-depth 0, a `.class`/`#id` SELECTOR immediately followed by
+# `{`. That is always invalid JS (a statement can't start with `.`), and a JS method
+# chain (`obj\n  .then(...)`) never has `{` right after the selector — so this does not
+# false-positive on fluent chains.
+_CSS_SELECTOR_RE = re.compile(
+    r"[.#][A-Za-z][\w-]*(?:\s*[,>+~]\s*[.#]?[A-Za-z][\w-]*)*\s*$")
+
+
+def frontend_css_leak(rel: str, content: str) -> str | None:
+    """Reason if a JS-family frontend file has raw CSS at the TOP LEVEL (run 1614's
+    page.tsx). Strips strings/comments first (so CSS inside a template literal / a
+    styled-component is NOT flagged), then flags a `.`/`#` CSS selector followed by `{`
+    at brace-depth 0 — invalid JS that only `next build` would otherwise catch."""
+    if not rel.endswith(_FRONTEND_CODE_EXT):
+        return None
+    code, _ok = _strip_code(content or "")
+    depth = 0
+    seg_start = 0
+    for i, ch in enumerate(code):
+        if ch == "{":
+            if depth == 0:
+                # The would-be "selector" is the text since the last statement boundary.
+                seg = re.split(r"[;{}]", code[seg_start:i])[-1]
+                seg = seg.strip().splitlines()[-1].strip() if seg.strip() else ""
+                if _CSS_SELECTOR_RE.fullmatch(seg):
+                    return (f"raw CSS at top level — `{seg} {{ … }}` is not valid "
+                            f"JS/TSX (put styles in a .css/.module.css file or a style "
+                            f"object). `next build` fails with 'Expression expected'.")
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+            seg_start = i + 1
+        elif ch == ";" and depth == 0:
+            seg_start = i + 1
+    return None
+
+
 def _stub(agent_type: str, ticket: dict) -> dict:
     """Placeholder when generation produced NOTHING usable — the LLM was
     unavailable (e.g. a provider quota outage) or returned nothing on every
