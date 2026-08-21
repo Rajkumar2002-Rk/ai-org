@@ -57,6 +57,7 @@ ANSWERS = {
     "ask_design_vibe": "Warm friendly",
     "ask_design_refs": "skip",
     "ask_design_color": "warm brown",
+    "connect_accounts": "skip",  # owner-onboarding stage; browser OAuth can't be scripted
     "confirm": "Yes, this is right",
     "mobile_choice": "just a website",
 }
@@ -181,7 +182,8 @@ async def main():
 
         log("\n-- Developers --")
         await client.post(f"{API}/pipeline/build", json={"project_id": pid})
-        b = await poll(client, f"{API}/pipeline/{pid}/build-status", label="build", limit=1200)
+        b = await poll(client, f"{API}/pipeline/{pid}/build-status", label="build",
+                       bad=("error", "boot_failed"), limit=1200)
         log(f"  files built: {b.get('complete')}/{b.get('total')}")
         if not require_done(b, "build", pid):
             log(f"   (only {b.get('complete')} of {b.get('total')} files were "
@@ -211,6 +213,12 @@ async def main():
         qa = await poll(client, f"{API}/pipeline/{pid}/qa-status", label="qa", limit=2400)
         log(f"  QA wall-clock: {time.time() - t0:.1f}s")
         log(f"  QA result: {json.dumps(qa)}")
+
+        log("\n-- DEPLOY (exercises owner-onboarding provisioning: Auth0/Stripe/SMTP/crypto/Redis) --")
+        await client.post(f"{API}/pipeline/deploy", json={"project_id": pid})
+        dep = await poll(client, f"{API}/pipeline/{pid}/deploy-status", key="status",
+                         done=("live",), bad=("failed", "blocked"), label="deploy", limit=1800)
+        log(f"  DEPLOY result: {json.dumps(dep)}")
         log(f"\nPROJECT_ID={pid}")
 
 

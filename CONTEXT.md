@@ -4311,3 +4311,27 @@ DEPLOYED stack (QA's throwaway _TEST_ENV had masked it) on PROVIDER ENV-VAR NAME
   Privacy & Security), RESTART it, then `git push origin master` + `docker compose build backend && docker
   compose up -d backend`. 1614 is NOT live: after rebuild, redeploy it (its per-project secret patches
   AUTH0_AUDIENCE/STRIPE_CLIENT_SECRET/STRIPE_STATE_SECRET are already in its store) + it still needs a catalog.py.
+
+## 1w. 🏆🏆 RUN 1614 IS LIVE — first fresh full-scope gen to a genuinely working deployed app (2026-08-20)
+File access restored → pushed Fix #31 (`a717139`) + rebuilt backend (Fix #31 live). Then finished 1614:
+- **Fixed the missing module:** regenerated `order.py` via the developer agent with Fix #31's missing-module
+  repair → no more `backend.app.catalog` import, endpoints intact. Re-`_recertify`'d the drift (passed).
+- **Cleared the remaining provider-name fail-fasts** (scanned ALL of 1614's fail-fast env vars at once):
+  `STRIPE_API_KEY` (a THIRD Stripe-secret spelling, order_be_3.py) + `STRIPE_CONNECTED_ACCOUNT_ID` (the BA
+  connect was scripted-skipped) → added to 1614's secrets_store (placeholder acct id; validated at request
+  time, not boot). ALLOWED_ORIGINS is driver-set (not a gap).
+- **Redeploy → `status: live`, `https://localhost:54473`, health_attempts:2.** Verified serving:
+  backend `:8000/openapi.json`→200, frontend `:3000/`→200, and `GET /admin/stripe/connect`→**401** (auth gate
+  returns a proper 401, NOT a 500 — Fix #24 holding LIVE). Full stack up: caddy+frontend+backend+db+redis.
+  Onboarding provisioning all fired at deploy: Auth0 auto-provisioned, crypto minted, Stripe/SMTP injected.
+- **DURABLE amendment (part of Fix #31):** `provisioning._PLATFORM_HELD` now injects the Stripe secret under
+  ALL spellings STRIPE_SECRET_KEY/STRIPE_CLIENT_SECRET/**STRIPE_API_KEY** so future runs don't hit this
+  whack-a-mole. Devops + onboarding suites pass.
+- **⭐ THE MILESTONE:** first fresh full-scope generation (BA→Architect→Build→smoke_boot→**real Opus PASS**→
+  **QA 100/100 clean**→**deploy LIVE**) to produce a real, security-certified, serving app — with the entire
+  owner-onboarding stack (Stripe connect flow, Auth0 auto-provision, email) provisioned live at deploy.
+- **⚠️ Remaining honest edges (not blockers to the live app):** (a) `STRIPE_CONNECTED_ACCOUNT_ID` fail-fast when
+  the owner skips the BA Stripe connect — a codegen contract should make it OPTIONAL (degrade, don't crash);
+  (b) the Caddy edge probe from a sibling container returns 000 (internal SNI/cert for the container name) —
+  the platform's own health gate + host-port URL work, so cosmetic; (c) the provider-name variance is now
+  absorbed by aliases, but pinning ONE canonical name in codegen would be cleaner long-term.

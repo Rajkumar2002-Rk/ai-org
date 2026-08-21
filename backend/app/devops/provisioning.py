@@ -143,8 +143,11 @@ _PLATFORM_HELD: dict[str, tuple[str, bool]] = {
     # env var name           (settings attr,          is_secret)
     "STRIPE_CLIENT_ID":      ("stripe_client_id",     False),
     "STRIPE_SECRET_KEY":     ("stripe_secret_key",    True),
-    # Generated code varies: some read STRIPE_CLIENT_SECRET for the same secret key.
+    # Generated code varies: the SAME Stripe secret key is read under several names
+    # across runs (STRIPE_CLIENT_SECRET run 1614/stripe.py; STRIPE_API_KEY run 1614/
+    # order_be_3.py). Inject it under every spelling so whichever the app reads resolves.
     "STRIPE_CLIENT_SECRET":  ("stripe_secret_key",    True),
+    "STRIPE_API_KEY":        ("stripe_secret_key",    True),
     "STRIPE_REDIRECT_URI":   ("stripe_redirect_uri",  False),
     "SMTP_HOST":             ("smtp_host",            False),
     "SMTP_PORT":             ("smtp_port",            False),
