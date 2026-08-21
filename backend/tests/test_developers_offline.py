@@ -492,6 +492,52 @@ def test_frontend_deps_and_css_gate():
           [s["ticket_id"] for s in stubbed] == ["FE-1"], str([s["ticket_id"] for s in stubbed]))
 
 
+def test_frontend_missing_login_gate():
+    """Run 1614: the app deployed live, the backend correctly 401'd every protected
+    endpoint, but the generated frontend implemented NO login flow, so every gated
+    feature was an unreachable 401. The whole-app gate flags a gated backend whose
+    frontend has no login evidence; a frontend with a real Auth0 flow is NOT flagged,
+    and Stripe's OAuth `/authorize` does not count as login."""
+    from app.developers import orchestrator as orch
+    gated = {"filepath": "backend/app/routes/menu.py",
+             "content": "from backend.app.auth import get_current_admin_user\n"
+                        "@router.get('/admin/menu', dependencies=[Depends(get_current_admin_user)])\n"
+                        "async def x():\n    return []\n"}
+    fe_nologin = {"filepath": "frontend/app/admin/menu/page.tsx",
+                  "content": "export default function P(){ return <div>manage</div>; }\n"}
+    fe_stripe = {"filepath": "frontend/app/order/page.tsx",
+                 "content": "const u='https://connect.stripe.com/oauth/authorize';\n"}
+    check("a gated backend + a frontend with NO login flow is flagged",
+          agents.frontend_missing_login([gated, fe_nologin, fe_stripe]) is not None)
+    check("Stripe's /authorize URL does NOT count as a login flow",
+          agents.frontend_missing_login([gated, fe_stripe]) is not None)
+    fe_login = {"filepath": "frontend/app/providers.tsx",
+                "content": "import { Auth0Provider, useAuth0 } from '@auth0/auth0-react';\n"
+                           "export function Providers(){ loginWithRedirect(); }\n"}
+    check("a frontend WITH an Auth0 login flow is NOT flagged",
+          agents.frontend_missing_login([gated, fe_nologin, fe_login]) is None)
+    fe_bearer = {"filepath": "frontend/app/lib/api.ts",
+                 "content": "fetch(u, { headers: { Authorization: `Bearer ${token}` } });\n"}
+    check("attaching a Bearer token counts as login evidence (not flagged)",
+          agents.frontend_missing_login([gated, fe_nologin, fe_bearer]) is None)
+    check("no gated backend -> not applicable (not flagged)",
+          agents.frontend_missing_login([fe_nologin]) is None)
+    check("gated backend but NO web frontend -> not applicable",
+          agents.frontend_missing_login([gated]) is None)
+
+    # Build-gate wiring: the whole-app gap flags the providers.tsx ticket for repair.
+    built = [
+        {**gated, "ticket_id": "MENU-1", "status": "generated"},
+        {"ticket_id": "FND-7", "filepath": "frontend/app/providers.tsx", "status": "generated",
+         "content": "export function Providers(){ return null; }\n"},   # no real login
+        {"ticket_id": "FE-1", "filepath": "frontend/app/admin/menu/page.tsx",
+         "status": "generated", "content": "export default ()=><div/>;\n"},
+    ]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("the login gap is attributed to the providers.tsx (FND-7) ticket",
+          "FND-7" in [s["ticket_id"] for s in stubbed], str([s["ticket_id"] for s in stubbed]))
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1129,6 +1175,7 @@ async def main():
         test_http_exception_swallow_gate()
         test_missing_endpoint_attribution()
         test_frontend_deps_and_css_gate()
+        test_frontend_missing_login_gate()
         test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()

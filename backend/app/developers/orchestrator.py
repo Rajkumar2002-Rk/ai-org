@@ -204,6 +204,21 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
             r["gate_problems"] = problems
             logger.warning("Build %s: ticket %s rejected by the build gate: %s",
                            project_id, r.get("ticket_id"), "; ".join(problems))
+
+    # WHOLE-APP check (run 1614): the backend gates endpoints but the frontend has no
+    # login flow -> unusable app. Attribute it to the frontend auth ticket
+    # (providers.tsx) so the retry regenerates that, else the first frontend ticket.
+    login_gap = agents.frontend_missing_login(built)
+    if login_gap:
+        owner = next((r for r in built if (r.get("filepath") or "").endswith(
+                     "frontend/app/providers.tsx")), None) \
+            or next((r for r in built if (r.get("filepath") or "").startswith("frontend/")
+                     and (r.get("filepath") or "").endswith((".tsx", ".ts", ".jsx", ".js"))), None)
+        if owner is not None and owner.get("status") != agents.STUB_STATUS:
+            owner["status"] = agents.STUB_STATUS
+            owner.setdefault("gate_problems", []).append(f"frontend login flow missing — {login_gap}")
+            logger.warning("Build %s: no frontend login flow — flagging %s",
+                           project_id, owner.get("ticket_id"))
     return [r for r in built if r.get("status") == agents.STUB_STATUS]
 
 

@@ -642,6 +642,16 @@ async def test_generated_homepage():
     dupes = [t for t in tickets if t.get("filepath") == "frontend/app/page.tsx"]
     check("no other ticket collided onto the root page path", len(dupes) == 1)
 
+    # Run 1614: a web app with auth MUST also commission a FRONTEND login flow (AUTH-1
+    # only wires the backend to VALIDATE tokens; without this the frontend never obtains
+    # one and every gated feature is a dead 401).
+    auth_fe = [t for t in tickets if t.get("filepath") == "frontend/app/providers.tsx"]
+    check("exactly one frontend auth ticket (providers.tsx) is commissioned", len(auth_fe) == 1)
+    check("it is FND-7, a frontend ticket, and names Auth0 + the login flow",
+          auth_fe[0]["id"] == "FND-7" and auth_fe[0]["assigned_to"] == "frontend"
+          and "loginWithRedirect" in auth_fe[0]["description"]
+          and "Authorization: Bearer" in auth_fe[0]["description"])
+
 
 async def main():
     await test_payment_domain()

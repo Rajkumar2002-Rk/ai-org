@@ -148,7 +148,14 @@ def _system(agent_type: str) -> str:
         "`process.env.NEXT_PUBLIC_AUTH0_CLIENT_ID`, and "
         "`process.env.NEXT_PUBLIC_AUTH0_AUDIENCE` (the API audience for access tokens). "
         "Do NOT hardcode an Auth0 domain/client id and do NOT invent other env-var names. "
-        "The platform sets these at build time; any other name leaves login unconfigured."
+        "The platform sets these at build time; any other name leaves login unconfigured. "
+        "You MUST actually IMPLEMENT the login flow (not just read the vars): use "
+        "`@auth0/auth0-react` — wrap the app in `<Auth0Provider>` (via the root layout), "
+        "provide a Login/Logout button (`loginWithRedirect()`/`logout()`), and on every "
+        "call to a PROTECTED backend endpoint attach the access token from "
+        "`getAccessTokenSilently()` as an `Authorization: Bearer <token>` header. A backend "
+        "that returns 401 is not a bug — it means the frontend never logged the user in. "
+        "Without a real login flow every gated feature is an unreachable 401."
     ) if agent_type == "frontend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "
@@ -1407,6 +1414,43 @@ def frontend_css_leak(rel: str, content: str) -> str | None:
         elif ch == ";" and depth == 0:
             seg_start = i + 1
     return None
+
+
+# FRONTEND LOGIN MISSING (run 1614): the app deployed live, the backend correctly
+# returned 401 on every protected endpoint, but the generated frontend implemented NO
+# login flow (no Auth0 sign-in, no token) — so every gated feature was a dead 401 and the
+# app was unusable. Deterministic whole-app check: if the BACKEND gates endpoints (a real
+# auth dependency) AND there is a web frontend, the frontend MUST show login evidence.
+_AUTH_DEP_RE = re.compile(r"Depends\(\s*get_current_\w+")
+# Genuine login evidence: Auth0 SDK usage OR attaching a Bearer token to API calls.
+# Deliberately NOT `/authorize` — Stripe Connect uses that URL too (false positive).
+_LOGIN_EVIDENCE_RE = re.compile(
+    r"@auth0/|loginWithRedirect|Auth0Provider|getAccessTokenSilently|useAuth0|"
+    r"Bearer\s|Bearer\$|Authorization[\"'`]?\s*:", re.I)
+
+
+def frontend_missing_login(files: list[dict]) -> str | None:
+    """Reason if the backend gates endpoints (auth required) but NO frontend file
+    implements a login flow (run 1614) — so a user can never authenticate and every
+    protected feature is an unreachable 401. None if there is no gated backend, no web
+    frontend, or the frontend does implement login. Deterministic, no Node needed."""
+    backend_gated = any(
+        (f.get("filepath") or f.get("filename") or "").endswith(".py")
+        and _AUTH_DEP_RE.search(f.get("content") or "")
+        for f in files)
+    if not backend_gated:
+        return None
+    fe = [f for f in files
+          if (f.get("filepath") or f.get("filename") or "").endswith(_FRONTEND_CODE_EXT)]
+    if not fe:
+        return None                                   # no web frontend -> not applicable
+    if any(_LOGIN_EVIDENCE_RE.search(f.get("content") or "") for f in fe):
+        return None                                   # a login flow is present
+    return ("the backend gates endpoints (auth required) but the frontend implements NO "
+            "login flow — no Auth0 sign-in and no Authorization: Bearer token — so a user "
+            "can never authenticate and every protected feature returns 401. Add a login "
+            "flow (Auth0 via @auth0/auth0-react using NEXT_PUBLIC_AUTH0_*), wrap the app in "
+            "Auth0Provider, and attach the access token to protected API calls.")
 
 
 def _stub(agent_type: str, ticket: dict) -> dict:

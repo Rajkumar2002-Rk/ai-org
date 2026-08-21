@@ -635,6 +635,44 @@ def _frontend_homepage_ticket(routes: list[str], business_name: str | None) -> d
     }
 
 
+def _frontend_auth_ticket() -> dict:
+    """The FRONTEND login flow (run 1614: the app deployed live, the backend correctly
+    returned 401 on every protected endpoint, but the generated frontend NEVER
+    implemented login — no sign-in, no token — so every gated feature was unreachable).
+    AUTH-1 wires the BACKEND to validate provider tokens; this ticket wires the FRONTEND
+    to actually OBTAIN one. Commissioned deterministically whenever there is a web
+    frontend, like the homepage (FND-6)."""
+    return {
+        "id": "FND-7",
+        "title": "Frontend login (Auth0) + authenticated API access",
+        "assigned_to": "frontend",
+        "filepath": "frontend/app/providers.tsx",
+        "is_boilerplate": True,
+        "description": (
+            "Create frontend/app/providers.tsx — the client-side auth setup that lets a "
+            "user actually LOG IN, using Auth0 via `@auth0/auth0-react` (add it to "
+            "package.json). Requirements: "
+            "(1) a `\"use client\"` `Providers` component that wraps its children in "
+            "`<Auth0Provider>` configured from `process.env.NEXT_PUBLIC_AUTH0_DOMAIN`, "
+            "`process.env.NEXT_PUBLIC_AUTH0_CLIENT_ID`, and `authorizationParams={{ "
+            "redirect_uri: <the app origin>, audience: "
+            "process.env.NEXT_PUBLIC_AUTH0_AUDIENCE }}`; "
+            "(2) export a `Login` / `Logout` button component (calls `loginWithRedirect()` "
+            "/ `logout()`) and expose the auth state (`isAuthenticated`, `user`); "
+            "(3) export an `apiFetch(path, options)` helper (or `useApi()` hook) that gets "
+            "the access token via `getAccessTokenSilently()` and sends it as an "
+            "`Authorization: Bearer <token>` header on requests to the backend "
+            "(`${process.env.NEXT_PUBLIC_API_BASE_URL}${path}`). "
+            "CRITICAL cross-file requirements: the ROOT LAYOUT (app/layout.tsx) MUST import "
+            "and wrap its `{children}` in this `<Providers>` component, and every page that "
+            "calls a PROTECTED backend endpoint (admin/manage/settings/pay/order actions) "
+            "MUST use `apiFetch`/`useApi` so the token is attached and show the Login button "
+            "when the user is not authenticated. Do NOT hand-roll tokens; delegate to Auth0."
+        ),
+        "dependencies": [],
+    }
+
+
 def _security_ticket() -> dict:
     return {
         "id": "SEC-1",
@@ -1200,6 +1238,14 @@ async def build_blueprint(summary: dict) -> dict:
     if any(t.get("assigned_to") == "frontend" for t in tickets) \
             and not _has_root_homepage(tickets):
         tickets.append(_frontend_homepage_ticket([], summary.get("business_name")))
+
+    # Frontend LOGIN flow (run 1614): AUTH-1 makes the backend validate provider tokens,
+    # but without this the generated frontend never lets a user obtain one, so every
+    # protected feature is a dead 401. Auth is mandatory on every build, so any web
+    # frontend needs a login flow. Commission it deterministically (idempotent).
+    if any(t.get("assigned_to") == "frontend" for t in tickets) \
+            and not any(t.get("filepath") == "frontend/app/providers.tsx" for t in tickets):
+        tickets.append(_frontend_auth_ticket())
 
     # Entrypoint LAST — it registers the routers every other ticket produced,
     # so it depends on all of them and lands in the final build wave.
