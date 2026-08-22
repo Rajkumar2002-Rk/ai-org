@@ -5,12 +5,56 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-19) — 🏆 MILESTONE: FIRST-EVER full-scope fresh run (1289) to pass BA→Build→smoke_boot→**real Opus security review PASSED**, unaided. FIX #16–#24 all DONE + COMMITTED + PUSHED (HEAD 290ff82). Run 1289's REAL QA 500s (order/notification endpoints) were root-caused to get_db swallowing HTTPException→500 → **FIX #24 = BUILT + tested + live** (AST build-gate detector + QA-regen gate + backend prompt rule; deterministic; §1k). **Validated live: hand-fixed 1289's get_db → QA 103/1 (all 20 500s resolved, §1k). Then re-secured 1289 (real Opus PASS, Fix #23 holds) + deploy → HONESTLY failed at the backend/secrets wall (Fix #20 holds, no false live; §1l).** ⭐ FOUND: the security reviewer's fix loop is UNGATED — it reintroduced the get_db swallow → **candidate FIX #25** (gate `reviewer._fix` with the build detectors, like Fix #18 did for QA; plan-first, NOT built; §1l). **FIX #26 DONE (§1m): platform provisioning — the 3 platform-solvable pieces of deploy gap #1 (mint+persist crypto keys, provision Redis, config defaults). Live + tested + pushed (HEAD e847b40).** NEXT = the OWNER half of gap #1 (`PLAN_owner_onboarding.md`: Stripe click-to-connect in a BA stage + Auth0 auto-provision + platform email) — then 1289 boots fully. Also open: candidate FIX #25. Do NOT auto-seed owner secrets. Deploy gaps #2/#3/#4 CLOSED (#20/#21/#22). Fix #19 slice 2 optional.
+# ⏭️⏭️ RESUME HERE (handoff 2026-08-21, Fri night — user back MONDAY, fresh chat, "read CONTEXT.md")
 
-> This block is the AUTHORITATIVE resume point. Everything below it is supporting
-> detail/history. A fresh session with zero memory of the prior conversation should be
-> able to execute from here. Read this whole block first. **START at §5 — the exact
-> next step (the QA-loop gating fix) is there; §1c has the full run-1105 result.**
+## 🎯 30-SECOND ORIENTATION (read this first)
+**🏆🏆 BIGGEST MILESTONE TO DATE: run 1614 became the FIRST fresh full-scope generation to reach a genuinely
+LIVE deployed app** — BA → Architect → Build → smoke_boot → **real Opus PASS** → **QA 100/100 CLEAN** →
+**deploy LIVE at https://localhost:47899-style URL**, with the ENTIRE owner-onboarding stack (Stripe connect,
+Auth0 auto-provision, email) provisioned live at deploy (§1w). It then honestly exposed the next frontier —
+the generated FRONTEND had no working login → **FIX #32** commissions + gates it (§1x).
+
+**Everything is COMMITTED + PUSHED. `HEAD == origin/master == 9114b0c`, clean tree.** All 15 offline suites
+pass. Platform is TORN DOWN for the weekend (nothing running, $0 spend). Volumes persist (DB/secrets safe).
+To restart Monday: `docker compose up -d`.
+
+## WHAT WAS DONE THIS SESSION (2026-08-19 → 08-21), all committed
+- **FIX #24** get_db swallows HTTPException→500 gate (§1k). Validated live on 1289 QA (103/1, all 500s fixed).
+- **FIX #26** platform provisioning — mint+persist crypto keys, provision Redis, config defaults (§1m).
+- **OWNER-ONBOARDING EPIC (slices 1–4)** — platform-held provider injection; Stripe click-to-connect (new BA
+  `connect_accounts` stage + `/connect/stripe/*` OAuth); Auth0 per-project auto-provision (Mgmt API); codegen
+  consumption contracts (`STRIPE_CONNECTED_ACCOUNT_ID`, `NEXT_PUBLIC_AUTH0_*`). §1n–§1q. **ALL 3 PROVIDERS
+  VERIFIED LIVE** on free/test tiers: Stripe test-mode connect (real `acct_`), Auth0 tenant provision, Mailtrap
+  SMTP send. `PLAN_owner_onboarding.md` = the design doc.
+- **FIX #27** third-party import gate + BUILD SELF-HEAL (run 1496 `stripe.api_resources`); §1r. Later hardened
+  (ground-truth `from X import Y` probe, no hasattr FP) + **FIX #29** pin broken `fastapi-limiter==0.1.6` (§1t).
+- **FIX #28** endpoint-completeness self-heal (run 1557 missing `GET /orders/{order_id}`); §1s.
+- **FIX #30** durable FRONTEND gates — npm-dep completeness (manifest auto-adds missing deps) + CSS-in-TSX (§1u).
+- **FIX #31** provider env-var NAME contracts (Auth0/Stripe aliases: API_AUDIENCE+AUTH0_AUDIENCE,
+  STRIPE_SECRET_KEY+CLIENT_SECRET+API_KEY) + missing in-project MODULE gate (`backend.app.catalog`); §1v/§1w.
+- **FIX #32** frontend LOGIN completeness — Architect FND-7 ticket + `frontend_missing_login` gate + prompt (§1x).
+- **FIX #33** duplicate-endpoint gate (run 1614 `POST /orders` in order.py AND orders.py); §1y.
+- Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE). All left in DB.
+- ⚠️ Mid-session macOS revoked repo file access; some commits were made via the Docker daemon. NOW RESTORED.
+
+## ⏭️ NEXT (Monday) — pick a GROUNDED build (regression-test against a REAL captured bug; NO speculation)
+The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in priority order):
+1. **Frontend-auth QUALITY (the honest #1 frontier):** FIX #32 commissions FND-7 login + a gate for TOTAL
+   absence, but whether a *generated* login actually WORKS end-to-end (layout wraps Auth0Provider, pages
+   attach the token) is LLM-dependent and NOT deterministically verifiable without Node/a browser. Options:
+   (a) a stronger deterministic gate (layout wraps provider AND ≥1 page uses the token helper), (b) a fresh
+   run to MEASURE whether FND-7 now produces a working login (~$3, needs user OK).
+2. **A fresh MEASUREMENT run** to surface the next real bug + verify #32's login live (~$3, ASK first).
+3. Duplicate-endpoint deeper cause = Architect over-splits a resource into 2 route files (order.py+orders.py) —
+   #33 catches it post-hoc; an Architect-level fix (don't create both) would prevent it.
+- Other honest edges (LOW priority): pin ONE canonical provider var name in codegen (aliases already work);
+  the Caddy sibling-container probe 000 is cosmetic (platform health gate + host-port URL work). §1w.
+- ⛔ Deploy gap #1 SECRETS: the OWNER-account onboarding is now BUILT + live-verified (Stripe/Auth0/email).
+  The operator's real creds live in `.env` (STRIPE_* test keys, AUTH0_MGMT_*, Mailtrap SMTP). Do NOT commit `.env`.
+
+> This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
+> A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
+> list. The 16 deterministic fixes + onboarding epic are ALL live in the committed code (HEAD 9114b0c).
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
