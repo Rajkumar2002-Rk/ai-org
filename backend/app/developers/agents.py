@@ -496,6 +496,57 @@ def model_schema_mismatches(models_content: str, database_schema: list) -> list[
     return missing
 
 
+# ------------------------------------------------- duplicate endpoints (FIX #33)
+# DUPLICATE ROUTE (run 1614): the Architect over-split the order feature into `order.py`
+# AND `orders.py`, and BOTH defined `POST /orders`. main.py includes both routers, so
+# FastAPI registers the path twice ("Duplicate Operation ID create_order_orders_post")
+# and one handler silently shadows the other — which implementation actually runs is
+# router-include order, i.e. a coin flip. A whole-app check: the same (METHOD, PATH)
+# must not be defined in two different generated route files.
+_ROUTE_DEF_RE = re.compile(
+    r"@\s*\w+\.(get|post|put|patch|delete)\(\s*['\"]([^'\"]*)['\"]", re.I)
+_APIROUTER_PREFIX_RE = re.compile(
+    r"APIRouter\([^)]*?prefix\s*=\s*['\"]([^'\"]+)['\"]", re.S)
+
+
+def _norm_route(path: str) -> str:
+    """`/orders/{order_id}` and `/orders/{id}` are the same route shape."""
+    return re.sub(r"\{[^}]*\}", "{}", (path or "").rstrip("/")) or "/"
+
+
+def _endpoints_of(content: str) -> set[tuple[str, str]]:
+    """(method, normalised full path) for every route a file defines — decorator path
+    with any `APIRouter(prefix=...)` prepended."""
+    pm = _APIROUTER_PREFIX_RE.search(content or "")
+    prefix = pm.group(1).rstrip("/") if pm else ""
+    return {(m.lower(), _norm_route(prefix + p))
+            for m, p in _ROUTE_DEF_RE.findall(content or "")}
+
+
+def duplicate_endpoints(files: list[dict]) -> list[dict]:
+    """Structured findings for a (METHOD, PATH) defined in MORE THAN ONE generated
+    backend route file (run 1614: `POST /orders` in both order.py and orders.py). Each:
+    {method, path, files:[...]}. Empty when every endpoint has a single owner. A file
+    that legitimately defines a path ONCE is never flagged; only cross-file collisions."""
+    by_ep: dict[tuple[str, str], list] = {}
+    for f in files:
+        rel = f.get("filepath") or f.get("filename") or ""
+        if not rel.endswith(".py") or "/routes/" not in rel and not rel.endswith("main.py"):
+            # route decorators live in route modules; main.py aggregates (its
+            # include_router calls are not @router defs, so it contributes nothing).
+            if not rel.endswith(".py"):
+                continue
+        for ep in _endpoints_of(f.get("content") or ""):
+            by_ep.setdefault(ep, [])
+            if rel not in by_ep[ep]:
+                by_ep[ep].append(rel)
+    out = []
+    for (method, path), fs in by_ep.items():
+        if len(fs) >= 2:
+            out.append({"method": method.upper(), "path": path, "files": sorted(fs)})
+    return sorted(out, key=lambda d: (d["path"], d["method"]))
+
+
 # ------------------------------------------------- HTTPException swallow (FIX #24)
 # ERROR PROPAGATION (project 1289): the generated `database.py` (FND-2) wrote a
 # `get_db` dependency whose `yield session` is wrapped in `try: ... except
@@ -1187,6 +1238,22 @@ def repair_instructions(result: dict) -> str:
                 f"prefer catching a specific `SQLAlchemyError` rather than broad `Exception`. "
                 f"NEVER turn a caught exception into `HTTPException(500)` unconditionally."
             )
+
+    # DUPLICATE_ENDPOINT (fix #33).
+    dups = result.get("duplicate_endpoint_repairs") or []
+    if dups:
+        parts.append("\n=== DUPLICATE_ENDPOINT — repair ONLY this file, do not touch any "
+                     "other file ===")
+        for d in dups:
+            parts.append(
+                f"\nThis file defines `{d['method']} {d['path']}`, which is ALSO defined in "
+                f"`{d['keep_in']}`. Registering the same route twice makes FastAPI warn and "
+                f"one handler silently shadows the other.\n"
+                f"Repair: REMOVE the `{d['method']} {d['path']}` route (and any helpers only "
+                f"it used) from THIS file — the implementation in `{d['keep_in']}` is kept. "
+                f"Keep this file's OTHER endpoints. If removing it leaves this file with no "
+                f"routes at all, still return a valid module with its `APIRouter()` so it "
+                f"imports cleanly.")
     return "\n".join(parts)
 
 

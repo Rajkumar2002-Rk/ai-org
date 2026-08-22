@@ -538,6 +538,51 @@ def test_frontend_missing_login_gate():
           "FND-7" in [s["ticket_id"] for s in stubbed], str([s["ticket_id"] for s in stubbed]))
 
 
+def test_duplicate_endpoint_gate():
+    """Run 1614: the order feature was over-split into order.py AND orders.py, both
+    defining `POST /orders` -> FastAPI registers it twice and one handler silently
+    shadows the other. The gate flags the same (METHOD, PATH) defined in two route
+    files, attributes it to the THINNER file (regenerate without the duplicate), and
+    never flags a path that has a single owner."""
+    from app.developers import orchestrator as orch
+    order = {"ticket_id": "BE-1", "status": "generated", "filepath": "backend/app/routes/order.py",
+             "content": "router = APIRouter()\n@router.post('/orders')\nasync def a(): pass\n"}
+    orders = {"ticket_id": "BE-2", "status": "generated", "filepath": "backend/app/routes/orders.py",
+              "content": "router = APIRouter()\n@router.post('/orders')\nasync def b(): pass\n"
+                         "@router.get('/orders/{order_id}')\nasync def c(): pass\n"}
+    menu = {"ticket_id": "BE-3", "status": "generated", "filepath": "backend/app/routes/menu.py",
+            "content": "router = APIRouter()\n@router.get('/menu')\nasync def m(): pass\n"}
+
+    dups = agents.duplicate_endpoints([order, orders, menu])
+    check("the same (method, path) in two files is a duplicate finding",
+          len(dups) == 1 and dups[0]["method"] == "POST" and dups[0]["path"] == "/orders"
+          and dups[0]["files"] == ["backend/app/routes/order.py", "backend/app/routes/orders.py"], str(dups))
+    check("a path with a single owner (GET /menu, GET /orders/{}) is NOT flagged",
+          all(d["path"] == "/orders" for d in dups))
+    # path-param normalisation: /orders/{order_id} == /orders/{id}
+    check("route params normalise so {order_id} and {id} are the same shape",
+          agents._norm_route("/orders/{order_id}") == agents._norm_route("/orders/{id}"))
+    # APIRouter(prefix=...) is included in the full path.
+    pref = {"filepath": "backend/app/routes/p.py",
+            "content": "router = APIRouter(prefix='/orders')\n@router.post('')\nasync def x(): pass\n"}
+    check("APIRouter prefix is part of the endpoint path",
+          ("post", "/orders") in agents._endpoints_of(pref["content"]))
+
+    # Gate wiring: the THINNER file (order.py, 1 route) is flagged; the fuller kept.
+    built = [dict(order), dict(orders), dict(menu)]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    flagged = [s["ticket_id"] for s in stubbed if s.get("duplicate_endpoint_repairs")]
+    check("the thinner route file (order.py) is flagged, not the fuller orders.py",
+          flagged == ["BE-1"], str(flagged))
+    victim = next(s for s in built if s["ticket_id"] == "BE-1")
+    rt = agents.repair_instructions(victim)
+    check("repair is a DUPLICATE_ENDPOINT naming the endpoint + the file to keep it in",
+          "DUPLICATE_ENDPOINT" in rt and "POST /orders" in rt and "orders.py" in rt, rt)
+
+    check("a clean app (every endpoint one owner) yields no duplicates",
+          agents.duplicate_endpoints([order, menu]) == [])
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1176,6 +1221,7 @@ async def main():
         test_missing_endpoint_attribution()
         test_frontend_deps_and_css_gate()
         test_frontend_missing_login_gate()
+        test_duplicate_endpoint_gate()
         test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()

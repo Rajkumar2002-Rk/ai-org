@@ -208,6 +208,28 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
     # WHOLE-APP check (run 1614): the backend gates endpoints but the frontend has no
     # login flow -> unusable app. Attribute it to the frontend auth ticket
     # (providers.tsx) so the retry regenerates that, else the first frontend ticket.
+    # WHOLE-APP check (run 1614): the same (METHOD, PATH) defined in TWO route files
+    # (POST /orders in order.py AND orders.py) -> FastAPI registers it twice, one handler
+    # silently shadows the other. Flag the THINNER file (fewer total routes = the
+    # redundant one) to regenerate WITHOUT the duplicate; keep the fuller implementation.
+    dupes = agents.duplicate_endpoints(built)
+    if dupes:
+        ep_count = {(r.get("filepath") or ""): len(agents._endpoints_of(r.get("content") or ""))
+                    for r in built}
+        for d in dupes:
+            victim = min(d["files"], key=lambda fp: (ep_count.get(fp, 0), fp))
+            keep = next(fp for fp in d["files"] if fp != victim)
+            r = next((x for x in built if (x.get("filepath") or "") == victim), None)
+            if r is not None:
+                r.setdefault("duplicate_endpoint_repairs", []).append(
+                    {"method": d["method"], "path": d["path"], "keep_in": keep})
+                if r.get("status") != agents.STUB_STATUS:
+                    r["status"] = agents.STUB_STATUS
+                    r.setdefault("gate_problems", []).append(
+                        f"duplicate endpoint {d['method']} {d['path']} (also in {keep})")
+                    logger.warning("Build %s: duplicate endpoint %s %s in %s (kept in %s)",
+                                   project_id, d["method"], d["path"], victim, keep)
+
     login_gap = agents.frontend_missing_login(built)
     if login_gap:
         owner = next((r for r in built if (r.get("filepath") or "").endswith(

@@ -4330,8 +4330,10 @@ File access restored → pushed Fix #31 (`a717139`) + rebuilt backend (Fix #31 l
 - **⭐ THE MILESTONE:** first fresh full-scope generation (BA→Architect→Build→smoke_boot→**real Opus PASS**→
   **QA 100/100 clean**→**deploy LIVE**) to produce a real, security-certified, serving app — with the entire
   owner-onboarding stack (Stripe connect flow, Auth0 auto-provision, email) provisioned live at deploy.
-- **⚠️ Remaining honest edges (not blockers to the live app):** (a) `STRIPE_CONNECTED_ACCOUNT_ID` fail-fast when
-  the owner skips the BA Stripe connect — a codegen contract should make it OPTIONAL (degrade, don't crash);
+- **⚠️ Remaining honest edges (not blockers to the live app):** (a) ~~STRIPE_CONNECTED_ACCOUNT_ID fail-fast~~
+  CORRECTED 2026-08-21: 1614's `order_be_3.py` actually GUARDS it (`if STRIPE_CONNECTED_ACCOUNT_ID:`) — NOT a
+  boot fail-fast; the real boot blocker was `STRIPE_API_KEY` (Fix #31 alias). The placeholder I added to 1614's
+  store was unnecessary. No STRIPE_CONNECTED gate needed (no real bug); this edge was an overclaim, retracted.
   (b) the Caddy edge probe from a sibling container returns 000 (internal SNI/cert for the container name) —
   the platform's own health gate + host-port URL work, so cosmetic; (c) the provider-name variance is now
   absorbed by aliases, but pinning ONE canonical name in codegen would be cleaner long-term.
@@ -4361,3 +4363,22 @@ repeating: "tiers respond, but not usable end-to-end." **FIX #32 (`d6d9f68`):**
   generated login actually WORK across layout+pages) is still LLM-dependent** — FND-7 + the prompt give the
   mandate, the gate catches TOTAL absence, but a partially-wired login isn't deterministically verifiable
   without Node/a browser. That is the honest remaining frontier.
+
+## 1y. FIX #33 — duplicate-endpoint gate (run-1614 "Duplicate Operation ID") (DONE 2026-08-21)
+Grounded in 1614's LIVE deploy warning: the order feature was over-split into `order.py` AND `orders.py`,
+BOTH defining `POST /orders`. main.py includes both routers → FastAPI registers the path twice
+("Duplicate Operation ID create_order_orders_post") and one handler silently SHADOWS the other — which one
+actually runs is router-include order (a coin flip). Real correctness risk, not cosmetic.
+- **`agents.duplicate_endpoints(files)`** — deterministic WHOLE-APP detector: extracts every `(METHOD, PATH)`
+  from `@router.<m>('<p>')` (with any `APIRouter(prefix=...)` prepended, path-params normalised `{x}`→`{}`)
+  across backend route files; flags a `(method, path)` defined in ≥2 files. Zero-FP: a single-owner path is
+  never flagged.
+- **Wired into `_collect_stubs`** (whole-app, like the login gate): attributes each duplicate to the THINNER
+  file (fewer total routes = the redundant one), keeping the fuller implementation; sets
+  `duplicate_endpoint_repairs` → `repair_instructions` renders a DUPLICATE_ENDPOINT ticket ("remove this route,
+  it's kept in <other file>") → the bounded build retry regenerates the thinner file without the dup.
+- Tests: `test_developers_offline.test_duplicate_endpoint_gate` (real POST /orders dup flagged, single-owner
+  not flagged, param normalisation, APIRouter-prefix path, thinner-file attribution, repair text, zero-FP).
+  All 15 offline suites pass. Backend rebuilt.
+- NOTE: the deeper cause is the ARCHITECT over-splitting one resource into two route files; this gate catches
+  the collision post-hoc + self-heals. Verified live: flags 1614's real `POST /orders` duplicate.
