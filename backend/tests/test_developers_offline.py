@@ -511,15 +511,26 @@ def test_frontend_missing_login_gate():
           agents.frontend_missing_login([gated, fe_nologin, fe_stripe]) is not None)
     check("Stripe's /authorize URL does NOT count as a login flow",
           agents.frontend_missing_login([gated, fe_stripe]) is not None)
-    fe_login = {"filepath": "frontend/app/providers.tsx",
-                "content": "import { Auth0Provider, useAuth0 } from '@auth0/auth0-react';\n"
-                           "export function Providers(){ loginWithRedirect(); }\n"}
-    check("a frontend WITH an Auth0 login flow is NOT flagged",
-          agents.frontend_missing_login([gated, fe_nologin, fe_login]) is None)
+    # Fix #34 — a WORKING login needs BOTH halves. Each half ALONE is now flagged as
+    # partially-wired: a provider with no token attach (user signs in but every fetch is a
+    # 401), or a token attach with no provider (SDK hooks throw, login is dead).
+    fe_provider = {"filepath": "frontend/app/providers.tsx",
+                   "content": "import { Auth0Provider, useAuth0 } from '@auth0/auth0-react';\n"
+                              "export function Providers(){ loginWithRedirect(); }\n"}
+    check("a provider wrap with NO token attach is flagged (partially wired)",
+          agents.frontend_missing_login([gated, fe_nologin, fe_provider]) is not None)
     fe_bearer = {"filepath": "frontend/app/lib/api.ts",
                  "content": "fetch(u, { headers: { Authorization: `Bearer ${token}` } });\n"}
-    check("attaching a Bearer token counts as login evidence (not flagged)",
-          agents.frontend_missing_login([gated, fe_nologin, fe_bearer]) is None)
+    check("a Bearer token attach with NO Auth0Provider is flagged (partially wired)",
+          agents.frontend_missing_login([gated, fe_nologin, fe_bearer]) is not None)
+    check("a frontend WITH BOTH a provider wrap AND a token attach is NOT flagged",
+          agents.frontend_missing_login([gated, fe_nologin, fe_provider, fe_bearer]) is None)
+    fe_full = {"filepath": "frontend/app/lib/api.ts",
+               "content": "import { Auth0Provider } from '@auth0/auth0-react';\n"
+                          "const t = await getAccessTokenSilently();\n"
+                          "fetch(u, { headers: { Authorization: `Bearer ${t}` } });\n"}
+    check("a single file wrapping the app AND acquiring+attaching a token is NOT flagged",
+          agents.frontend_missing_login([gated, fe_full]) is None)
     check("no gated backend -> not applicable (not flagged)",
           agents.frontend_missing_login([fe_nologin]) is None)
     check("gated backend but NO web frontend -> not applicable",

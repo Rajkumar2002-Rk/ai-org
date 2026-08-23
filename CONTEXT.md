@@ -34,16 +34,18 @@ To restart Monday: `docker compose up -d`.
   STRIPE_SECRET_KEY+CLIENT_SECRET+API_KEY) + missing in-project MODULE gate (`backend.app.catalog`); §1v/§1w.
 - **FIX #32** frontend LOGIN completeness — Architect FND-7 ticket + `frontend_missing_login` gate + prompt (§1x).
 - **FIX #33** duplicate-endpoint gate (run 1614 `POST /orders` in order.py AND orders.py); §1y.
+- **FIX #34** frontend login QUALITY gate — `frontend_missing_login` now requires BOTH an `<Auth0Provider>`
+  wrap AND a token attach (catches the partially-wired login, not just total absence); §1z. Backend rebuilt live.
 - Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE). All left in DB.
 - ⚠️ Mid-session macOS revoked repo file access; some commits were made via the Docker daemon. NOW RESTORED.
 
 ## ⏭️ NEXT (Monday) — pick a GROUNDED build (regression-test against a REAL captured bug; NO speculation)
 The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in priority order):
 1. **Frontend-auth QUALITY (the honest #1 frontier):** FIX #32 commissions FND-7 login + a gate for TOTAL
-   absence, but whether a *generated* login actually WORKS end-to-end (layout wraps Auth0Provider, pages
-   attach the token) is LLM-dependent and NOT deterministically verifiable without Node/a browser. Options:
-   (a) a stronger deterministic gate (layout wraps provider AND ≥1 page uses the token helper), (b) a fresh
-   run to MEASURE whether FND-7 now produces a working login (~$3, needs user OK).
+   absence; **FIX #34 (§1z) — DONE 2026-08-23** — upgraded the gate to require BOTH an `<Auth0Provider>` wrap
+   AND a token attach, so the partially-wired login is now caught deterministically. STILL OPEN: whether a
+   *generated* login actually WORKS end-to-end (right subtree wrapped, ALL protected calls carry the token) is
+   only provable by running the app → option (b) a fresh run to MEASURE FND-7's login live (~$3, needs user OK).
 2. **A fresh MEASUREMENT run** to surface the next real bug + verify #32's login live (~$3, ASK first).
 3. Duplicate-endpoint deeper cause = Architect over-splits a resource into 2 route files (order.py+orders.py) —
    #33 catches it post-hoc; an Architect-level fix (don't create both) would prevent it.
@@ -54,7 +56,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 16 deterministic fixes + onboarding epic are ALL live in the committed code (HEAD 9114b0c).
+> list. The 17 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4426,3 +4428,23 @@ actually runs is router-include order (a coin flip). Real correctness risk, not 
   All 15 offline suites pass. Backend rebuilt.
 - NOTE: the deeper cause is the ARCHITECT over-splitting one resource into two route files; this gate catches
   the collision post-hoc + self-heals. Verified live: flags 1614's real `POST /orders` duplicate.
+
+## 1z. FIX #34 — frontend login QUALITY gate: BOTH halves required (the run-1614 frontier) (DONE 2026-08-23)
+The honest #1 frontier from the Monday next-steps: Fix #32's `frontend_missing_login` only caught TOTAL
+absence (login button + provider + token all missing). A PARTIALLY-wired login — the LLM's realistic failure
+mode — sailed through: e.g. an `<Auth0Provider>` wrap but no call site attaches the token (user signs in yet
+every fetch is still an anonymous 401), or a `Authorization: Bearer` attach with no provider (the SDK hooks
+throw at runtime, login is dead). **FIX #34** upgrades the gate to require BOTH halves deterministically.
+- **`agents.frontend_missing_login`** now checks two independent signals across the web frontend:
+  (a) `_PROVIDER_WRAP_RE` = the app is wrapped in `<Auth0Provider>` (SDK context exists), AND
+  (b) `_TOKEN_ATTACH_RE` = a call site acquires+attaches a token (`getAccessTokenSilently` OR
+  `Authorization: Bearer …`). Only BOTH present → pass. Emits a TAILORED reason for each gap (total absence /
+  provider-but-no-token / token-but-no-provider), all pointing to the FND-7 providers ticket for regen.
+- Still deterministic, no Node/browser. Whole-app gate wired via `_collect_stubs` → FND-7 (unchanged path).
+- Tests: `test_frontend_missing_login_gate` extended — provider-only flagged, token-only flagged, BOTH-halves
+  (two files or one file) NOT flagged. All offline dev-suite checks pass. Backend rebuilt + verified live in
+  `ai-org-backend-1` (provider-only → flagged, both → None).
+- HONEST LIMIT: this raises the deterministic bar (a login button with no working wiring is now caught) but a
+  provider that wraps the WRONG subtree, or a token attached to only SOME protected calls, is still not
+  provable without executing the app. A fresh measurement run (~$3, ask first) remains the way to confirm a
+  generated login actually works end-to-end.

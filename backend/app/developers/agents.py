@@ -1494,13 +1494,26 @@ _AUTH_DEP_RE = re.compile(r"Depends\(\s*get_current_\w+")
 _LOGIN_EVIDENCE_RE = re.compile(
     r"@auth0/|loginWithRedirect|Auth0Provider|getAccessTokenSilently|useAuth0|"
     r"Bearer\s|Bearer\$|Authorization[\"'`]?\s*:", re.I)
+# Stronger gate (Fix #34): a WORKING login needs BOTH halves, not just either one.
+# (a) The app is actually WRAPPED in the Auth0 provider — otherwise the SDK hooks
+#     (loginWithRedirect / getAccessTokenSilently) throw at runtime, so a login button
+#     that renders is still dead. `Auth0Provider` is the component that provides context.
+_PROVIDER_WRAP_RE = re.compile(r"Auth0Provider", re.I)
+# (b) At least one call site ACQUIRES a token and ATTACHES it — obtaining a token
+#     (getAccessTokenSilently) or sending `Authorization: Bearer ...` on a request.
+#     Without this, the user signs in but every protected fetch is still an anonymous 401.
+_TOKEN_ATTACH_RE = re.compile(
+    r"getAccessTokenSilently|Authorization[\"'`]?\s*:\s*[`\"']?\s*Bearer|Bearer\s*[$`]",
+    re.I)
 
 
 def frontend_missing_login(files: list[dict]) -> str | None:
-    """Reason if the backend gates endpoints (auth required) but NO frontend file
-    implements a login flow (run 1614) — so a user can never authenticate and every
-    protected feature is an unreachable 401. None if there is no gated backend, no web
-    frontend, or the frontend does implement login. Deterministic, no Node needed."""
+    """Reason if the backend gates endpoints (auth required) but the frontend does not
+    implement a *working* login flow (runs 1614 / Fix #34). A working flow needs BOTH:
+    the app wrapped in Auth0Provider AND a call site that attaches the access token to a
+    protected request. Catches TOTAL absence (run 1614) and the PARTIALLY-wired failure
+    (a login button but no provider, or a token acquired but never attached). None if
+    there is no gated backend or no web frontend. Deterministic, no Node needed."""
     backend_gated = any(
         (f.get("filepath") or f.get("filename") or "").endswith(".py")
         and _AUTH_DEP_RE.search(f.get("content") or "")
@@ -1511,13 +1524,27 @@ def frontend_missing_login(files: list[dict]) -> str | None:
           if (f.get("filepath") or f.get("filename") or "").endswith(_FRONTEND_CODE_EXT)]
     if not fe:
         return None                                   # no web frontend -> not applicable
-    if any(_LOGIN_EVIDENCE_RE.search(f.get("content") or "") for f in fe):
-        return None                                   # a login flow is present
-    return ("the backend gates endpoints (auth required) but the frontend implements NO "
-            "login flow — no Auth0 sign-in and no Authorization: Bearer token — so a user "
-            "can never authenticate and every protected feature returns 401. Add a login "
-            "flow (Auth0 via @auth0/auth0-react using NEXT_PUBLIC_AUTH0_*), wrap the app in "
-            "Auth0Provider, and attach the access token to protected API calls.")
+    contents = [f.get("content") or "" for f in fe]
+    has_any = any(_LOGIN_EVIDENCE_RE.search(c) for c in contents)
+    has_provider = any(_PROVIDER_WRAP_RE.search(c) for c in contents)
+    has_token = any(_TOKEN_ATTACH_RE.search(c) for c in contents)
+    if has_provider and has_token:
+        return None                                   # both halves present -> working login
+    remedy = ("Add a complete login flow (Auth0 via @auth0/auth0-react using "
+              "NEXT_PUBLIC_AUTH0_*), wrap the app in Auth0Provider, and attach the access "
+              "token as `Authorization: Bearer` on every protected API call.")
+    if not has_any:
+        return ("the backend gates endpoints (auth required) but the frontend implements NO "
+                "login flow — no Auth0 sign-in and no Authorization: Bearer token — so a "
+                "user can never authenticate and every protected feature returns 401. " + remedy)
+    if not has_provider:
+        return ("the frontend references the Auth0 login SDK but the app is NOT wrapped in "
+                "<Auth0Provider> — the SDK hooks (loginWithRedirect / getAccessTokenSilently) "
+                "have no context and throw at runtime, so login is dead. " + remedy)
+    return ("the frontend wraps the app in <Auth0Provider> but NO call site attaches the "
+            "access token to a protected request (no getAccessTokenSilently / Authorization: "
+            "Bearer) — the user signs in but every protected fetch is still an anonymous "
+            "401. " + remedy)
 
 
 def _stub(agent_type: str, ticket: dict) -> dict:
