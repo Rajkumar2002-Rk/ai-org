@@ -517,6 +517,47 @@ def test_conventional_stem():
           b._conventional_stem("", "BE-9") == "be_9")
 
 
+def test_merge_duplicate_route_tickets():
+    """Architect-level cure for run 1614: two sprint tickets that own the SAME
+    resource by singular/plural (order.py + orders.py) must fold into ONE ticket so a
+    single Developer generates one route file — preventing the duplicate `POST /orders`
+    at the source (Fix #33's gate is the post-hoc backstop). Tickets that pin their own
+    filepath are never merged; dependency edges to a folded ticket are rewritten."""
+    print("\n=== TEST 7c: merge duplicate route tickets (Architect-level dup cure) ===")
+    from app.architect import builder as b
+    tickets = [
+        {"id": "BE-1", "title": "Implement order creation endpoint",
+         "assigned_to": "backend", "description": "POST /orders", "dependencies": ["FND-1"]},
+        {"id": "BE-2", "title": "Implement orders management",
+         "assigned_to": "backend", "description": "GET /orders, POST /orders",
+         "dependencies": ["FND-1"]},
+        {"id": "BE-3", "title": "Implement menu retrieval",
+         "assigned_to": "backend", "description": "GET /menu"},
+        {"id": "FE-1", "title": "Orders screen", "assigned_to": "frontend",
+         "filepath": "frontend/app/orders/page.tsx", "description": "list orders",
+         "dependencies": ["BE-2"]},
+        {"id": "MENU-1", "title": "Menu API", "assigned_to": "backend",
+         "filepath": "backend/app/routes/menu.py", "description": "pinned path"},
+    ]
+    merged = b._merge_duplicate_route_tickets(tickets)
+    ids = [t["id"] for t in merged]
+    check("the plural sibling BE-2 is folded into BE-1 (one resource, one file)",
+          "BE-2" not in ids and "BE-1" in ids)
+    be1 = next(t for t in merged if t["id"] == "BE-1")
+    check("the folded ticket's id is recorded on the survivor",
+          be1.get("merged_ticket_ids") == ["BE-2"])
+    check("the folded ticket's work is appended to the survivor's description",
+          "BE-2" in be1["description"] and "orders management" in be1["description"])
+    check("a different resource (BE-3 menu) is NOT merged", "BE-3" in ids)
+    check("a ticket that PINS its own filepath (MENU-1) is never merged", "MENU-1" in ids)
+    fe1 = next(t for t in merged if t["id"] == "FE-1")
+    check("a dependency on the folded BE-2 is rewritten to the survivor BE-1",
+          fe1["dependencies"] == ["BE-1"])
+    check("singularisation: orders==order, categories->category, status unchanged",
+          b._singular("orders") == b._singular("order") == "order"
+          and b._singular("categories") == "category" and b._singular("status") == "status")
+
+
 def test_contract_declares_exact_module_paths():
     """The binding contract lists every module at its EXACT import path.
 
@@ -662,6 +703,7 @@ async def main():
     await test_unique_filepaths()
     test_entrypoint_gets_real_router_paths()
     test_conventional_stem()
+    test_merge_duplicate_route_tickets()
     test_contract_declares_exact_module_paths()
     test_developer_pins_assigned_path()
     test_homepage_helpers()

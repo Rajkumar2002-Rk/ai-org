@@ -452,6 +452,80 @@ def _conventional_stem(title: str, ticket_id: str) -> str:
     return (words[0] if words else _slug(ticket_id))[:40]
 
 
+def _singular(word: str) -> str:
+    """Crude, CONSISTENT singularisation — only ever compared to another word put
+    through the same function, so it need not be linguistically perfect. Collapses
+    the singular/plural split (`order` == `orders`) that let two route tickets own
+    the same resource. `categories`->`category`, `orders`->`order`; non-plural `-s`
+    endings (`status`, `analysis`, `bonus`) are left alone."""
+    w = (word or "").lower()
+    if w.endswith("ies") and len(w) > 3:
+        return w[:-3] + "y"
+    if (w.endswith("s") and len(w) > 1
+            and not w.endswith(("ss", "us", "is", "as", "os"))):
+        return w[:-1]
+    return w
+
+
+def _is_derived_route_ticket(t: dict) -> bool:
+    """True when a ticket would land on backend/app/routes/<stem>.py by DERIVATION —
+    a backend ticket with no explicit filepath and no path named in its own text.
+    Deterministic foundation/auth/security/payment/menu tickets all pin an explicit
+    filepath, so they are excluded and never merged."""
+    if (t.get("assigned_to") or "backend") != "backend":
+        return False
+    if (t.get("filepath") or "").strip():
+        return False
+    if _PATH_IN_TEXT.search(f"{t.get('title', '')} {t.get('description', '')}"):
+        return False
+    return True
+
+
+def _merge_duplicate_route_tickets(tickets: list[dict]) -> list[dict]:
+    """Architect-level cure for the run-1614 duplicate-endpoint bug (Fix #33 was the
+    post-hoc gate; this prevents the split at the source).
+
+    The LLM sometimes over-splits ONE resource into two sprint tickets whose derived
+    route files differ only by singular/plural (`order.py` + `orders.py`), and both
+    generate `POST /orders` — FastAPI then registers the path twice and one handler
+    silently shadows the other. This folds such tickets into a SINGLE ticket so one
+    Developer owns the whole resource in one route file. Only DERIVED backend route
+    tickets are eligible (see `_is_derived_route_ticket`); tickets that pin their own
+    filepath are never touched. Dependency references to a folded ticket are rewritten
+    to the surviving primary so no wave edge dangles."""
+    primary_by_key: dict[str, dict] = {}
+    remap: dict[str, str] = {}          # dropped ticket id -> surviving primary id
+    kept: list[dict] = []
+    for t in tickets:
+        if not _is_derived_route_ticket(t):
+            kept.append(t)
+            continue
+        key = _singular(_conventional_stem(t.get("title") or "", t.get("id") or ""))
+        primary = primary_by_key.get(key)
+        if primary is None:
+            primary_by_key[key] = t
+            kept.append(t)
+            continue
+        # Fold this ticket's work into the primary that already owns the resource.
+        primary["description"] = (
+            f"{primary.get('description', '')}\n\nAlso covers "
+            f"{t.get('id', '')} — {t.get('title', '')}: {t.get('description', '')}"
+        ).strip()
+        merged = set(primary.get("dependencies") or []) | set(t.get("dependencies") or [])
+        primary["dependencies"] = [d for d in merged if d != primary.get("id")]
+        primary.setdefault("merged_ticket_ids", []).append(t.get("id"))
+        remap[t.get("id")] = primary.get("id")
+        logger.info("Merged route ticket %s into %s (same resource '%s')",
+                    t.get("id"), primary.get("id"), key)
+    if remap:                            # rewrite dangling dependency edges
+        for t in kept:
+            deps = t.get("dependencies")
+            if deps:
+                t["dependencies"] = list(dict.fromkeys(
+                    remap.get(d, d) for d in deps if remap.get(d, d) != t.get("id")))
+    return kept
+
+
 def _assign_filepaths(tickets: list[dict]) -> list[dict]:
     """Give every ticket ONE explicit, UNIQUE output path.
 
@@ -1246,6 +1320,11 @@ async def build_blueprint(summary: dict) -> dict:
     if any(t.get("assigned_to") == "frontend" for t in tickets) \
             and not any(t.get("filepath") == "frontend/app/providers.tsx" for t in tickets):
         tickets.append(_frontend_auth_ticket())
+
+    # Architect-level cure for the duplicate-endpoint split (run 1614): fold two route
+    # tickets that own the SAME resource (order.py + orders.py) into one BEFORE the
+    # entrypoint is built, so no folded id leaks into the entrypoint's dependency list.
+    tickets = _merge_duplicate_route_tickets(tickets)
 
     # Entrypoint LAST — it registers the routers every other ticket produced,
     # so it depends on all of them and lands in the final build wave.

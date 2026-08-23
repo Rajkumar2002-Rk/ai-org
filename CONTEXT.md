@@ -36,6 +36,9 @@ To restart Monday: `docker compose up -d`.
 - **FIX #33** duplicate-endpoint gate (run 1614 `POST /orders` in order.py AND orders.py); §1y.
 - **FIX #34** frontend login QUALITY gate — `frontend_missing_login` now requires BOTH an `<Auth0Provider>`
   wrap AND a token attach (catches the partially-wired login, not just total absence); §1z. Backend rebuilt live.
+- **FIX #35** Architect-level duplicate-route CURE — `_merge_duplicate_route_tickets` folds two sprint tickets
+  that own the same resource (order.py+orders.py) into one BEFORE codegen, so the `POST /orders` split never
+  happens; Fix #33's gate stays as the post-hoc backstop; §1aa. Backend rebuilt live.
 - Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE). All left in DB.
 - ⚠️ Mid-session macOS revoked repo file access; some commits were made via the Docker daemon. NOW RESTORED.
 
@@ -47,8 +50,9 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
    *generated* login actually WORKS end-to-end (right subtree wrapped, ALL protected calls carry the token) is
    only provable by running the app → option (b) a fresh run to MEASURE FND-7's login live (~$3, needs user OK).
 2. **A fresh MEASUREMENT run** to surface the next real bug + verify #32's login live (~$3, ASK first).
-3. Duplicate-endpoint deeper cause = Architect over-splits a resource into 2 route files (order.py+orders.py) —
-   #33 catches it post-hoc; an Architect-level fix (don't create both) would prevent it.
+3. ✅ DONE — FIX #35 (§1aa): the Architect-level cure. `_merge_duplicate_route_tickets` folds two tickets that
+   own the same resource (order.py+orders.py) into one BEFORE codegen, so the split never happens; #33's gate
+   stays as the post-hoc backstop.
 - Other honest edges (LOW priority): pin ONE canonical provider var name in codegen (aliases already work);
   the Caddy sibling-container probe 000 is cosmetic (platform health gate + host-port URL work). §1w.
 - ⛔ Deploy gap #1 SECRETS: the OWNER-account onboarding is now BUILT + live-verified (Stripe/Auth0/email).
@@ -56,7 +60,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 17 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 18 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4448,3 +4452,22 @@ throw at runtime, login is dead). **FIX #34** upgrades the gate to require BOTH 
   provider that wraps the WRONG subtree, or a token attached to only SOME protected calls, is still not
   provable without executing the app. A fresh measurement run (~$3, ask first) remains the way to confirm a
   generated login actually works end-to-end.
+
+## 1aa. FIX #35 — Architect-level duplicate-route CURE (prevents the run-1614 split at the source) (DONE 2026-08-23)
+Fix #33 (§1y) was the post-hoc GATE: it catches a `(method, path)` defined in two route files after codegen
+and self-heals. The DEEPER cause (noted in §1y) is the ARCHITECT over-splitting ONE resource into two sprint
+tickets whose derived route files differ only by singular/plural (`order.py` + `orders.py`), both generating
+`POST /orders`. **FIX #35** cures it at the source so the split never happens.
+- **`builder._merge_duplicate_route_tickets(tickets)`** — runs in `build_blueprint` right BEFORE the entrypoint
+  ticket is built. Groups DERIVED backend route tickets (`_is_derived_route_ticket`: assigned_to backend, NO
+  explicit filepath, no path named in text — so foundation/auth/security/payment/menu tickets that pin a path
+  are NEVER touched) by canonical resource = `_singular(_conventional_stem(title))`. Two tickets on the same
+  key → fold the later into the first (append its work to the description, union dependencies, record
+  `merged_ticket_ids`), so ONE Developer owns the whole resource in ONE route file. Dependency edges pointing
+  at a folded ticket are rewritten to the survivor so no wave edge dangles.
+- **`builder._singular`** — crude, consistent singularisation (only ever compared to itself): `orders`==`order`,
+  `categories`->`category`; non-plural `-s` endings (`status`, `analysis`, `bonus`, `ss`) left alone.
+- Runs BEFORE the entrypoint append so a folded id never leaks into the entrypoint's dependency list.
+- Tests: `test_architect_offline.test_merge_duplicate_route_tickets` (plural sibling folded, pinned-path ticket
+  untouched, different resource not merged, dependency rewrite, singularisation). All architect + developer
+  offline suites pass. Backend rebuilt + verified live. Fix #33's gate stays as the post-hoc backstop.
