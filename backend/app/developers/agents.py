@@ -531,11 +531,15 @@ def duplicate_endpoints(files: list[dict]) -> list[dict]:
     by_ep: dict[tuple[str, str], list] = {}
     for f in files:
         rel = f.get("filepath") or f.get("filename") or ""
-        if not rel.endswith(".py") or "/routes/" not in rel and not rel.endswith("main.py"):
-            # route decorators live in route modules; main.py aggregates (its
-            # include_router calls are not @router defs, so it contributes nothing).
-            if not rel.endswith(".py"):
-                continue
+        # Only real route MODULES own routes: files under routes/ (plus main.py, whose
+        # include_router calls contribute nothing anyway). A non-route .py — e.g. the
+        # security helper (SEC-1) — may carry an ILLUSTRATIVE `@app.post("/orders")` in a
+        # docstring/example (run 1843); scanning it invented a phantom duplicate that then
+        # told the REAL order.py to drop its route, stubbing BE-1 and failing the build.
+        if not rel.endswith(".py"):
+            continue
+        if "/routes/" not in rel and not rel.endswith("main.py"):
+            continue
         for ep in _endpoints_of(f.get("content") or ""):
             by_ep.setdefault(ep, [])
             if rel not in by_ep[ep]:
