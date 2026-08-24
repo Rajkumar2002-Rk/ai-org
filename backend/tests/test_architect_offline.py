@@ -411,6 +411,13 @@ async def test_unique_filepaths():
     check("FND-5 content is a real design system (tokens + motion), not a bare reset",
           "--color-primary" in fnd5_css and "@keyframes" in fnd5_css
           and "prefers-reduced-motion" in fnd5_css)
+    # Brand-colour theming: 'black' -> true #000 primary; 'warm brown' -> coffee + cream ground.
+    black_css = builder._design_system_css({"design": {"brand_color": "black"}})
+    check("brand_color 'black' themes the primary to true #000",
+          "--color-primary: #000000;" in black_css)
+    warm_css = builder._design_system_css({"design": {"brand_color": "warm brown"}})
+    check("brand_color 'warm brown' themes coffee primary on a cream ground",
+          "--color-primary: #6f4e37;" in warm_css and "--color-bg: #faf6f1;" in warm_css)
 
     # The entrypoint must be flagged so the Developer injects the real router
     # module paths — guessing conventional names is what broke a real build.
