@@ -1396,6 +1396,17 @@ def _strip_code(src: str) -> tuple[str, bool]:
             i += 2
             continue
         if c in ("'", '"', "`"):
+            # A ' or " in JSX TEXT (e.g. "Stripe's hosted checkout", "we're", "don't") is
+            # LITERAL text, not a string delimiter. In valid JS a ' or " never immediately
+            # follows a word char, but an English contraction always does — so a quote
+            # preceded by a letter/digit/_ is a JSX-text apostrophe: append it and move on
+            # rather than entering string mode (run 1887: `Stripe's` desynced the counter,
+            # falsely failing a COMPLETE settings page and the whole build). Backticks are
+            # excluded — a tagged template (`tag`...``) legitimately follows an identifier.
+            if c in ("'", '"') and i > 0 and (src[i - 1].isalnum() or src[i - 1] == "_"):
+                out.append(c)
+                i += 1
+                continue
             i += 1
             while i < n and src[i] != c:
                 i += 2 if src[i] == "\\" else 1

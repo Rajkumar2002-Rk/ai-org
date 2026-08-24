@@ -697,6 +697,20 @@ def test_frontend_completeness_gate():
           agents.frontend_incomplete("frontend/app/globals.css", "body {") is None)
     check("a regex with delimiters does NOT false-flag a complete file",
           agents.frontend_incomplete("a.ts", "const r = /[({]/g; const y = (1);") is None)
+    # Fix #41 (run 1887): an apostrophe in JSX TEXT ("Stripe's", "we're", "don't") is
+    # literal text, NOT a string delimiter — treating it as one desynced the brace counter
+    # and FALSE-flagged a COMPLETE settings page, failing the whole build.
+    check("an apostrophe/contraction in JSX text does NOT false-flag a complete file",
+          agents.frontend_incomplete(
+              "a.tsx", "export default ()=> (<p>Stripe's checkout — we're ready {x(1)}</p>);") is None)
+    fx1887 = os.path.join(os.path.dirname(__file__), "fixtures", "jsx_apostrophe_settings_1887.tsx")
+    if os.path.isfile(fx1887):
+        settings_1887 = open(fx1887, encoding="utf-8").read()
+        check("1887's REAL settings page (with `Stripe's`) is NOT flagged (was a false positive)",
+              agents.frontend_incomplete("frontend/app/settings/page.tsx", settings_1887) is None,
+              str(agents.frontend_incomplete("x.tsx", settings_1887)))
+    check("a string literal (preceded by =) is still stripped — real unterminated one flagged",
+          agents.frontend_incomplete("a.tsx", "const s = 'abc") is not None)
 
     built = [
         {"ticket_id": "MENU-4", "filepath": "frontend/app/admin/menu/review/page.tsx",
