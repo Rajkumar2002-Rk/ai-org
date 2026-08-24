@@ -39,7 +39,12 @@ To restart Monday: `docker compose up -d`.
 - **FIX #35** Architect-level duplicate-route CURE — `_merge_duplicate_route_tickets` folds two sprint tickets
   that own the same resource (order.py+orders.py) into one BEFORE codegen, so the `POST /orders` split never
   happens; Fix #33's gate stays as the post-hoc backstop; §1aa. Backend rebuilt live.
-- Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE). All left in DB.
+- **FIX #36** Fix #33 FALSE POSITIVE (run 1843): `duplicate_endpoints` scanned NON-route .py files — the SEC-1
+  security helper carried an illustrative `@app.post('/orders')`, invented a phantom `POST /orders` dup, told
+  the REAL order.py to drop its route → BE-1 stubbed → build error. Now only route MODULES (`routes/` + main.py)
+  are scanned; §1bb. Backend rebuilt live.
+- Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE), 1843 (→ build error, Fix #36 fixed the
+  cause; Fix #35 CONFIRMED — single order.py, no split). All left in DB.
 - ⚠️ Mid-session macOS revoked repo file access; some commits were made via the Docker daemon. NOW RESTORED.
 
 ## ⏭️ NEXT (Monday) — pick a GROUNDED build (regression-test against a REAL captured bug; NO speculation)
@@ -60,7 +65,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 18 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 19 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4471,3 +4476,23 @@ tickets whose derived route files differ only by singular/plural (`order.py` + `
 - Tests: `test_architect_offline.test_merge_duplicate_route_tickets` (plural sibling folded, pinned-path ticket
   untouched, different resource not merged, dependency rewrite, singularisation). All architect + developer
   offline suites pass. Backend rebuilt + verified live. Fix #33's gate stays as the post-hoc backstop.
+
+## 1bb. FIX #36 — Fix #33 FALSE POSITIVE: only route MODULES own routes (measurement run 1843) (DONE 2026-08-24)
+**Grounded in a REAL paid measurement run (project 1843, coffee-shop w/ ordering+Stripe+login).** The run
+went BA → PI → Architect (18 tickets) → Build 18/18 files → **build ERROR**. Root cause diagnosed:
+- The Architect commissioned SEC-1 → `backend/app/security.py` (a security HELPER, NOT a route module). The LLM
+  put an ILLUSTRATIVE `@app.post("/orders", dependencies=[Depends(get_current_user)])` in it as an example of
+  gating an endpoint. `duplicate_endpoints`'s file guard only skipped NON-`.py` files, so this non-route `.py`
+  fell through and got scanned → it invented a phantom `POST /orders` "duplicate" between security.py and the
+  REAL `order.py`, attributed the removal to order.py, and the bounded retry regenerated order.py WITHOUT its
+  route → BE-1 produced a stub → "1 of 18 tickets produced no code" → build not certifiable → ERROR.
+- **Fix:** `duplicate_endpoints` now `continue`s for any `.py` that is NOT under `routes/` and not `main.py`, so
+  only real route modules can own routes. Regression test `test_duplicate_endpoint_gate` extended with the exact
+  1843 scenario (illustrative endpoint in security.py → NOT a duplicate; genuine order.py+orders.py → still
+  caught). All offline dev-suite checks pass. Backend rebuilt + verified live (phantom → `[]`, real dup → 1).
+- **WHAT 1843 VALIDATED (the wins):** ✅ **Fix #35 confirmed live** — the order resource stayed in a SINGLE
+  `order.py` (no order.py+orders.py split). ✅ FND-7 `providers.tsx` + a login flow WERE generated (Fix #34's
+  mandate held) — but end-to-end login could NOT be measured because the build errored first.
+- **⏭️ NEXT:** the build-error CAUSE is now fixed, but the run was never re-driven, so Fix #34's login QUALITY
+  end-to-end is STILL unmeasured. A fresh run (~$3, ASK first) would now get past build and let us finally see
+  whether the generated login actually works (the honest #1 frontier). Project 1843 left in DB (build_error).
