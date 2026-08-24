@@ -635,6 +635,44 @@ def test_duplicate_endpoint_gate():
           [fp for d in agents.duplicate_endpoints([real_order, sec_helper]) for fp in d["files"]])
 
 
+def test_hallucinated_package_gate():
+    """Run 1869: security.py did `from starlette_limiter import Limiter` — no such PyPI
+    package — which failed the whole pip batch and boot-failed the app. The OFFLINE build
+    gate (fix #40) catches a KNOWN-hallucinated package right after codegen, BEFORE
+    smoke_boot's ground-truth pip check (fix #39). Blocklist-based: a name only matches if
+    it is literally on the curated list, so real packages are never flagged."""
+    from app.developers import orchestrator as orch
+    bad = {"ticket_id": "SEC-1", "status": "generated", "filepath": "backend/app/security.py",
+           "content": "from fastapi import Depends\nfrom starlette_limiter import Limiter\n"
+                      "def x(): pass\n"}
+    finds = agents.hallucinated_package_imports(bad["content"], bad["filepath"])
+    check("the hallucinated `starlette_limiter` import is flagged at the build gate",
+          len(finds) == 1 and finds[0]["root"] == "starlette_limiter"
+          and finds[0]["line"] == 2, str(finds))
+    check("the underscore/hyphen spelling both canonicalise onto the blocklist",
+          agents._canon_pkg("starlette_limiter") == "starlette-limiter"
+          and "starlette-limiter" in agents._HALLUCINATED_PACKAGES)
+    check("a REAL package (fastapi/slowapi) is NOT flagged",
+          agents.hallucinated_package_imports(
+              "from fastapi import Depends\nfrom slowapi import Limiter\n", "backend/app/x.py") == [])
+    check("a frontend .tsx is ignored (python-only gate)",
+          agents.hallucinated_package_imports(
+              "import { X } from 'starlette_limiter'\n", "frontend/app/page.tsx") == [])
+    # The repair text tells the agent to drop it and use a real limiter.
+    rt = agents.repair_instructions({"missing_package_repairs": finds})
+    check("repair is a MISSING_PACKAGE naming the package + slowapi + 'does NOT exist'",
+          "MISSING_PACKAGE" in rt and "starlette_limiter" in rt and "slowapi" in rt
+          and "does NOT exist" in rt, rt)
+    # Build-gate wiring: _collect_stubs rejects the file + attaches the repair.
+    built = [dict(bad), {"ticket_id": "BE-1", "status": "generated",
+                         "filepath": "backend/app/routes/menu.py",
+                         "content": "from fastapi import APIRouter\nrouter = APIRouter()\n"}]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    flagged = [s["ticket_id"] for s in stubbed if s.get("missing_package_repairs")]
+    check("the build gate flags the offending SEC-1 file (not the clean one)",
+          flagged == ["SEC-1"], str(flagged))
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1275,6 +1313,7 @@ async def main():
         test_frontend_deps_and_css_gate()
         test_frontend_missing_login_gate()
         test_duplicate_endpoint_gate()
+        test_hallucinated_package_gate()
         test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()

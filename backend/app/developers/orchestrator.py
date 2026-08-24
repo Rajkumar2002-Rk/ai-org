@@ -199,6 +199,14 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
             r["http_swallow_repairs"] = hx
             problems.append("dependency generator swallows HTTPException into 500 " +
                             ", ".join(f"{h['function']}()" for h in hx))
+        # Offline fast-path (fix #40): a KNOWN-hallucinated package import (run 1869:
+        # `starlette_limiter`) — caught here at the build gate, before smoke_boot's
+        # ground-truth pip check (fix #39) even runs.
+        mp = agents.hallucinated_package_imports(content, rel)
+        if mp:
+            r["missing_package_repairs"] = mp
+            problems.append("hallucinated (non-existent) package import(s) " + ", ".join(
+                m.get("root") or m["module"] for m in mp))
         if problems:
             r["status"] = agents.STUB_STATUS
             r["gate_problems"] = problems

@@ -1169,6 +1169,50 @@ def python_syntax_error(content: str, filepath: str) -> dict | None:
                 "message": e.msg, "text": (e.text or "").rstrip()}
 
 
+def _canon_pkg(name: str) -> str:
+    """PEP 503-ish canonical package key: drop extras, lower-case, `_`->`-`."""
+    return (name or "").split("[")[0].strip().lower().replace("_", "-")
+
+
+# Known-HALLUCINATED third-party packages — names an LLM invents that do NOT exist on
+# PyPI, so importing them fails the WHOLE pip install (run 1869: `starlette_limiter`, a
+# plausible-sounding rate limiter that is not a real package). This is the OFFLINE build-
+# gate fast-path (no network) that catches the common ones one step earlier than
+# smoke_boot; the GROUND-TRUTH existence check stays Fix #39 in assembly (pip is the real
+# oracle for anything not on this curated list). Keep ONLY names proven non-existent — a
+# wrong entry would block a real package and fail good builds. Grows as runs surface more.
+_HALLUCINATED_PACKAGES = frozenset({"starlette-limiter"})
+
+
+def hallucinated_package_imports(content: str, filepath: str) -> list[dict]:
+    """OFFLINE build-gate finding: a backend `.py` that imports a KNOWN-non-existent PyPI
+    package (curated blocklist, deterministic, no network). Each: {module, root, line,
+    names}. Only `.py`; relative/in-project/stdlib imports are never flagged (a name only
+    matches if it is literally on the blocklist)."""
+    if not filepath.endswith(".py"):
+        return []
+    try:
+        tree = ast.parse(content or "")
+    except SyntaxError:
+        return []                      # python_syntax_error owns the unparseable case
+    out: list[dict] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level:             # relative import -> local module
+                continue
+            root = (node.module or "").split(".")[0]
+            if _canon_pkg(root) in _HALLUCINATED_PACKAGES:
+                out.append({"module": node.module, "root": root, "line": node.lineno,
+                            "names": [a.name for a in node.names]})
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                root = (a.name or "").split(".")[0]
+                if _canon_pkg(root) in _HALLUCINATED_PACKAGES:
+                    out.append({"module": a.name, "root": root, "line": node.lineno,
+                                "names": []})
+    return out
+
+
 def repair_instructions(result: dict) -> str:
     """Turn a gate result's structured findings into a precise, bounded repair prompt for
     the Developer agent's retry — a targeted SYNTAX_ERROR / IMPORT_RESOLUTION_FAILURE
@@ -1272,6 +1316,24 @@ def repair_instructions(result: dict) -> str:
                 f"Keep this file's OTHER endpoints. If removing it leaves this file with no "
                 f"routes at all, still return a valid module with its `APIRouter()` so it "
                 f"imports cleanly.")
+
+    # MISSING_PACKAGE (fix #40) — a KNOWN-hallucinated package caught at the BUILD GATE
+    # (offline blocklist), before smoke_boot. Same guidance as the smoke_boot repair.
+    miss_pkg = result.get("missing_package_repairs") or []
+    if miss_pkg:
+        parts.append("\n=== MISSING_PACKAGE — repair ONLY this file, do not touch any "
+                     "other file ===")
+        for m in miss_pkg:
+            names = ", ".join(m.get("names") or [])
+            imp = f"from {m['module']} import {names}" if names else f"import {m['module']}"
+            parts.append(
+                f"\n`{imp}` (line {m.get('line')}) imports `{m.get('root') or m['module']}`, "
+                f"which does NOT exist on PyPI — a hallucinated package that fails the whole "
+                f"install.\nRepair: REMOVE this import and re-implement the behaviour with a "
+                f"REAL, widely-used package or the standard library / inline code. For RATE "
+                f"LIMITING use `slowapi` (`from slowapi import Limiter`) or drop the limiter; "
+                f"NEVER invent a package name like `starlette_limiter`. Keep the file's public "
+                f"names and behaviour otherwise unchanged.")
     return "\n".join(parts)
 
 
