@@ -62,7 +62,7 @@ def subdomain_suffix(project_id: int) -> str:
 
 
 def subdomain(project_id: int, project_name: str) -> str:
-    """`<slug>-<suffix>.apps.rajkumarai.dev` — the public host for this app."""
+    """`<slug>-<suffix>.apps.example.com` — the public host for this app."""
     label = f"{_slugify(project_name)}-{subdomain_suffix(project_id)}"
     return f"{label}.{settings.apps_subdomain}"
 

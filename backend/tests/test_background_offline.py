@@ -75,7 +75,7 @@ async def _seed(*, deployed_live: bool, budget: str = "$15",
         db.add(p); await db.commit(); await db.refresh(p); pid = p.id
         if deployed_live:
             db.add(Deployment(project_id=pid, target="local", status="live",
-                              live_url=live_url or "https://x-abc.apps.rajkumarai.dev",
+                              live_url=live_url or "https://x-abc.apps.example.com",
                               server_type="EC2 t3.micro", monthly_cost_estimate=12.38,
                               image_backend_ref="img-be", image_frontend_ref=None))
         await db.commit()

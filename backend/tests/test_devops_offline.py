@@ -210,7 +210,7 @@ def test_frontend_wiring():
     check("the wrong NEXT_PUBLIC_API_URL is gone from the compose",
           "NEXT_PUBLIC_API_URL:" not in compose and "NEXT_PUBLIC_API_URL " not in compose)
 
-    # (b) VALUE: a relative /api (same-origin), NOT the remote .apps.rajkumarai.dev host.
+    # (b) VALUE: a relative /api (same-origin), NOT the remote .apps.example.com host.
     check("the API base is the relative /api, not an absolute/remote URL",
           VAL == "/api" and f'{ENV}: "/api"' in compose)
     check("the API base does NOT point at the remote apps subdomain",
@@ -697,7 +697,7 @@ def test_aws_pure_functions():
           any(r["selection"]["tagStatus"] == "untagged" for r in pol["rules"])
           and any("imageCountMoreThan" in r["selection"].get("countType", "")
                   for r in pol["rules"]))
-    batch = aws_driver.route53_upsert_batch("app-x.apps.rajkumarai.dev", "1.2.3.4")
+    batch = aws_driver.route53_upsert_batch("app-x.apps.example.com", "1.2.3.4")
     rr = batch["Changes"][0]
     check("Route53 batch UPSERTs the A record -> ip",
           rr["Action"] == "UPSERT"

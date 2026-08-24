@@ -79,8 +79,8 @@ services:
       # "local" (default) builds+runs REAL containers on the host daemon (the
       # socket below); "aws" is the real EC2 path (boto3 uses the mounted creds).
       DEPLOY_TARGET: ${DEPLOY_TARGET:-local}
-      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-rajkumarai.dev}
-      APPS_SUBDOMAIN: ${APPS_SUBDOMAIN:-apps.rajkumarai.dev}
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN:-example.com}
+      APPS_SUBDOMAIN: ${APPS_SUBDOMAIN:-apps.example.com}
       ROUTE53_ZONE_ID: ${ROUTE53_ZONE_ID:-}
       AWS_REGION: ${AWS_REGION:-us-east-2}
       AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-2}

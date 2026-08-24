@@ -118,12 +118,12 @@ class Settings(BaseSettings):
     # so nothing can masquerade as certified. Re-enable before any real run/demo.
     security_review_enabled: bool = True
 
-    # Real domain for generated apps. DNS for `apps.rajkumarai.dev` is delegated
+    # Real domain for generated apps. DNS for `apps.example.com` is delegated
     # to the Route53 hosted zone below; per-app subdomains live under it as
-    # <slug>-<suffix>.apps.rajkumarai.dev.
-    platform_domain: str = "rajkumarai.dev"
-    apps_subdomain: str = "apps.rajkumarai.dev"
-    route53_zone_id: str | None = "Z02777111O69NKZ136VS"
+    # <slug>-<suffix>.apps.example.com.
+    platform_domain: str = "example.com"
+    apps_subdomain: str = "apps.example.com"
+    route53_zone_id: str | None = "Z0XXXXXXXXXXXXXXXXXX"
     aws_region: str = "us-east-2"
     aws_account_id: str | None = None            # discovered via STS when needed
     # Email Let's Encrypt uses for expiry notices (Caddy ACME account).

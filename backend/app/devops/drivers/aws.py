@@ -4,13 +4,13 @@ Strategy (from the user's experience, Week 7):
   * build images LOCALLY (a t3.micro can hang mid-build) and push to ECR;
   * one reusable EC2 t3.micro pulls-and-runs them via docker-compose;
   * Caddy on the instance gets a real Let's Encrypt cert for the subdomain;
-  * Route53 record is created in the delegated `apps.rajkumarai.dev` zone;
+  * Route53 record is created in the delegated `apps.example.com` zone;
   * every AWS resource is TAGGED so `teardown_aws.py` can reclaim it by tag;
   * cost target $5-10/mo — controlled by stopping (not terminating) the instance
     between tests. That stop/start is a human action, deliberately not automated.
 
 ⚠️ STATUS — REAL CODE, NOT YET RUN LIVE. This path spends money and cannot
-succeed until (a) the `apps.rajkumarai.dev` NS delegation has propagated (so
+succeed until (a) the `apps.example.com` NS delegation has propagated (so
 Let's Encrypt can validate) and (b) the operator explicitly greenlights the paid
 run. It is off by default (`DEPLOY_TARGET=local`) and NEVER exercised by the
 offline test suite. The pure-API pieces (ECR lifecycle JSON, the Route53 change

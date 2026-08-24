@@ -96,8 +96,8 @@ async def _seed(*, deployed: bool, cert_passed: bool, qa_pass: int, qa_fail: int
                           security_passed=cert_passed, reviewed_by_model="claude-opus-4-8"))
         if deployed:
             db.add(Deployment(project_id=pid, target="local", status="live",
-                              live_url="https://corner-grocer-abc123.apps.rajkumarai.dev",
-                              subdomain="corner-grocer-abc123.apps.rajkumarai.dev",
+                              live_url="https://corner-grocer-abc123.apps.example.com",
+                              subdomain="corner-grocer-abc123.apps.example.com",
                               server_type="EC2 t3.micro", ssl_enabled=True,
                               ssl_type="lets_encrypt", monthly_cost_estimate=12.38,
                               cost_basis="projected_aws_small", security_certified=cert_passed,

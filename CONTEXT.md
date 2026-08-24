@@ -250,7 +250,7 @@ hand-work. **The sequence, and every intervention, in order:**
      (a) the frontend code reads `process.env.NEXT_PUBLIC_API_BASE_URL` but the deploy set a
      DIFFERENT var `NEXT_PUBLIC_API_URL` (name mismatch) → `API_BASE=""` → it fetches same-origin
      `/menu`, which Caddy routes to the FRONTEND (404), not the backend; (b) even the var the deploy
-     set points at a REMOTE prod domain (`bella-vista-….apps.rajkumarai.dev/api`), not this local
+     set points at a REMOTE prod domain (`bella-vista-….apps.example.com/api`), not this local
      stack, AND Next inlines `NEXT_PUBLIC_*` at BUILD time so a runtime fix needs a frontend rebuild.
    - **Reverse-proxy path model is ambiguous:** Caddy sends `/api/* /docs /openapi.json /health` →
      backend:8000, everything else → frontend:3000 — but the backend's routes are `/menu`,
@@ -373,7 +373,7 @@ REAL generated artifacts:
   `NEXT_PUBLIC_API_BASE_URL` (LLM-emergent, nothing pinned it). → Deploy now sets
   `NEXT_PUBLIC_API_BASE_URL`, AND it is CONTRACT-PINNED on the codegen side (Part 3) so a fresh
   generation reads exactly that var — determinism, not luck (same pattern as AUTH_EXPORTS).
-- **(b) wrong value:** it was `https://{subdomain}/api` (a remote `.apps.rajkumarai.dev` host that
+- **(b) wrong value:** it was `https://{subdomain}/api` (a remote `.apps.example.com` host that
   doesn't resolve to the local stack). → Now a RELATIVE `/api` (same-origin), works on both the
   local `localhost:<port>` and the AWS subdomain origins.
 - **(c) build-time inlining:** Next.js inlines `NEXT_PUBLIC_*` at BUILD time, but it was only a
@@ -646,9 +646,9 @@ CONTRACTS (prompt rules) + the deploy wiring to feed them, mirroring Fix #21's A
   fail-fasts on SMS ONLY (everything else works). Revisit if a launch actually needs texting.
 - **✅ ALL THREE PROVIDERS VERIFIED LIVE (2026-08-20)** against real free/test accounts the operator set up:
   - **Stripe** (test mode): owner account connected, `acct_…` persisted for 1289 (§1o).
-  - **Auth0** (free tenant `dev-eldyvyvbd3kd2gnw.us.auth0.com`, M2M Mgmt app w/ create:resource_servers +
+  - **Auth0** (free tenant `dev-tenant.us.auth0.com`, M2M Mgmt app w/ create:resource_servers +
     create:clients): `ensure_provisioned(1289)` created a real API (audience
-    `https://bella-vista-1523a5.apps.rajkumarai.dev/api`) + login client (client id 32ch, secret 64ch),
+    `https://bella-vista-1523a5.apps.example.com/api`) + login client (client id 32ch, secret 64ch),
     persisted to secrets_store, idempotent reuse confirmed. Created Auth0 resources named `proj-1289`.
   - **Email** (Mailtrap sandbox `sandbox.smtp.mailtrap.io:587`): a real STARTTLS+login+send succeeded (test
     email trapped in the sandbox inbox). Platform SMTP creds valid.
@@ -1839,7 +1839,7 @@ running cost).
 The AWS driver is no longer "real but unrun". DNS was delegated (Namecheap NS →
 Route53, confirmed propagated), and a synthetic backend-only fixture (project 357)
 was deployed for real via `DEPLOY_TARGET=aws` onto a tagged t3.micro. **Verified
-LIVE, independently from the host:** `https://shakeout-3c155f.apps.rajkumarai.dev`
+LIVE, independently from the host:** `https://shakeout-3c155f.apps.example.com`
 served `/openapi.json` (200), `/` and `/config-check` (`has_demo_secret:true` —
 secret injected via SSM Parameter Store), with a **real, trusted Let's Encrypt
 certificate** (issuer `Let's Encrypt`, valid Jul 31 → Oct 29; confirmed in
@@ -1869,12 +1869,12 @@ expired, until re-established).
 **Teardown was run and VERIFIED clean** (`teardown_aws.py --yes --terminate` +
 extras): 0 tagged instances, 0 ai-org ECR repos, 0 A records, 0 security groups,
 0 SSM params, the `ai-org-ec2` role/profile deleted, local project-357 rows/keys
-removed. The `apps.rajkumarai.dev` hosted zone (`Z02777111O69NKZ136VS`) is KEPT.
+removed. The `apps.example.com` hosted zone (`Z0XXXXXXXXXXXXXXXXXX`) is KEPT.
 Nothing paid is left running.
 
 **To run a live AWS deploy again** (all shakeout infra was torn down, so it must
 be recreated — logged as a known gap below):
-1. DNS is already delegated (zone `Z02777111O69NKZ136VS`, NS at Namecheap).
+1. DNS is already delegated (zone `Z0XXXXXXXXXXXXXXXXXX`, NS at Namecheap).
 2. Create a role+profile with SSM + ECR-read + `ssm:GetParametersByPath`/`kms:Decrypt`
    on `/ai-org/*`, a security group (80/443), and launch ONE t3.micro tagged
    `Project=ai-org` (AL2023; user-data installs docker + compose). Per the cost
