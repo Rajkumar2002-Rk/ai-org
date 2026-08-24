@@ -256,6 +256,26 @@ def test_pydantic_v2_rule():
           "min_items" not in agents._system("frontend"))
 
 
+def test_frontend_item_image_rule():
+    """Run 1843: menu items got an image_url end-to-end (schema/admin/API), but the
+    CUSTOMER-facing pages (public menu, order) are LLM-generated, so whether the photo
+    actually shows was left to chance. The frontend developer prompt must MANDATE
+    rendering image_url as an <img> wherever items are shown — a build-blocking gate
+    would be disproportionate (fail a whole app over a thumbnail), so this is enforced as
+    a strong prompt rule, like the API-base and Auth0 rules."""
+    from app.developers import agents
+    pf = agents._system("frontend")
+    check("frontend prompt mandates rendering image_url as an <img>",
+          "image_url" in pf and "<img" in pf)
+    check("frontend prompt covers the customer-facing pages (menu + order)",
+          "menu page" in pf and "order page" in pf)
+    check("frontend prompt says to omit the image when image_url is empty (no broken img)",
+          "omit" in pf and ("null" in pf or "empty" in pf))
+    # It is a FRONTEND-only rule — backend files never get it.
+    check("backend prompt does NOT carry the frontend image rule",
+          "<img" not in agents._system("backend"))
+
+
 def test_stub_function_detection():
     """Regression (project 888): the generated menu_upload.py looked complete but its
     core `parse_menu_items` was a placeholder `return []`, so extraction pulled 0
@@ -1238,6 +1258,7 @@ async def main():
         test_auth_symbol_contract()
         test_response_model_rule()
         test_pydantic_v2_rule()
+        test_frontend_item_image_rule()
         test_stub_function_detection()
         test_build_gate()
         test_no_stub_prompt_rule()

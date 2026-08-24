@@ -156,6 +156,18 @@ def _system(agent_type: str) -> str:
         "`getAccessTokenSilently()` as an `Authorization: Bearer <token>` header. A backend "
         "that returns 401 is not a bug — it means the frontend never logged the user in. "
         "Without a real login flow every gated feature is an unreachable 401."
+        # Item images (run 1843): menu items (and similar entities) carry an optional
+        # `image_url`. A customer-facing list that never renders the photo makes the whole
+        # image feature invisible — the schema, admin form, and API all carry it, but the
+        # customer sees text only. Mandate rendering so the visible payoff is reliable.
+        " CRITICAL item-image rule: whenever you render an entity that has an `image_url` "
+        "field (a menu item is the common case), SHOW its photo — render `<img src={"
+        "item.image_url} alt={item.name} />` as a small rounded thumbnail WHENEVER "
+        "image_url is set, and simply omit the <img> when image_url is null/empty (never "
+        "render a broken/empty image). This applies to EVERY customer-facing list of such "
+        "items — the public menu page, the order page, item cards — as well as admin "
+        "lists. Include `image_url` in the TypeScript type you use for the item. Do not "
+        "show an item that has a photo without displaying it."
     ) if agent_type == "frontend" else ""
     return (
         f"You are a senior {agent_type} developer. Generate ONE complete, "
