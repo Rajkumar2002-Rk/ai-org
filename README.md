@@ -5,6 +5,11 @@
 > tests it on an ephemeral instance, and deploys a working, isolated app** — end
 > to end.
 
+<p align="center">
+  <img src="docs/demo.png" alt="A coffee-shop web app generated end-to-end by the pipeline — themed design, real menu photos, running locally" width="840">
+</p>
+<p align="center"><sub>☕ A web app <b>generated end-to-end by the pipeline</b> — themed design and menu photos, deployed and running locally.</sub></p>
+
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
 ![Next.js](https://img.shields.io/badge/Next.js-App_Router-000000?logo=nextdotjs&logoColor=white)
