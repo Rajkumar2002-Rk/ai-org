@@ -4599,3 +4599,28 @@ User opened the LIVE 1843 app and gave two pieces of real feedback: (1) "plain w
   `{url}`), and added a `<input type=file accept=image/*>` to both admin forms that uploads then sets image_url.
   Round-trip verified. CAVEAT: `/srv/uploads` is ephemeral (lost on redeploy) — real platform upload needs
   PERSISTENT storage (volume or blob), a deliberate design choice, so it was NOT added to codegen.
+
+## 1ee. FIX #39 — self-heal a HALLUCINATED third-party package (fresh full run 1869) (DONE 2026-08-24)
+**Grounded in a REAL paid full run (project 1869, Opus on, ~$3) — the user chose the full run to surface a new
+bug.** BA→Architect(18 tickets, incl. MENU-1/MENU-2)→Build 18/18 → **boot_failed** (smoke_boot caught it; the
+auto-repair loop did NOT fix it). Root cause: `backend/app/security.py` (SEC-1) generated
+`from starlette_limiter import Limiter` — **no such PyPI package** (the LLM hallucinated it; the real one is
+`slowapi`). Because the assembly installs all third-party deps in ONE pip batch, that single bad name failed
+the WHOLE batch (python-jose, stripe, email-validator, python-multipart all dropped) → the app then boot-crashed
+on `ImportError: email-validator is not installed`. The existing Fix #27 boot-repair only heals a wrong PATH/name
+of an INSTALLED package; an install-failed-because-nonexistent package produced only a generic Failure, so no
+file was regenerated.
+- **Fix (reuses the Fix #27 channel, minimal new plumbing):** `assembly._nonexistent_pkgs(out)` parses the
+  non-existent package(s) from the pip output ("No matching distribution found for X" / "Could not find a
+  version…"); `_missing_package_findings(written, nonexistent)` maps each back to the importing file as an
+  `import_errors`-style finding (`kind="missing_package"`). `assemble()` sets `env.import_errors` + returns early
+  (no 45s boot timeout). `orchestrator.repair_import_errors` emits a MISSING_PACKAGE repair ("REMOVE the import;
+  use a REAL package; slowapi for rate limiting; never invent a name"). `_import_error_reason` renders it.
+- **Source-side prevention:** backend system prompt now says use `slowapi` for rate limiting, there is NO
+  `starlette_limiter`, only import packages that really exist.
+- Verified against 1869's REAL files (flags `security.py:11`). Tests in `test_qa_offline`; qa/developers/
+  smoke_boot/venv-pinning suites pass; backend rebuilt.
+- **⚠️ The recent design/menu-image changes were NOT measured this run** — the build boot-failed on the SEC-1
+  package before deploy, so we never saw the generated menu render. A re-run (now that #39 self-heals the cause)
+  is the way to finally measure Fix #38 (design), the menu image_url end-to-end, and the image-render mandate.
+  Project 1869 left in DB (boot_failed).
