@@ -4583,6 +4583,15 @@ User opened the LIVE 1843 app and gave two pieces of real feedback: (1) "plain w
   - **Admin form + Order page images (LIVE only, NOT committed):** added image_url URL field + thumbnail to the
     Manage-menu add AND edit forms, and image thumbnails to the Order page. (Platform MENU-2 already has the
     admin form field; the Order page is a creative ticket → contract-only for fresh builds.)
+  - **CUSTOMER-facing rendering now MANDATED platform-wide (`23aa9b1`):** the public menu/order pages are
+    LLM-generated, so image rendering was left to chance. Added a CRITICAL item-image rule to the frontend
+    SYSTEM prompt (`agents._system('frontend')`): render `<img src={item.image_url} alt={item.name}/>` as a
+    thumbnail whenever image_url is set (omit when null), across menu page / order page / item cards. Enforced
+    as a strong PROMPT rule (like the API-base + Auth0 rules), NOT a build-blocking gate — failing a whole build
+    over a missing thumbnail is disproportionate for a visual feature. Test in `test_developers_offline`. This is
+    the reliable-but-safe choice for option (b) 'deterministic public rendering'; a hard gate was rejected.
+  - **FILE UPLOAD deliberately NOT taken platform-wide** (option a): stays live-1843-only because real upload
+    needs PERSISTENT storage (volume/blob) — a deploy-layer design choice. URL-based is the platform default.
 - **FILE UPLOAD for menu images (LIVE 1843 only, NOT committed — the platform stays URL-based):** user asked for
   device upload (and a Google search-result LINK is not a direct image URL, so it never renders). Installed
   `python-multipart` in the deployed backend, mounted `StaticFiles` at `/uploads` (reachable at `/api/uploads/*`
