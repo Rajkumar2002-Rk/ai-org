@@ -1578,6 +1578,20 @@ async def build_ticket(
     to the prompt for every attempt of THIS invocation, so a re-generation fixes the
     exact deterministic finding instead of blindly rewriting the file."""
     agent_type = ticket.get("assigned_to", "backend")
+
+    # Deterministic boilerplate: a ticket that ships its OWN fixed `content` (e.g. the
+    # themed design-system globals.css, FND-5) is written VERBATIM — no LLM call. This is
+    # reliable (the file is identical on every build, no generation variance) and free
+    # (one fewer paid ticket). Only for is_boilerplate tickets, so feature work is never
+    # short-circuited.
+    fixed = ticket.get("content")
+    if fixed and ticket.get("is_boilerplate"):
+        file = _pin_path({"filename": (ticket.get("filepath") or "").rpartition("/")[2],
+                          "filepath": ticket.get("filepath") or "",
+                          "content": fixed}, ticket)
+        return {**file, "agent_type": agent_type, "ticket_id": ticket.get("id"),
+                "status": "generated"}
+
     prompt = _base_prompt(ticket, existing, contract)
     if repair:
         prompt += repair

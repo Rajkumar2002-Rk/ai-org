@@ -402,8 +402,15 @@ async def test_unique_filepaths():
           tk.get("FND-5", {}).get("filepath") == "frontend/app/globals.css")
     check("FND-5 runs in the FIRST wave (FND- prefix, no dependencies)",
           tk.get("FND-5", {}).get("dependencies") == [])
-    check("FND-5 forbids @tailwind directives without a config (plain CSS)",
-          "@tailwind" in tk.get("FND-5", {}).get("description", ""))
+    # FND-5 now ships DETERMINISTIC themed content (a design system), written verbatim.
+    fnd5_css = tk.get("FND-5", {}).get("content", "")
+    check("FND-5 carries baked, boilerplate design-system content (no LLM generation)",
+          bool(fnd5_css) and tk.get("FND-5", {}).get("is_boilerplate") is True)
+    check("FND-5 content is plain CSS — no @tailwind/preprocessor directives",
+          "@tailwind" not in fnd5_css and "@apply" not in fnd5_css)
+    check("FND-5 content is a real design system (tokens + motion), not a bare reset",
+          "--color-primary" in fnd5_css and "@keyframes" in fnd5_css
+          and "prefers-reduced-motion" in fnd5_css)
 
     # The entrypoint must be flagged so the Developer injects the real router
     # module paths — guessing conventional names is what broke a real build.
