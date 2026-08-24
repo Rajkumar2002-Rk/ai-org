@@ -75,7 +75,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 21 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 23 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4624,3 +4624,18 @@ file was regenerated.
   package before deploy, so we never saw the generated menu render. A re-run (now that #39 self-heals the cause)
   is the way to finally measure Fix #38 (design), the menu image_url end-to-end, and the image-render mandate.
   Project 1869 left in DB (boot_failed).
+
+## 1ff. FIX #40 — build-gate OFFLINE blocklist for known-hallucinated packages (companion to #39) (DONE 2026-08-24)
+User asked: "do we check imports after the developer writes code, and drop a package if it doesn't exist on
+PyPI?" Answer: Fix #39 does exactly that but at SMOKE_BOOT (pip is the ground-truth oracle; the build gate is
+offline/AST so it can't know PyPI truth without network). Fix #40 adds the OFFLINE fast-path at the BUILD GATE so
+KNOWN hallucinations are caught one step earlier (before smoke_boot even runs), with no network.
+- **`agents.hallucinated_package_imports(content, filepath)`** — AST-scans a backend `.py`'s imports; flags a
+  top-level package on the curated **`_HALLUCINATED_PACKAGES`** blocklist (currently just `starlette-limiter`).
+  Blocklist-only → a real package is NEVER flagged (a wrong entry would fail good builds; only proven-nonexistent
+  names go in, grows as runs surface them).
+- **`repair_instructions`** renders a MISSING_PACKAGE repair (drop the import; use `slowapi` for rate limiting;
+  never invent a name). Wired into `_collect_stubs` beside the other build-gate detectors.
+- **Two-layer defense:** build gate catches KNOWN hallucinations offline (#40); smoke_boot `pip install` stays the
+  ground-truth check for ANY non-existent package not on the list (#39). Verified against 1869's real security.py
+  (flags line 11). Test `test_hallucinated_package_gate`; developer offline suite passes; backend rebuilt.
