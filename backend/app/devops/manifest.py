@@ -55,11 +55,15 @@ FRONTEND_AUTH0_ENVS = (
     "NEXT_PUBLIC_AUTH0_CLIENT_ID",
     "NEXT_PUBLIC_AUTH0_AUDIENCE",
 )
-# frontend public env name -> backend provisioned env name it takes its value from.
+# frontend public env name -> backend provisioned env name(s) it takes its value from.
+# A tuple means "try these backend names in order" — the audience is stored under two
+# spellings across runs (Fix #31: API_AUDIENCE on run 1289, AUTH0_AUDIENCE on run 1614),
+# and reading only API_AUDIENCE left NEXT_PUBLIC_AUTH0_AUDIENCE EMPTY on run 1843's deploy
+# (login worked, but every gated API call 401'd because the token carried no audience).
 FRONTEND_AUTH0_FROM_BACKEND = {
     "NEXT_PUBLIC_AUTH0_DOMAIN": "AUTH0_DOMAIN",
     "NEXT_PUBLIC_AUTH0_CLIENT_ID": "AUTH0_CLIENT_ID",
-    "NEXT_PUBLIC_AUTH0_AUDIENCE": "API_AUDIENCE",
+    "NEXT_PUBLIC_AUTH0_AUDIENCE": ("API_AUDIENCE", "AUTH0_AUDIENCE"),
 }
 
 
@@ -88,8 +92,11 @@ def frontend_public_env(backend_env: dict) -> dict:
     Auth0 (or before provisioning) gets none — never an empty/placeholder inlined."""
     out = {}
     for pub, src in FRONTEND_AUTH0_FROM_BACKEND.items():
-        if backend_env.get(src):
-            out[pub] = backend_env[src]
+        sources = (src,) if isinstance(src, str) else src
+        for name in sources:                     # first present alias wins
+            if backend_env.get(name):
+                out[pub] = backend_env[name]
+                break
     return out
 
 # Always needed to run a generated FastAPI + async SQLAlchemy app, whether or not

@@ -344,6 +344,19 @@ def test_auth0_frontend_wiring():
           "FERNET_KEY" not in fp and "secret" not in str(fp))
     check("an app without provisioned Auth0 gets an empty frontend_public_env",
           manifest.frontend_public_env({"FERNET_KEY": "x"}) == {})
+    # Regression (deploy of run 1843): the audience is stored under EITHER spelling
+    # (Fix #31). When only AUTH0_AUDIENCE is present, the frontend audience must still be
+    # populated — reading only API_AUDIENCE left NEXT_PUBLIC_AUTH0_AUDIENCE empty and every
+    # gated API call 401'd after login.
+    be_alias = {"AUTH0_DOMAIN": "t.us.auth0.com", "AUTH0_CLIENT_ID": "cid_1",
+                "AUTH0_AUDIENCE": "https://app/api"}
+    check("audience maps from AUTH0_AUDIENCE when API_AUDIENCE is absent (run 1843)",
+          manifest.frontend_public_env(be_alias).get("NEXT_PUBLIC_AUTH0_AUDIENCE")
+          == "https://app/api", str(manifest.frontend_public_env(be_alias)))
+    check("API_AUDIENCE still wins when BOTH aliases are present",
+          manifest.frontend_public_env(
+              {**be_alias, "API_AUDIENCE": "https://primary/api"}
+          ).get("NEXT_PUBLIC_AUTH0_AUDIENCE") == "https://primary/api")
 
     root = tempfile.mkdtemp(prefix="devops-a0-")
     names = naming.names(4242, "Loginful")
