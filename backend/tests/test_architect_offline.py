@@ -690,8 +690,9 @@ async def test_generated_homepage():
                  for c in t["columns"]}
     check("menu_items schema includes an image_url column", "image_url" in menu_cols)
     tk = {t["id"]: t for t in tickets}
-    check("MENU-1 (backend) wires image_url into the request/response schemas",
-          "image_url" in tk.get("MENU-1", {}).get("description", ""))
+    check("MENU-1 (backend) wires image_url into the schemas AND persists it",
+          "image_url" in tk.get("MENU-1", {}).get("description", "")
+          and "PERSIST" in tk.get("MENU-1", {}).get("description", "").upper())
     check("MENU-2 (admin screen) has an image_url field + renders a thumbnail",
           "image_url" in tk.get("MENU-2", {}).get("description", "")
           and "<img" in tk.get("MENU-2", {}).get("description", ""))

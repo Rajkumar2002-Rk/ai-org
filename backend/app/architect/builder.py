@@ -1260,7 +1260,9 @@ def _menu_tickets(menu_setup: str) -> list[dict]:
                 "request/response bodies — never an ORM model as a response_model. "
                 "menu_items has an OPTIONAL `image_url` (a photo URL): include it in "
                 "the create/update request schemas AND every response schema (nullable "
-                "string), so items can carry a picture."
+                "string), AND actually PERSIST it — set image_url on the model when "
+                "CREATING and when UPDATING an item (not just in the schema), so a saved "
+                "photo round-trips back on GET."
             ),
             "dependencies": ["FND-1", "FND-2"],
         },
