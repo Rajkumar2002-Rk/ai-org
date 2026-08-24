@@ -4568,3 +4568,11 @@ User opened the LIVE 1843 app and gave two pieces of real feedback: (1) "plain w
   native elements + the ground, but page-level layout/cards are inline). A deeper pass would (a) have the frontend
   prompt use the design-system classes (.card, .btn, tokens) instead of ad-hoc inline styles, and (b) prove #38
   on a FRESH build. #38 is a big lift already; measure it on the next real/cheap build before investing more.
+- **MENU-ITEM PHOTOS (committed platform feature, `df0d747`):** menu items were text-only (user: 'no pictures').
+  Added an optional `image_url` to the canonical `_MENU_ITEMS_TABLE` (first-class column → flows into FND-1's
+  model + the binding contract), and wired it through MENU-1 (backend request/response schemas) + MENU-2 (admin
+  form field + thumbnail). URL-based (paste a photo link — no blob storage). Test in `test_architect_offline`
+  (schema column + both ticket wirings). Also applied to the LIVE 1843 app (NOT committed): `ALTER TABLE
+  menu_items ADD image_url`, seeded loremflickr photo URLs, patched the deployed backend model+schemas and the
+  frontend menu page to render an `<img>` thumbnail, rebuilt. Public menu page rendering on a FRESH build is
+  best-effort via the contract (the public menu page is a creative ticket) — verify on the next build.
