@@ -287,11 +287,22 @@ async def repair_import_errors(project_id: int, blueprint: dict,
                            filepath, project_id)
             continue
         reasons = "\n".join(qa_assembly._import_error_reason(e) for e in errs)
-        repair = ("\n=== THIRD_PARTY_IMPORT — repair ONLY this file, do not touch any "
-                  "other file ===\n" + reasons + "\nRepair: import each symbol from the "
-                  "package's correct PUBLIC location — usually the package top level "
-                  "(e.g. `from stripe import PaymentIntent`), NOT a guessed internal "
-                  "submodule. Keep the file's behaviour and public names unchanged.")
+        if any(e.get("kind") == "missing_package" for e in errs):
+            # The package does not exist at all (run 1869: starlette_limiter) — there is no
+            # 'correct location'. Tell the agent to DROP the import and use a real one.
+            repair = ("\n=== MISSING_PACKAGE — repair ONLY this file, do not touch any other "
+                      "file ===\n" + reasons + "\nRepair: the package(s) above do NOT exist on "
+                      "PyPI — REMOVE that import entirely. Re-implement the behaviour with a "
+                      "REAL, widely-used package or the standard library / inline code. For "
+                      "RATE LIMITING use `slowapi` (`from slowapi import Limiter`) or drop the "
+                      "limiter; NEVER invent a package name (no `starlette_limiter`). Keep the "
+                      "file's public names and behaviour otherwise unchanged.")
+        else:
+            repair = ("\n=== THIRD_PARTY_IMPORT — repair ONLY this file, do not touch any "
+                      "other file ===\n" + reasons + "\nRepair: import each symbol from the "
+                      "package's correct PUBLIC location — usually the package top level "
+                      "(e.g. `from stripe import PaymentIntent`), NOT a guessed internal "
+                      "submodule. Keep the file's behaviour and public names unchanged.")
         new = await agents.build_ticket(ticket, _model_for(ticket, routing),
                                         existing, contract, repair)
         if not new or new.get("status") == agents.STUB_STATUS or not new.get("content"):

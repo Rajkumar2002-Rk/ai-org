@@ -439,6 +439,29 @@ def test_third_party_import_gate():
     check("a real submodule failing only on a missing optional dep is NOT flagged",
           _third_party_import_errors(V, dep_case) == [], str(_third_party_import_errors(V, dep_case)))
 
+    # Run 1869: a HALLUCINATED package (`starlette_limiter`) fails the whole pip install.
+    # It is detected from the installer output and mapped back to the importing file, then
+    # fed through the SAME import_errors boot-repair channel — a precise, repairable finding.
+    from app.qa.assembly import _nonexistent_pkgs, _missing_package_findings
+    pip_out = ("Collecting python-jose\n"
+               "ERROR: Could not find a version that satisfies the requirement "
+               "starlette_limiter (from versions: none)\n"
+               "ERROR: No matching distribution found for starlette_limiter\n")
+    nonexistent = _nonexistent_pkgs(pip_out)
+    check("the non-existent package is parsed from the installer output",
+          "starlette-limiter" in nonexistent, str(nonexistent))
+    sec = {"backend/app/security.py": "from starlette_limiter import Limiter\n"
+                                        "from fastapi import Depends\n"}
+    finds = _missing_package_findings(sec, nonexistent)
+    check("the hallucinated import is mapped back to the importing file",
+          len(finds) == 1 and finds[0]["file"] == "backend/app/security.py"
+          and finds[0]["kind"] == "missing_package", str(finds))
+    check("its reason says the package does not exist on PyPI (hallucinated)",
+          "does NOT" in _import_error_reason(finds[0])
+          and "PyPI" in _import_error_reason(finds[0]), _import_error_reason(finds[0]))
+    check("a file importing only a REAL package yields no missing-package finding",
+          _missing_package_findings({"a.py": "from fastapi import Depends\n"}, nonexistent) == [])
+
     # The real 1496 fixture: stripe isn't installed HERE so the check skips it, but the
     # candidate extractor must still SEE the offending import (it would be caught in the
     # assembly venv where stripe is installed).

@@ -516,7 +516,31 @@ def _venv_python(venv_dir: str) -> str:
     return exe if os.path.exists(exe) else sys.executable
 
 
-def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
+_PIP_NOT_FOUND_RE = re.compile(
+    r"(?:No matching distribution found for|Could not find a version that "
+    r"satisfies the requirement)\s+([A-Za-z0-9_.\-]+)", re.I)
+
+
+def _nonexistent_pkgs(installer_output: str) -> set[str]:
+    """Canonical names of packages pip could not find on the index AT ALL — parsed from
+    the installer output. Almost always a hallucinated import (run 1869: `starlette_limiter`)."""
+    return {_canon(m.group(1)) for m in _PIP_NOT_FOUND_RE.finditer(installer_output or "")}
+
+
+def _missing_package_findings(written: dict[str, str], nonexistent: set[str]) -> list[dict]:
+    """import_errors-style findings ({file, line, module, names, kind, root, pypi}) for every
+    `from <pkg> import ...` whose top-level package does NOT exist on PyPI. Reuses the Fix #27
+    boot-repair path so the offending file is regenerated WITHOUT the hallucinated import."""
+    out: list[dict] = []
+    for c in _third_party_import_candidates(written):
+        root = (c["module"] or "").split(".")[0]
+        pypi = _canon(_PACKAGE_ALIASES.get(root, root))
+        if pypi in nonexistent:
+            out.append({**c, "kind": "missing_package", "root": root, "pypi": pypi})
+    return out
+
+
+def _install_deps(venv_dir: str, written: dict[str, str]) -> tuple[list[Failure], list[dict]]:
     """Install third-party imports the platform doesn't already provide.
 
     Every install goes through a pip `--constraint` file pinning the platform
@@ -555,7 +579,7 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
         constraints_path = None
 
     if not missing:
-        return []
+        return [], []
 
     # Pin each missing package to the platform version where we have one; unknown
     # extras (pdfplumber, python-jose, …) install latest but cannot move a pinned
@@ -567,15 +591,24 @@ def _install_deps(venv_dir: str, written: dict[str, str]) -> list[Failure]:
     cmd += to_install
     code, out = _run(cmd, timeout=settings.qa_install_timeout)
     if code != 0:
-        # A dependency that cannot be installed is very often a HALLUCINATED
-        # import — exactly the class of bug QA exists to catch.
-        return [Failure(
+        # A dependency that cannot be installed is very often a HALLUCINATED import —
+        # exactly the class of bug QA exists to catch. Identify the NON-EXISTENT
+        # package(s) from the installer output and map each back to the file that
+        # imports it, so the boot-repair loop can regenerate THAT file without the bad
+        # import (run 1869: `from starlette_limiter import Limiter` — no such PyPI
+        # package — failed the whole pip batch, cascading email-validator etc. to a
+        # boot crash). A single bad name poisoning the batch is why we surface it here
+        # as a precise, repairable finding rather than a 45s boot timeout.
+        nonexistent = _nonexistent_pkgs(out)
+        findings = _missing_package_findings(written, nonexistent) if nonexistent else []
+        fail = Failure(
             "assembly: dependency install failed",
             f"Could not install {', '.join(missing)}. This usually means the "
             f"generated code imports a package that does not exist. "
             f"Installer output: {out[-600:]}",
-        )]
-    return []
+        )
+        return [fail], findings
+    return [], []
 
 
 # In-project roots — resolved by Fix #16 (import_symbol_mismatches), NOT here.
@@ -703,6 +736,10 @@ def _third_party_import_errors(venv_dir: str, written: dict[str, str]) -> list[d
 def _import_error_reason(e: dict) -> str:
     """Human/agent-readable reason for one third-party import finding."""
     names = ", ".join(e.get("names") or [])
+    if e["kind"] == "missing_package":
+        return (f"{e['file']} line {e.get('line')}: `from {e['module']} import {names}` — "
+                f"the package `{e.get('pypi') or e.get('root') or e['module']}` does NOT "
+                f"exist on PyPI and cannot be installed (this import is hallucinated).")
     if e["kind"] == "no_submodule":
         sug = (f" Import {'/'.join(e['on_root'])} directly from `{e['root']}` "
                f"(e.g. `from {e['root']} import {(e.get('on_root') or [names])[0]}`)."
@@ -961,8 +998,18 @@ async def assemble(files: list[dict],
         if fails:
             return env
 
-        inst_fails = _install_deps(venv_dir, written)
+        inst_fails, missing_pkg_findings = _install_deps(venv_dir, written)
         env.failures.extend(inst_fails)
+
+        # A HALLUCINATED package failed the install (run 1869). Hand the boot-repair loop
+        # a precise finding (which file, which import) via the same channel as the Fix #27
+        # import errors, instead of letting the app 45s-timeout at boot on the missing dep.
+        if missing_pkg_findings:
+            env.import_errors = missing_pkg_findings
+            for e in missing_pkg_findings:
+                env.failures.append(Failure(
+                    f"assembly: missing package in {e['file']}", _import_error_reason(e)))
+            return env
 
         # Third-party import symbol gate (run 1496): with the real deps now installed,
         # catch a `from <pkg> import Y` whose submodule/name doesn't exist (the LLM
