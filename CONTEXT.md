@@ -4576,3 +4576,17 @@ User opened the LIVE 1843 app and gave two pieces of real feedback: (1) "plain w
   menu_items ADD image_url`, seeded loremflickr photo URLs, patched the deployed backend model+schemas and the
   frontend menu page to render an `<img>` thumbnail, rebuilt. Public menu page rendering on a FRESH build is
   best-effort via the contract (the public menu page is a creative ticket) — verify on the next build.
+  - **PERSIST fix (`b94b3c9`):** live-app testing hit the trap that a create/edit handler can accept image_url
+    in the Pydantic schema yet never write it to the model (photo silently dropped). Strengthened MENU-1 to
+    require PERSISTING image_url on create+update; also patched the live handlers (add_menu_item constructor +
+    edit_menu_item) to set it. Test asserts the 'PERSIST' wording.
+  - **Admin form + Order page images (LIVE only, NOT committed):** added image_url URL field + thumbnail to the
+    Manage-menu add AND edit forms, and image thumbnails to the Order page. (Platform MENU-2 already has the
+    admin form field; the Order page is a creative ticket → contract-only for fresh builds.)
+- **FILE UPLOAD for menu images (LIVE 1843 only, NOT committed — the platform stays URL-based):** user asked for
+  device upload (and a Google search-result LINK is not a direct image URL, so it never renders). Installed
+  `python-multipart` in the deployed backend, mounted `StaticFiles` at `/uploads` (reachable at `/api/uploads/*`
+  via Caddy's /api strip), added `POST /admin/menu/upload-image` (UploadFile → saved to `/srv/uploads`, returns
+  `{url}`), and added a `<input type=file accept=image/*>` to both admin forms that uploads then sets image_url.
+  Round-trip verified. CAVEAT: `/srv/uploads` is ephemeral (lost on redeploy) — real platform upload needs
+  PERSISTENT storage (volume or blob), a deliberate design choice, so it was NOT added to codegen.
