@@ -162,6 +162,10 @@ docker-compose.yml   backend · frontend · postgres · redis
 `/pipeline/secure` → `/pipeline/qa` → `/pipeline/deploy` → `/pipeline/document`,
 each with a matching `GET /pipeline/{id}/…-status`.
 
+## License
+
+Released under the [MIT License](LICENSE).
+
 ---
 
 <sub>Status: an independently-built research & portfolio project. The pipeline
