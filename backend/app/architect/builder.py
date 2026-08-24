@@ -1181,6 +1181,7 @@ _MENU_ITEMS_TABLE = {
         {"name": "price", "type": "string"},
         {"name": "category", "type": "string"},
         {"name": "description", "type": "text"},
+        {"name": "image_url", "type": "string"},  # optional photo URL shown on the menu
         {"name": "status", "type": "string"},   # 'pending_review' | 'published'
         {"name": "source", "type": "string"},    # 'manual' | 'pdf'
         {"name": "created_at", "type": "datetime"},
@@ -1256,7 +1257,10 @@ def _menu_tickets(menu_setup: str) -> list[dict]:
                 "/admin/menu (all items), POST /admin/menu (add one item with "
                 "status='published', source='manual'), PUT /admin/menu/{item_id} "
                 "(edit), DELETE /admin/menu/{item_id}. Use Pydantic schemas for "
-                "request/response bodies — never an ORM model as a response_model."
+                "request/response bodies — never an ORM model as a response_model. "
+                "menu_items has an OPTIONAL `image_url` (a photo URL): include it in "
+                "the create/update request schemas AND every response schema (nullable "
+                "string), so items can carry a picture."
             ),
             "dependencies": ["FND-1", "FND-2"],
         },
@@ -1267,9 +1271,11 @@ def _menu_tickets(menu_setup: str) -> list[dict]:
             "filepath": "frontend/app/admin/menu/page.tsx",
             "description": (
                 "An owner screen listing menu items with a form to add an item "
-                "(name, price, category, description) and controls to edit or "
-                "delete each, wired to /admin/menu. This is the owner's manual "
-                "menu-entry surface, and where confirmed items also appear."
+                "(name, price, category, description, and an OPTIONAL image_url — a "
+                "photo URL) and controls to edit or delete each, wired to /admin/menu. "
+                "Show each item's photo as a thumbnail when image_url is set (render an "
+                "<img> with the item name as alt text; skip it when empty). This is the "
+                "owner's manual menu-entry surface, and where confirmed items also appear."
             ),
             "dependencies": ["MENU-1"],
         },

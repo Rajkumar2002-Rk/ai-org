@@ -684,6 +684,17 @@ async def test_generated_homepage():
     check("it is FND-6, a frontend ticket, first-wave (no deps)",
           hp["id"] == "FND-6" and hp["assigned_to"] == "frontend" and hp["dependencies"] == [])
     check("its description names the business", "Bella Vista" in hp["description"])
+    # Menu items carry an optional photo (image_url) as a first-class schema column,
+    # and the deterministic menu tickets commission it end-to-end.
+    menu_cols = {c["name"] for t in bp["database_schema"] if t["table"] == "menu_items"
+                 for c in t["columns"]}
+    check("menu_items schema includes an image_url column", "image_url" in menu_cols)
+    tk = {t["id"]: t for t in tickets}
+    check("MENU-1 (backend) wires image_url into the request/response schemas",
+          "image_url" in tk.get("MENU-1", {}).get("description", ""))
+    check("MENU-2 (admin screen) has an image_url field + renders a thumbnail",
+          "image_url" in tk.get("MENU-2", {}).get("description", "")
+          and "<img" in tk.get("MENU-2", {}).get("description", ""))
     # Consistency: it links EXACTLY the app's real routes (whatever the build produced).
     real_routes = builder._frontend_page_routes(tickets)
     check("there ARE real routes to link (a menu app has feature pages)", len(real_routes) > 0)
