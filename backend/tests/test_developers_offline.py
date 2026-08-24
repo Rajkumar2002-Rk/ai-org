@@ -593,19 +593,24 @@ def test_duplicate_endpoint_gate():
     check("a clean app (every endpoint one owner) yields no duplicates",
           agents.duplicate_endpoints([order, menu]) == [])
 
-    # Regression (run 1843): the SECURITY helper (SEC-1, backend/app/security.py — NOT a
-    # route module) carried an ILLUSTRATIVE `@app.post("/orders")` example. The detector
-    # scanned it, invented a phantom `POST /orders` duplicate, and told the REAL order.py
-    # to drop its route -> BE-1 stubbed -> build error. Only route MODULES may own routes.
+    # Regression (measurement run 1843, REAL captured files): the SECURITY helper (SEC-1,
+    # backend/app/security.py — NOT a route module) carried an ILLUSTRATIVE
+    # `@app.post("/orders")` example. The detector scanned it, invented a phantom
+    # `POST /orders` duplicate, and told the REAL order.py to drop its route -> BE-1 stubbed
+    # -> build error. Only route MODULES may own routes. Loaded from the exact 1843 artifacts.
+    import os as _os
+    _fxd = _os.path.join(_os.path.dirname(__file__), "fixtures")
     sec_helper = {"ticket_id": "SEC-1", "status": "generated", "filepath": "backend/app/security.py",
-                  "content": "# example of gating an endpoint:\n"
-                             "@app.post('/orders', dependencies=[Depends(get_current_user)])\n"
-                             "async def demo(): pass\n"}
+                  "content": open(_os.path.join(_fxd, "security_illustrative_endpoint_1843.py"),
+                                  encoding="utf-8").read()}
     real_order = {"ticket_id": "BE-1", "status": "generated", "filepath": "backend/app/routes/order.py",
-                  "content": "router = APIRouter()\n@router.post('/orders')\nasync def a(): pass\n"}
-    check("an illustrative endpoint in a non-route helper (security.py) is NOT a duplicate",
+                  "content": open(_os.path.join(_fxd, "order_route_1843.py"),
+                                  encoding="utf-8").read()}
+    check("1843's REAL security.py DOES carry an illustrative @app.post('/orders')",
+          ("post", "/orders") in agents._endpoints_of(sec_helper["content"]))
+    check("but as a non-route module it is NOT flagged a duplicate of the real order.py",
           agents.duplicate_endpoints([real_order, sec_helper, menu]) == [])
-    check("a non-route .py file contributes no endpoints at all",
+    check("a non-route .py file contributes no endpoints to the ownership map",
           "backend/app/security.py" not in
           [fp for d in agents.duplicate_endpoints([real_order, sec_helper]) for fp in d["files"]])
 
