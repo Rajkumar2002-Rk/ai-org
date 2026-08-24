@@ -75,7 +75,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 23 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 24 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4639,3 +4639,26 @@ KNOWN hallucinations are caught one step earlier (before smoke_boot even runs), 
 - **Two-layer defense:** build gate catches KNOWN hallucinations offline (#40); smoke_boot `pip install` stays the
   ground-truth check for ANY non-existent package not on the list (#39). Verified against 1869's real security.py
   (flags line 11). Test `test_hallucinated_package_gate`; developer offline suite passes; backend rebuilt.
+
+## 1gg. FIX #41 — truncation gate FALSE POSITIVE on apostrophes in JSX text (re-run 1887) (DONE 2026-08-24)
+**Re-run 1887 (full, Opus on, ~$3) — the payoff run that MEASURED our recent work.** BA→Architect(19 tickets)→
+Build 19/19 → **error**. HUGE positive signal in the generated files first:
+- ✅ **Fix #38 design system LANDED** — `globals.css` is the exact deterministic themed system (4581 chars).
+- ✅ **Menu images LANDED** — `models.py` has the `image_url` column, `menu.py` PERSISTS it, and the customer
+  pages (`menu`, `order`, `admin/menu`) all render `<img src={item.image_url}>` (the Fix #38 mandate worked!).
+- ✅ **`starlette_limiter` did NOT recur** — Fix #39/#40 held; `security.py` clean.
+- ✅ Auth flow (`providers.tsx`), Stripe, layout-wraps-provider — all generated.
+**The ONLY failure was a FALSE POSITIVE:** `settings/page.tsx` (PAY-2) is a COMPLETE, valid file, but Fix #15's
+`_strip_code` treated the apostrophe in JSX text (`Stripe's hosted checkout`) as a string delimiter → entered
+string mode → consumed the code+parens up to the next apostrophe → desynced the brace counter → falsely reported
+"2 unclosed (/{" → stubbed PAY-2 → build error. So a single English contraction in copy failed the whole build.
+- **Fix:** in `_strip_code`, a `'` or `"` immediately preceded by a WORD char (letter/digit/`_`) is a contraction
+  in JSX text (`Stripe's`, `we're`, `don't`), never a valid JS string start — append it, don't enter string mode.
+  Backticks excluded (tagged templates legitimately follow an identifier). Genuine truncation / unterminated
+  strings still caught (the 1007 fixture still flags). Fixture `jsx_apostrophe_settings_1887.tsx` = the real file.
+  Test in `test_frontend_completeness_gate`; developer offline suite passes; backend rebuilt.
+- **⏭️ 1887's codegen was actually GOOD** — every file is complete/valid (confirmed by Fix #41), our features all
+  landed, and only the false-positive blocked it. So 1887's EXISTING files can be DEPLOYED (skip-cert, near-$0) to
+  finally SEE the design system + menu images in a browser — no new $3 run needed. Project 1887 left in DB.
+- Two `needs_review` files (MENU-2 admin/menu, FE-1 menu) — real files that failed the lenient LLM self-review
+  but are NOT truncated and NOT stubs, so they do NOT fail the build; deployable as-is.
