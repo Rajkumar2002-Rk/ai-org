@@ -43,8 +43,14 @@ To restart Monday: `docker compose up -d`.
   security helper carried an illustrative `@app.post('/orders')`, invented a phantom `POST /orders` dup, told
   the REAL order.py to drop its route → BE-1 stubbed → build error. Now only route MODULES (`routes/` + main.py)
   are scanned; §1bb. Backend rebuilt live.
-- Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE), 1843 (→ build error, Fix #36 fixed the
-  cause; Fix #35 CONFIRMED — single order.py, no split). All left in DB.
+- **FIX #37** frontend Auth0 audience alias — `manifest.frontend_public_env` now maps `NEXT_PUBLIC_AUTH0_AUDIENCE`
+  from EITHER `API_AUDIENCE` or `AUTH0_AUDIENCE` (1843 deploy had it empty → gated calls would 401 post-login);
+  §1cc. Backend rebuilt; 1843 redeployed with the audience now flowing.
+- **💡 CHEAP measurement method (§1cc):** $0 offline gate-replay + near-$0 deploy-of-existing-files (skip-cert +
+  /pipeline/deploy, no codegen) replace most paid runs. Use these before paying for a fresh full run.
+- Runs: 1496 (stripe import), 1557 (missing endpoint), 1614 (→ LIVE), 1843 (build error → Fix #36 fixed cause;
+  deployed the existing files for $0 → Fix #34 login CODE verified good + Fix #37 audience bug found/fixed;
+  Fix #35 CONFIRMED — single order.py, no split). All left in DB.
 - ⚠️ Mid-session macOS revoked repo file access; some commits were made via the Docker daemon. NOW RESTORED.
 
 ## ⏭️ NEXT (Monday) — pick a GROUNDED build (regression-test against a REAL captured bug; NO speculation)
@@ -65,7 +71,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 19 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 20 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4493,6 +4499,41 @@ went BA → PI → Architect (18 tickets) → Build 18/18 files → **build ERRO
 - **WHAT 1843 VALIDATED (the wins):** ✅ **Fix #35 confirmed live** — the order resource stayed in a SINGLE
   `order.py` (no order.py+orders.py split). ✅ FND-7 `providers.tsx` + a login flow WERE generated (Fix #34's
   mandate held) — but end-to-end login could NOT be measured because the build errored first.
-- **⏭️ NEXT:** the build-error CAUSE is now fixed, but the run was never re-driven, so Fix #34's login QUALITY
-  end-to-end is STILL unmeasured. A fresh run (~$3, ASK first) would now get past build and let us finally see
-  whether the generated login actually works (the honest #1 frontier). Project 1843 left in DB (build_error).
+- **⏭️ NEXT:** the build-error CAUSE is fixed. Rather than pay for a fresh run, we measured 1843's login the
+  CHEAP way (see §1cc). Project 1843 left in DB.
+
+## 1cc. FIX #37 — frontend Auth0 audience alias + the CHEAP measurement method (deploy of run 1843) (DONE 2026-08-24)
+**Cost lesson (user asked "is there a cheaper way than a fresh $3 run every time?"): YES.** Two $0/near-$0 tools
+replace most paid runs:
+- **$0 — offline gate replay:** every deterministic fix (#16–#37) is a gate with no LLM. Load a run's stored
+  `generated_files` and run the gate. Confirmed Fix #36 live against 1843's REAL files (phantom dup → `[]`).
+  Also fixturized 1843 (`security_illustrative_endpoint_1843.py` + `order_route_1843.py`) as a permanent free
+  regression.
+- **near-$0 — deploy the EXISTING generated files** (no codegen): mint the debug skip-cert
+  (`reviewer.skipped_certificate`, no LLM) into `security_cert:<pid>`, then POST `/pipeline/deploy`. Deploy is
+  docker build + run only. Run 1843 went LIVE at a local `https://localhost:<port>` for $0. (The build-status
+  gate on `/pipeline/secure` needs a passing build, so mint the cert directly — a supported local-debug path.)
+  NOTE: re-running `/pipeline/build` is NOT cheap — `orchestrator.run` regenerates ALL tickets (~$1 + variance +
+  duplicate DB rows); only use it to test codegen/prompt changes, never to "redeploy existing files".
+
+**WHAT THE 1843 DEPLOY MEASURED (Fix #34's honest #1 frontier — the generated login):**
+- ✅ **Login CODE is genuinely good** (verified by READING the real files): `layout.tsx` wraps the app in
+  `<Providers>` → `<Auth0Provider>`; `providers.tsx` has a real `loginWithRedirect` Login/Logout UI + a
+  `useApi()` helper that fetches the token via `getAccessTokenSilently` and attaches `Authorization: Bearer`.
+  Wiring is COHERENT vs the backend gating: gated pages (admin/menu, settings) attach the token; public pages
+  (menu GET /menu, order POST /orders — both ungated in the generated backend) correctly do not.
+- 🐞 **A REAL deploy-only bug the code-read could NOT catch → FIX #37:** at deploy the frontend
+  `NEXT_PUBLIC_AUTH0_AUDIENCE` was EMPTY while the backend had `AUTH0_AUDIENCE` set. `manifest.frontend_public_env`
+  mapped the frontend audience ONLY from `API_AUDIENCE`, but 1843 stored it under `AUTH0_AUDIENCE` (Fix #31's two
+  spellings). → the SPA requested a token with NO audience → every gated API call would 401 AFTER a successful
+  login (login built but not usable e2e — the exact 1105/1614 "responds but not usable" pattern, one layer up).
+  **Fix:** `FRONTEND_AUTH0_FROM_BACKEND` maps the audience from EITHER alias (API_AUDIENCE, then AUTH0_AUDIENCE);
+  `frontend_public_env` tries each. Regression in `test_devops_offline`. Backend rebuilt; 1843 REDEPLOYED and the
+  frontend env now carries `NEXT_PUBLIC_AUTH0_AUDIENCE=https://…` (was empty). All devops offline checks pass.
+- **Minor tail (not a bug):** gated pages hand-roll `Authorization: Bearer` via `useAuth0` instead of reusing the
+  shared `useApi()` helper. Cosmetic consistency only.
+- **Could NOT get a browser click-through:** the sandbox browser refuses self-signed localhost HTTPS, and an
+  ephemeral-port local deploy's callback URL isn't registered in the hosted Auth0 tenant (would be a callback
+  mismatch) — both ENVIRONMENT limits, not app bugs. The config-level verification above is the honest result.
+- The 1843 ephemeral deploy stack (`aiorg_p1843_*`) is a LOCAL docker stack (no cloud cost). Tear down with
+  `docker rm -f $(docker ps -aq --filter name=aiorg_p1843_)` when done poking at it.
