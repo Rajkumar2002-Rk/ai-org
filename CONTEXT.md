@@ -75,7 +75,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 24 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 25 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4662,3 +4662,30 @@ string mode → consumed the code+parens up to the next apostrophe → desynced 
   finally SEE the design system + menu images in a browser — no new $3 run needed. Project 1887 left in DB.
 - Two `needs_review` files (MENU-2 admin/menu, FE-1 menu) — real files that failed the lenient LLM self-review
   but are NOT truncated and NOT stubs, so they do NOT fail the build; deployable as-is.
+
+## 1hh. FIX #42 — re-validate POST-build rewrites (Opus auto-fix + QA regen) (fresh full run 1914) (DONE 2026-08-25)
+**🏆 Run 1914 (full, Opus on, ~$3) went FURTHER than any run: Build 17/17 done → real Opus review PASSED
+(claude-opus-4-8, 74 issues fixed, CERTIFIED) → QA → deploy.** But QA failed 31/92 and deploy failed
+("app did not become healthy"). Every failure was a systemic `500 {"detail":"Internal server error"}` across
+orders + stripe endpoints — a security-CERTIFIED app that 500s on every DB endpoint.
+- **Root cause (an architectural hole):** the build gate certifies clean code, then TWO post-build stages rewrite
+  files WITHOUT re-running the deterministic gates:
+  1. **Opus security auto-fix (reviewer/orchestrator):** applied `rev["new_content"]` straight to `gf.content`
+     with ZERO re-validation. Opus's "hardening" wrapped `get_db` in the FIX #24 HTTPException-swallow
+     (`try: …yield… except Exception: raise HTTPException(500)`), so every handler error became a masked 500.
+  2. **QA regen gate (`_gate_regenerated`, Fix #18):** checked syntax/symbol/attribute/http-swallow but NOT
+     schema-mismatch, so QA's rewrite of `models.py` renamed the contract column `source`->`source_name` unchecked.
+  Both detectors DO flag these when run — they just never ran on the rewrites. (Confirmed: `http_exception_swallow`
+  and `model_schema_mismatches` both fire on 1914's real files.)
+- **Fix:** `agents.rewrite_integrity_gate(content, filepath, files, schema, file_id)` — the full build-gate check
+  packaged for reuse (syntax, hallucinated-pkg, symbol, attribute, http-swallow, schema-mismatch); returns a
+  repair-shaped dict; `repair_instructions` gains a SCHEMA_MISMATCH section. `reviewer._accept_or_reject_fix`
+  re-validates every Opus fix and KEEPS the certified original if the fix reintroduces a defect the original
+  lacked. `qa._gate_regenerated` now delegates to the shared gate (adds schema-mismatch).
+- Verified against 1914's REAL files: `database.py` → `http_swallow_repairs`, `models.py` → `schema_repairs`
+  (`menu_items.source`). Tests `test_rewrite_integrity_gate` + `test_reviewer_rejects_unsafe_autofix`; developers
+  + qa offline suites pass; backend rebuilt.
+- **WHAT 1914 VALIDATED:** ✅ Fixes #39/#40/#41 all held (no hallucinated pkg, no truncation FP). ✅ Design system
+  + menu image_url + column all landed again. ✅ First fresh run to PASS the real Opus review and REACH deploy.
+- **⏭️ NEXT:** the cause is fixed; a re-run should now get a security-certified app that actually WORKS at QA/deploy
+  — potentially the first fresh full run to a genuinely LIVE, usable app. Project 1914 left in DB.
