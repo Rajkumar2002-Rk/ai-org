@@ -1334,7 +1334,63 @@ def repair_instructions(result: dict) -> str:
                 f"LIMITING use `slowapi` (`from slowapi import Limiter`) or drop the limiter; "
                 f"NEVER invent a package name like `starlette_limiter`. Keep the file's public "
                 f"names and behaviour otherwise unchanged.")
+
+    # SCHEMA_MISMATCH (fix #42) — a model renamed/omitted a binding-contract column.
+    sc = result.get("schema_repairs") or []
+    if sc:
+        parts.append("\n=== SCHEMA_MISMATCH — repair ONLY this file, do not touch any "
+                     "other file ===")
+        parts.append(
+            f"\nThe generated model renamed or omitted these binding-contract column(s): "
+            f"{', '.join(sc)}.\nRepair: use the EXACT column names from the contract's "
+            f"database schema (e.g. `source`, NOT `source_name`). Every contract column must "
+            f"be present under its exact name — do not rename, alias, or drop them. Keep the "
+            f"file's other behaviour unchanged.")
     return "\n".join(parts)
+
+
+def rewrite_integrity_gate(content: str, filepath: str, files: list[dict],
+                           schema: list | None = None, file_id=None) -> dict:
+    """The deterministic build-gate checks, packaged for reuse on a file REWRITTEN AFTER
+    the initial build — the Opus security auto-fix and the QA regen loop both rewrite
+    files, and (run 1914) can reintroduce exactly the defects the build gate prevents (Opus
+    wrapped `get_db` in the #24 HTTPException-swallow; QA renamed the contract column
+    `source`->`source_name`) because their output was never re-validated. Returns a
+    repair-shaped dict (`syntax_error`/`symbol_repairs`/`attribute_repairs`/
+    `http_swallow_repairs`/`missing_package_repairs`/`schema_repairs`) consumable by
+    `repair_instructions`, or {} if clean. Backend `.py` only (frontend/non-.py -> {}).
+    Symbols resolve against the CURRENT file set with THIS candidate swapped in, so the
+    check reflects exactly what would ship."""
+    if not (filepath or "").endswith(".py"):
+        return {}
+    syn = python_syntax_error(content, filepath)
+    if syn:
+        return {"syntax_error": syn}          # unparseable blocks every other check
+    mp = hallucinated_package_imports(content, filepath)
+    if mp:
+        return {"missing_package_repairs": mp}
+    swapped = [
+        {**f, "content": content}
+        if (f.get("id") == file_id
+            or (file_id is None and (f.get("filepath") or f.get("filename")) == filepath))
+        else f
+        for f in files
+    ]
+    index = build_symbol_index(swapped)
+    sym = import_symbol_mismatches(content, filepath, index)
+    if sym:
+        return {"symbol_repairs": sym}
+    attr = attribute_access_mismatches(content, filepath, index)
+    if attr:
+        return {"attribute_repairs": attr}
+    hx = http_exception_swallow(content, filepath)
+    if hx:
+        return {"http_swallow_repairs": hx}
+    if "__tablename__" in content and schema:
+        miss = model_schema_mismatches(content, schema)
+        if miss:
+            return {"schema_repairs": miss}
+    return {}
 
 
 # ---------------------------------------------------------------- frontend completeness

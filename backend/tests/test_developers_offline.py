@@ -673,6 +673,65 @@ def test_hallucinated_package_gate():
           flagged == ["SEC-1"], str(flagged))
 
 
+def test_rewrite_integrity_gate():
+    """Run 1914: the build gate certified clean code, then a POST-build stage rewrote
+    files and REINTRODUCED defects the gate prevents — Opus's security 'fix' wrapped get_db
+    in the #24 HTTPException-swallow (every endpoint a masked 500), and QA renamed the
+    contract column `source`->`source_name`. Neither path re-validated. `rewrite_integrity_gate`
+    is the shared re-validation both stages now run (fix #42)."""
+    schema = [{"table": "menu_items", "columns": [
+        {"name": "id", "type": "integer"}, {"name": "source", "type": "string"}]}]
+    clean_db = ("async def get_db():\n    async with async_session() as s:\n        yield s\n")
+    swallow_db = ("async def get_db():\n    try:\n        async with async_session() as s:\n"
+                  "            yield s\n    except Exception:\n"
+                  "        raise HTTPException(status_code=500, detail='Internal server error')\n")
+    files = [{"id": 1, "filepath": "backend/app/database.py", "content": clean_db}]
+    check("a clean get_db passes the rewrite gate",
+          agents.rewrite_integrity_gate(clean_db, "backend/app/database.py", files, schema, file_id=1) == {})
+    g = agents.rewrite_integrity_gate(swallow_db, "backend/app/database.py", files, schema, file_id=1)
+    check("the reintroduced #24 get_db swallow is caught by the rewrite gate",
+          bool(g.get("http_swallow_repairs")), str(g))
+    good_model = ("class MenuItem(Base):\n    __tablename__='menu_items'\n"
+                  "    id=sa.Column(sa.Integer, primary_key=True)\n    source=sa.Column(sa.String)\n")
+    bad_model = good_model.replace("source=", "source_name=")
+    mfiles = [{"id": 2, "filepath": "backend/app/models.py", "content": good_model}]
+    check("a model keeping the contract column `source` passes",
+          agents.rewrite_integrity_gate(good_model, "backend/app/models.py", mfiles, schema, file_id=2) == {})
+    gm = agents.rewrite_integrity_gate(bad_model, "backend/app/models.py", mfiles, schema, file_id=2)
+    check("a model renaming `source`->`source_name` is caught (schema_repairs)",
+          gm.get("schema_repairs") == ["menu_items.source"], str(gm))
+    rt = agents.repair_instructions(gm)
+    check("repair renders a SCHEMA_MISMATCH naming the column + exact-name rule",
+          "SCHEMA_MISMATCH" in rt and "source" in rt and "source_name" in rt, rt)
+    check("a non-.py (frontend) file is a no-op for the rewrite gate",
+          agents.rewrite_integrity_gate("const x=1", "frontend/app/page.tsx", [], schema) == {})
+
+
+def test_reviewer_rejects_unsafe_autofix():
+    """Fix #42 / run 1914: the Opus security auto-fix must NOT be able to reintroduce a
+    build-gate defect. If the fix adds a #24 get_db swallow the certified original didn't
+    have, the reviewer keeps the ORIGINAL rather than shipping a hardening that broke it."""
+    from app.reviewer import orchestrator as rev
+    clean = ("async def get_db():\n    async with async_session() as s:\n        yield s\n")
+    swallow = ("async def get_db():\n    try:\n        async with async_session() as s:\n"
+               "            yield s\n    except Exception:\n"
+               "        raise HTTPException(500, 'Internal server error')\n")
+
+    class _GF:  # minimal stand-in for a GeneratedFile row
+        def __init__(self, id, filepath, content):
+            self.id, self.filepath, self.filename, self.content = id, filepath, None, content
+    files = [{"id": 1, "filepath": "backend/app/database.py", "content": clean}]
+    gf = _GF(1, "backend/app/database.py", clean)
+    kept = rev._accept_or_reject_fix(gf, swallow, files, None)
+    check("an Opus fix that reintroduces the get_db swallow is REJECTED (original kept)",
+          kept == clean, "fix was wrongly accepted")
+    # A genuinely clean fix is still accepted.
+    clean2 = clean + "\n# reviewed\n"
+    gf2 = _GF(1, "backend/app/database.py", clean)
+    check("a clean security fix is still accepted",
+          rev._accept_or_reject_fix(gf2, clean2, files, None) == clean2)
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1328,6 +1387,8 @@ async def main():
         test_frontend_missing_login_gate()
         test_duplicate_endpoint_gate()
         test_hallucinated_package_gate()
+        test_rewrite_integrity_gate()
+        test_reviewer_rejects_unsafe_autofix()
         test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()

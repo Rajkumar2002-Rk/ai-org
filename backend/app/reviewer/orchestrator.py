@@ -9,10 +9,33 @@ from sqlalchemy import select
 
 from app import usage
 from app.database import async_session
+from app.developers import agents as dev_agents
 from app.models import CodeReview, GeneratedFile, PipelineStatus, Project
 from app.reviewer import reviewer
 
 logger = logging.getLogger("reviewer.orchestrator")
+
+
+def _accept_or_reject_fix(gf, new_content: str, files: list[dict],
+                          schema: list | None) -> str:
+    """Re-validate an Opus security auto-fix BEFORE committing it (fix #42).
+
+    The build gate already certified the ORIGINAL file as clean. If the security 'fix'
+    REINTRODUCES a deterministic build-gate defect the original did not have (run 1914:
+    Opus wrapped `get_db` in the fix-#24 HTTPException-swallow, turning every endpoint
+    into a masked 500), keep the certified original rather than ship a security hardening
+    that broke correctness. Returns the content to store."""
+    fp = gf.filepath or gf.filename or ""
+    new_problems = dev_agents.rewrite_integrity_gate(new_content, fp, files, schema, file_id=gf.id)
+    if not new_problems:
+        return new_content
+    orig_problems = dev_agents.rewrite_integrity_gate(gf.content, fp, files, schema, file_id=gf.id)
+    if not orig_problems:
+        logger.warning("Reviewer: the security auto-fix for %s reintroduced a build-gate "
+                       "defect (%s) the certified original did not have — KEEPING the "
+                       "original.", fp, "; ".join(new_problems))
+        return gf.content            # reject the unsafe fix
+    return new_content               # original was already flawed; the fix is no worse
 
 # Limit concurrency — Opus is rate-limited and expensive.
 _CONCURRENCY = 3
@@ -131,7 +154,8 @@ async def review_subset(project_id: int, blueprint: dict,
             if rev["new_content"] is not None:
                 gf = await db.get(GeneratedFile, rev["file_id"])
                 if gf is not None:
-                    gf.content = rev["new_content"]
+                    gf.content = _accept_or_reject_fix(
+                        gf, rev["new_content"], files, (blueprint or {}).get("database_schema"))
         await db.commit()
 
     return {"passed": all_secure, "issues_found": found, "issues_fixed": fixed,
@@ -145,6 +169,7 @@ async def run(project_id: int, blueprint: dict) -> dict:
     # readable without relying on model names.
     usage.set_run_context(project_id=project_id, stage="reviewer")
     general_model = blueprint.get("llm_routing", {}).get("code_reviewer", "gpt-4o-mini")
+    schema = (blueprint or {}).get("database_schema")
 
     async with async_session() as db:
         stage = PipelineStatus(project_id=project_id, stage="security_review", status="running")
@@ -189,7 +214,8 @@ async def run(project_id: int, blueprint: dict) -> dict:
                 if rev["new_content"] is not None:
                     gf = await db.get(GeneratedFile, rev["file_id"])
                     if gf is not None:
-                        gf.content = rev["new_content"]
+                        gf.content = _accept_or_reject_fix(
+                            gf, rev["new_content"], files, schema)
             st = await db.get(PipelineStatus, stage_id)
             st.status = "done" if all_secure else "error"
             st.completed_at = datetime.now(timezone.utc)

@@ -203,33 +203,14 @@ _QA_REGEN_MAX_REVALIDATE = 2
 
 
 def _gate_regenerated(candidate: str, filepath: str, files: list[dict],
-                      file_id) -> dict:
-    """Deterministic code-integrity gate on a QA-regenerated backend `.py`: it MUST
-    parse (fix #17) AND every in-project `from ... import ...` must resolve to a real
-    exported symbol (fix #16) AND no `get_db`-style dependency generator swallows a
-    framework HTTPException into a 500 (fix #24). Returns a gate-result dict shaped for
-    `agents.repair_instructions` (`syntax_error` / `symbol_repairs` / `http_swallow_repairs`),
-    or {} if clean.
-    Backend `.py` only; anything else (frontend, non-`.py`) is a no-op. Symbols are
-    resolved against the CURRENT file set with the candidate swapped in, so the check
-    reflects exactly what would ship."""
-    if not (filepath or "").endswith(".py"):
-        return {}
-    syn = dev_agents.python_syntax_error(candidate, filepath)
-    if syn:
-        return {"syntax_error": syn}      # syntax first — an unparseable file blocks the rest
-    swapped = [{**f, "content": candidate} if f.get("id") == file_id else f for f in files]
-    index = dev_agents.build_symbol_index(swapped)
-    sym = dev_agents.import_symbol_mismatches(candidate, filepath, index)
-    if sym:
-        return {"symbol_repairs": sym}
-    attr = dev_agents.attribute_access_mismatches(candidate, filepath, index)
-    if attr:
-        return {"attribute_repairs": attr}
-    hx = dev_agents.http_exception_swallow(candidate, filepath)
-    if hx:
-        return {"http_swallow_repairs": hx}
-    return {}
+                      file_id, schema: list | None = None) -> dict:
+    """Deterministic code-integrity gate on a QA-regenerated backend `.py`, delegated to
+    the SHARED `agents.rewrite_integrity_gate` (fix #42) so this path validates the SAME
+    full set the build gate does — parse (fix #17), in-project symbol resolution (fix #16),
+    attribute access (fix #19), no `get_db` HTTPException-swallow (fix #24), no hallucinated
+    package (fix #40), AND no renamed/omitted contract column (schema-mismatch — the gap
+    that let QA's run-1914 `source`->`source_name` rename ship). {} if clean."""
+    return dev_agents.rewrite_integrity_gate(candidate, filepath, files, schema, file_id=file_id)
 
 
 async def _regenerate_validated(file_row: dict, ticket: dict, blueprint: dict,
@@ -246,7 +227,8 @@ async def _regenerate_validated(file_row: dict, ticket: dict, blueprint: dict,
         candidate = await _regenerate(file_row, ticket, blueprint, failures, repair)
         if not candidate:
             return None
-        gate = _gate_regenerated(candidate, filepath, files, file_row.get("id"))
+        gate = _gate_regenerated(candidate, filepath, files, file_row.get("id"),
+                                 (blueprint or {}).get("database_schema"))
         if not gate:
             return candidate                                   # clean — accept
         repair = dev_agents.repair_instructions(gate)
