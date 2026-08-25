@@ -75,7 +75,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 25 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 26 deterministic fixes + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4689,3 +4689,26 @@ orders + stripe endpoints — a security-CERTIFIED app that 500s on every DB end
   + menu image_url + column all landed again. ✅ First fresh run to PASS the real Opus review and REACH deploy.
 - **⏭️ NEXT:** the cause is fixed; a re-run should now get a security-certified app that actually WORKS at QA/deploy
   — potentially the first fresh full run to a genuinely LIVE, usable app. Project 1914 left in DB.
+
+## 1ii. FIX #43 — provision generic crypto/secret key NAMES (deploy startup, fresh full run 1934) (DONE 2026-08-25)
+**Run 1934 (full, Opus on, ~$3) — the BEST run yet:** Build 20/20 → Opus PASSED (certified) → **QA 84/88** (only
+4 fails — Fix #42 KILLED the systemic 500s: down from 31) → DEPLOY. But deploy FAILED at backend STARTUP.
+- **Root cause:** `security.py` reads `os.getenv('ENCRYPTION_KEY')`/`os.getenv('SECRET_KEY')` at MODULE level and
+  `raise RuntimeError("Critical environment variables are missing.")` if either is falsy. The platform provisions
+  crypto keys ONLY under `FERNET_KEY`/`TOKEN_ENCRYPTION_KEY`/`SESSION_SECRET_KEY` — NOT the generic names the LLM
+  chose. QA passed because its env auto-discovery (`_discover_required_env`) fills ANY required var with a
+  throwaway; the deploy injects only the real provisioned set → `ENCRYPTION_KEY`/`SECRET_KEY` = None → RuntimeError
+  at import. Same NAME-contract class as Fix #31, but for crypto keys. (The app BOOTS in QA/smoke_boot, FAILS only
+  in the real deploy env — that gap is the tell.)
+- **Fix:** added the generic crypto/secret names to `provisioning._CRYPTO_KEYS` so the deploy mints them:
+  `ENCRYPTION_KEY`/`TOKEN_ENC_KEY`/`APP_ENCRYPTION_KEY` → a valid Fernet key (code does `Fernet(THE_KEY)`);
+  `SECRET_KEY`/`APP_SECRET_KEY`/`JWT_SECRET_KEY` → a random signing secret. Platform-mintable only — NEVER an
+  owner secret. `ensure_crypto_keys` mints only names in `required_env(files)`, so this is safe. Verified against
+  1934's real files (both minted; ENCRYPTION_KEY is a valid Fernet key). Test in `test_devops_offline`; devops
+  suite passes; backend rebuilt.
+- **WHAT 1934 VALIDATED:** ✅ **Fix #42 held** — no reintroduced get_db swallow / `source` rename; QA 500s dropped
+  31→4. ✅ Fixes #39/#40/#41 held. ✅ Design system + menu images landed again. Furthest + cleanest run to date.
+- **⚠️ KNOWN separate bug (does NOT block deploy):** 1934's `menu.py` `MenuItemResponse` Pydantic schema is
+  malformed → `GET /menu` 500s (the 4 remaining QA fails). Codegen-quality/LLM-variance; logged for follow-up.
+- **⏭️ NEXT:** with #43 the app should START in deploy → a re-run has a real shot at the FIRST genuinely LIVE app
+  (menu may 500 until the response_model bug is addressed). Project 1934 left in DB.
