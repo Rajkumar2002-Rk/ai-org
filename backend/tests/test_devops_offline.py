@@ -465,6 +465,36 @@ def test_provisioning():
     check("a redeploy re-mints NOTHING when the keys already exist (stable)",
           second == {}, str(second))
 
+    # Fix #43 (run 1934): security.py fail-fasted at DEPLOY startup on generic crypto/secret
+    # NAMES the code chose (`ENCRYPTION_KEY`/`SECRET_KEY`) — QA auto-filled them but the
+    # deploy provisioned only FERNET_KEY/TOKEN_ENCRYPTION_KEY/SESSION_SECRET_KEY. The
+    # platform now mints those generic names too (a Fernet key / a random secret).
+    gen = {"filepath": "backend/app/security.py",
+           "content": "import os\nSECRET_KEY=os.getenv('SECRET_KEY')\n"
+                      "ENCRYPTION_KEY=os.getenv('ENCRYPTION_KEY')\n"
+                      "from cryptography.fernet import Fernet\n_f=Fernet(ENCRYPTION_KEY)\n"}
+    gne = provisioning.required_env([gen])
+    check("required_env surfaces the generic ENCRYPTION_KEY/SECRET_KEY the code reads",
+          {"ENCRYPTION_KEY", "SECRET_KEY"} <= gne, str(sorted(gne)))
+
+    async def _mint2():
+        recorded = {}
+        async def _fake_set(pid, key, value):
+            recorded[key] = value
+        orig = secrets_store.set_secret
+        secrets_store.set_secret = _fake_set
+        try:
+            return await provisioning.ensure_crypto_keys(4243, gne, {})
+        finally:
+            secrets_store.set_secret = orig
+    minted = asyncio.run(_mint2())
+    check("the platform now MINTS the generic ENCRYPTION_KEY + SECRET_KEY (deploy won't fail-fast)",
+          "ENCRYPTION_KEY" in minted and "SECRET_KEY" in minted, str(sorted(minted)))
+    check("the minted ENCRYPTION_KEY is a VALID Fernet key (Fernet(ENCRYPTION_KEY) works)",
+          Fernet(minted["ENCRYPTION_KEY"]) is not None)
+    check("SECRET_KEY is still never an owner secret, just a random string",
+          isinstance(minted["SECRET_KEY"], str) and len(minted["SECRET_KEY"]) >= 32)
+
     # --- Fix B compose: redis service present only when needed, no host port ---
     names = {"project_id": 1, "compose_project": "p1", "db_container": "db",
              "db_user": "u", "db_password": "pw", "db_name": "d",

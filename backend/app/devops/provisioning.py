@@ -74,6 +74,19 @@ _CRYPTO_KEYS: dict[str, callable] = {
     # A per-app signing secret some generated stripe.py needs (run 1614) — a random
     # value the platform can mint, not an owner secret.
     "STRIPE_STATE_SECRET": _random_secret,
+    # Generic crypto/secret NAMES the LLM reaches for (run 1934: security.py fail-fasted
+    # at DEPLOY startup on `ENCRYPTION_KEY`/`SECRET_KEY`, which QA's env auto-discovery
+    # had filled but the deploy did not provision). These are platform-mintable (a Fernet
+    # key / a random signing secret), never an owner secret — so provisioning them under
+    # the generic names the code chose lets a reasonable generation deploy without a
+    # name-contract mismatch. Fernet family (code does `Fernet(THE_KEY)`):
+    "ENCRYPTION_KEY": _fernet_key,
+    "TOKEN_ENC_KEY": _fernet_key,
+    "APP_ENCRYPTION_KEY": _fernet_key,
+    # Signing-secret family (unguessable random string, not necessarily a Fernet key):
+    "SECRET_KEY": _random_secret,
+    "APP_SECRET_KEY": _random_secret,
+    "JWT_SECRET_KEY": _random_secret,
 }
 
 
