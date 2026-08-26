@@ -4752,3 +4752,46 @@ and authentication". Torn down the 1843 stack first. `SECURITY_REVIEW_ENABLED=tr
 - **Made playable** (LIVE-app hacks, NOT committed — like 1843/1935): seeded published `menu_items` + plain-HTTP
   Caddy `:80` block. Project 1936 + stack left up.
 - Config unchanged (Opus stays ON — this was the intended full run, not a debug flip).
+
+## 1ll. 🏆🏆🏆 run 1937 — the USER drove the ENTIRE pipeline BY HAND through the real UI (2026-08-26)
+The human milestone. After ~2 months chasing this, the user opened the platform frontend (localhost:3000) and drove
+the WHOLE flow themselves — typed the idea, talked to the BA, went through onboarding, watched every stage. Their
+idea: **"raja foods" — a small ITALIAN RESTAURANT** (menu + online takeout orders + pay), design **"Luxury premium",
+brand_color BLACK**, menu_setup=manual. Result, fully hands-on via Opus-ON pipeline:
+- BA → PI → Architect (17 tickets) → **Build 16 files done** → **real Opus PASS (certified)** → **QA 90/90, ZERO
+  fails** → **DEPLOY LIVE + certified at `https://localhost:41535`** (isolated `aiorg_p1937_*` stack). Stripe Connect
+  + Auth0 provisioned. The design system landed BLACK (Fix #38 luxury/black theme). Frontend routes: `/`, `/online`,
+  `/order`, `/order/fe_3`, `/admin/menu`, `/settings` (no `/menu` — this generation structured pages its own way;
+  the menu lives on `/online` + `/order`, and all render `image_url` — Fix #38 image mandate held).
+- **Made playable** (LIVE-app hacks, NOT committed): seeded 8 Italian dishes + photos; plain-HTTP Caddy `:80`;
+  auth bypass (backend `auth.py` stub `get_current_user`/`get_current_admin_user` returning permissions=['admin'] +
+  frontend `admin/menu/page.tsx` login-gate removed + rebuilt) so Manage-menu add/edit/delete works login-free.
+- **🐞 REAL BUG in the generated app → the GATE TO ADD TOMORROW:** creating a menu item 500'd. Root cause: the
+  generated `MenuItem` (and `Order`) model declared `created_at = Column(DateTime, nullable=False)` **with NO default**
+  (no `server_default`, no Python default), and the create handler NEVER sets `created_at` → every INSERT sends
+  `created_at=NULL` → `NotNullViolationError` → 500 (masked by the handler's broad `except SQLAlchemyError → 500`).
+  QA's 90/90 did NOT catch it (QA's create tests may not exercise this path, or the tested tables differ). Patched
+  LIVE by `ALTER TABLE menu_items ALTER COLUMN created_at DROP NOT NULL` (create then returns 200). **NOT committed.**
+
+## ⏭️⏭️ TOMORROW (2026-08-27) — ADD THIS GATE TO THE PLATFORM (the run-1937 grounded bug)
+**Deterministic build gate: a NOT-NULL column with NO default that NO handler populates.** For every generated
+SQLAlchemy model column that is `nullable=False` AND has no `default`/`server_default`, verify at least one generated
+handler sets it on create (INSERT/model construction) — OR the model gives it a `server_default`. If neither, flag +
+repair (add `server_default=func.now()` for timestamps like `created_at`, or make the handler set it). This is the
+run-1937 `created_at` bug; it 500s every create and QA missed it. Likely lives in `developers/agents.py` as a new
+detector wired into `_collect_stubs` (mirror the schema-mismatch / http-swallow gates), with a test using the
+captured pattern. Consider also: the deterministic menu-schema contract could pin `created_at server_default`.
+(Also still open, LOWER priority: the 1934 `MenuItemResponse` malformed-Pydantic-schema → GET /menu 500 gate.)
+
+## 🧹 SESSION-END STATE (2026-08-26, user sleeping) — EVERYTHING TORN DOWN, $0 SPEND
+- **All ephemeral generated-app stacks REMOVED**: `aiorg_p1843_*` (earlier), `aiorg_p1935_*`, `aiorg_p1936_*`,
+  `aiorg_p1937_*` all torn down. **Platform itself STOPPED** (`docker compose down`). Nothing running → $0 spend.
+  Volumes persist (platform DB + secrets safe). **Restart tomorrow: `docker compose up -d`.**
+- **All platform code COMMITTED + PUSHED** (HEAD on origin/master). This session shipped Fixes **#37–#43** + the
+  README/LICENSE/scrub for going public. The live-app playability tweaks (seed/auth-bypass/DB ALTER/Caddy HTTP) were
+  NEVER committed — they only lived on the now-removed ephemeral stacks.
+- Projects 1934/1935/1936/1937 rows remain in the platform DB (the stacks are gone, the DB records stay) as captured
+  fixture sources if needed.
+- ⛔ Repo public-readiness: current files are scrubbed of the real infra identifiers + secrets-clean; the identifiers
+  still linger in OLD git history (non-secret) — a `git filter-repo` history scrub is prepared but NOT run (user chose
+  Option A: safe to publish as-is). `.env` stays gitignored (real STRIPE/AUTH0/SMTP test creds live there).
