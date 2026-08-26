@@ -81,6 +81,14 @@ type UI = {
   attribution?: string;
   prompt?: string;
   confirm_label?: string;
+  connected?: boolean;
+  skippable?: boolean;
+  providers?: {
+    id: string;
+    label: string;
+    connected?: boolean;
+    url: string;
+  }[];
 };
 
 export default function Home() {
@@ -914,6 +922,46 @@ export default function Home() {
                   {o}
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* Owner onboarding — connect Stripe (opens the Stripe OAuth flow in a new tab).
+              The BA sends providers[] with a relative /connect/stripe/start URL; prefix it
+              with API_URL. Without this block the "Connect" button never rendered (only the
+              text box showed), so the owner could never link their Stripe account. */}
+          {ui.kind === "connect_accounts" && (
+            <div style={s.choices}>
+              {ui.providers?.map((p) =>
+                p.connected ? (
+                  <button key={p.id} style={{ ...s.choiceBtn, ...s.confirmBtn }} disabled>
+                    {p.label}
+                  </button>
+                ) : (
+                  <a
+                    key={p.id}
+                    href={`${API_URL}${p.url}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      ...s.choiceBtn,
+                      ...s.confirmBtn,
+                      textDecoration: "none",
+                      display: "inline-block",
+                      textAlign: "center",
+                    }}
+                  >
+                    {p.label}
+                  </a>
+                )
+              )}
+              <button style={s.choiceBtn} onClick={() => send("next")}>
+                I&apos;ve connected — next
+              </button>
+              {ui.skippable && (
+                <button style={s.choiceBtn} onClick={() => send("skip")}>
+                  Skip for now
+                </button>
+              )}
             </div>
           )}
 
