@@ -289,6 +289,29 @@ def test_auth0_provision():
          settings.auth0_mgmt_client_secret) = saved
 
 
+def test_auth0_degraded_resilience():
+    """Run 1950: Auth0 provisioning 403'd (tenant app-limit/scope) and the app fail-fasted
+    on the missing AUTH0_* -> the whole certified, QA-clean deploy died. The resilience fix
+    gives the deploy safe PLACEHOLDER Auth0 config so the app BOOTS and goes LIVE (public
+    features work; login degraded), reported honestly."""
+    print("\n=== Auth0 graceful degradation (deploy stays live when provisioning fails) ===")
+    from app.onboarding import auth0_provision as a0
+    needed = {"AUTH0_DOMAIN", "AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_AUDIENCE",
+              "DATABASE_URL", "STRIPE_CLIENT_ID"}
+    ph = a0.placeholder_config(needed)
+    check("placeholder covers exactly the Auth0 keys the app reads (not DB/Stripe)",
+          set(ph) == {"AUTH0_DOMAIN", "AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_AUDIENCE"},
+          str(sorted(ph)))
+    check("the placeholder domain is a non-resolving .invalid (JWKS fails cleanly, no crash)",
+          ph["AUTH0_DOMAIN"].endswith(".invalid"))
+    check("every placeholder value is truthy (the app's `if not AUTH0_DOMAIN` fail-fast passes)",
+          all(ph.values()))
+    check("an app that reads NO Auth0 config gets no placeholders",
+          a0.placeholder_config({"DATABASE_URL", "REDIS_URL"}) == {})
+    check("the client secret is still classified secret (guarded/redacted)",
+          "AUTH0_CLIENT_SECRET" in a0._SECRET_KEYS)
+
+
 def main():
     print("=" * 64)
     print("Owner onboarding offline proof (no Stripe, no Auth0, no network, no LLM)")
@@ -298,6 +321,7 @@ def main():
     test_callback()
     test_ba_stage()
     test_auth0_provision()
+    test_auth0_degraded_resilience()
     print("\n" + "=" * 64)
     if _failures:
         print(f"RESULT: {len(_failures)} check(s) FAILED:")

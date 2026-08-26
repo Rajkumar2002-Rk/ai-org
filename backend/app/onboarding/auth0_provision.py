@@ -44,6 +44,28 @@ _SECRET_KEYS = {CLIENT_SECRET_KEY}
 TRIGGER_KEYS = {DOMAIN_KEY, *AUDIENCE_ALIASES, CLIENT_ID_KEY, CLIENT_SECRET_KEY}
 
 
+# Safe placeholder Auth0 config for graceful degradation (run 1950): when provisioning is
+# unavailable (e.g. the tenant hit a 403 / app limit) the deploy can still go LIVE by
+# injecting these so the generated app BOOTS (its module-level `if not AUTH0_DOMAIN: …`
+# passes) — login just cannot complete (tokens can't be validated → protected endpoints
+# 401), while all PUBLIC features work. `.invalid` is a reserved TLD that never resolves,
+# so the JWKS fetch fails cleanly per-request instead of crashing at import.
+_PLACEHOLDER_VALUES = {
+    DOMAIN_KEY: "login-unavailable.invalid",
+    CLIENT_ID_KEY: "login-unavailable",
+    CLIENT_SECRET_KEY: "login-unavailable",
+    "API_AUDIENCE": "https://login-unavailable.invalid/api",
+    "AUTH0_AUDIENCE": "https://login-unavailable.invalid/api",
+}
+
+
+def placeholder_config(needed: set[str]) -> dict[str, str]:
+    """Placeholder Auth0 values for ONLY the Auth0 keys the app reads — used to keep a
+    deploy LIVE (login degraded) when provisioning was unavailable, instead of the app
+    fail-fasting on missing AUTH0_* and the whole deploy dying (run 1950)."""
+    return {k: v for k, v in _PLACEHOLDER_VALUES.items() if k in needed}
+
+
 class ProvisionError(RuntimeError):
     """Auth0 provisioning failed; never carries a secret in its message."""
 

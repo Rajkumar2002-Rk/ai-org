@@ -248,6 +248,7 @@ async def run(project_id: int) -> dict:
         # AUTH0_DOMAIN / API_AUDIENCE / AUTH0_CLIENT_ID(/_SECRET). Idempotent (reuses
         # a prior deploy's values); skipped when the app reads no Auth0 config or the
         # platform Management app is unconfigured (app fail-fasts honestly). ----
+        auth_degraded = False
         if settings.secrets_enc_key:
             auth_secrets, auth_nonsecrets = await auth0_provision.ensure_provisioned(
                 project_id, names.get("subdomain", ""), needed_env)
@@ -255,7 +256,26 @@ async def run(project_id: int) -> dict:
                 env.update(auth_secrets)
                 secret_names = sorted(set(secret_names) | set(auth_secrets))
         else:
-            auth_nonsecrets = {}
+            auth_secrets, auth_nonsecrets = {}, {}
+
+        # RESILIENCE (run 1950): Auth0 per-project provisioning can fail for reasons that
+        # are NOT the app's fault — the platform tenant returning a 403 (app-limit / lost
+        # Management scope). When that happens and the app NEEDS Auth0 config, the app used
+        # to fail-fast on the missing AUTH0_* and the WHOLE deploy died ("compose up
+        # failed"), wasting a certified, QA-clean build. Instead, inject safe PLACEHOLDER
+        # Auth0 config so the app BOOTS and goes LIVE for its public features; login
+        # degrades to unavailable, reported honestly (auth_degraded) rather than a dead deploy.
+        if (needed_env & auth0_provision.TRIGGER_KEYS) and not auth_secrets and not auth_nonsecrets:
+            placeholder = auth0_provision.placeholder_config(needed_env)
+            if placeholder:
+                env.update(placeholder)
+                secret_names = sorted(
+                    set(secret_names) | (set(placeholder) & auth0_provision._SECRET_KEYS))
+                auth_degraded = True
+                logger.warning(
+                    "Project %s: Auth0 provisioning unavailable — deploying with LOGIN "
+                    "DISABLED (placeholder Auth0 config) so public features go live.",
+                    project_id)
 
         # Register secret VALUES for redaction, and protect the root handlers so
         # nothing in this deploy can emit them. (Crypto keys + platform provider
@@ -369,7 +389,11 @@ async def run(project_id: int) -> dict:
             "cost_basis": est.basis, "security_certified": certified,
             "tests_passed": tests_passed, "auto_fixed": auto_fixed,
             "fix_description": fix_description, "health_attempts": health_attempts,
-            "target": target,
+            "target": target, "auth_degraded": auth_degraded,
+            "reason": ("Live, but owner LOGIN is DISABLED — Auth0 provisioning was "
+                       "unavailable (the platform Auth0 tenant could not create the app). "
+                       "Public features work; connect Auth0 and redeploy to enable login."
+                       if auth_degraded else None),
         }
 
     except Exception as exc:  # pragma: no cover - never let a deploy crash silently
