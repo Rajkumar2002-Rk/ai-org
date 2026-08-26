@@ -8,11 +8,13 @@ fully before doing anything else in this project.
 # ⏭️⏭️ RESUME HERE (handoff 2026-08-21, Fri night — user back MONDAY, fresh chat, "read CONTEXT.md")
 
 ## 🎯 30-SECOND ORIENTATION (read this first)
-**🏆🏆 BIGGEST MILESTONE TO DATE: run 1614 became the FIRST fresh full-scope generation to reach a genuinely
-LIVE deployed app** — BA → Architect → Build → smoke_boot → **real Opus PASS** → **QA 100/100 CLEAN** →
-**deploy LIVE at https://localhost:47899-style URL**, with the ENTIRE owner-onboarding stack (Stripe connect,
-Auth0 auto-provision, email) provisioned live at deploy (§1w). It then honestly exposed the next frontier —
-the generated FRONTEND had no working login → **FIX #32** commissions + gates it (§1x).
+**🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-25, run 1935): the FIRST fresh full run to reach a genuinely LIVE,
+CLEAN app end-to-end with a PERFECT QA** — BA → Architect → Build 20/20 → smoke_boot → QA **100/100 (zero
+fails)** → **DEPLOY LIVE at https://localhost:45439** (themed warm-brown design + fadeInUp animation in the live
+bundle; `/`, `/menu`, `/api/menu`, `/health` all 200). Ran with Opus OFF (~$1) purely to test the deploy path.
+This was the payoff of the 2026-08-24/25 fix wave (#37–#43) — see §1cc–§1ii. Prior milestone: run 1614 (first
+LIVE deploy, but the app was not usable end-to-end). (Note: the earlier RESUME text below is from the 2026-08-21
+handoff and is stale; §1cc–§1jj are the current record.)
 
 **Everything is COMMITTED + PUSHED. `HEAD == origin/master == 9114b0c`, clean tree.** All 15 offline suites
 pass. Platform is TORN DOWN for the weekend (nothing running, $0 spend). Volumes persist (DB/secrets safe).
@@ -4712,3 +4714,23 @@ orders + stripe endpoints — a security-CERTIFIED app that 500s on every DB end
   malformed → `GET /menu` 500s (the 4 remaining QA fails). Codegen-quality/LLM-variance; logged for follow-up.
 - **⏭️ NEXT:** with #43 the app should START in deploy → a re-run has a real shot at the FIRST genuinely LIVE app
   (menu may 500 until the response_model bug is addressed). Project 1934 left in DB.
+
+## 1jj. 🏆 MILESTONE — run 1935: first fresh full run to a LIVE, CLEAN app (QA 100/100) (2026-08-25)
+The payoff run for the whole #37–#43 wave. Ran with **Opus OFF (~$1, user had $2.96 in the Anthropic account** —
+a full Opus run risked a mid-review credit-out; Opus isn't needed to test a DEPLOY-startup fix). Result:
+- BA → PI → Architect (20 tickets) → **Build 20/20 done** → smoke_boot → skip-cert → **QA 100/100, ZERO fails**
+  → **DEPLOY LIVE at `https://localhost:45439`** (self-signed HTTPS, isolated `aiorg_p1935_*` docker stack).
+- Verified serving: `/`→200, `/menu`→200, `/api/menu`→`[]` (works, not a 500 — the 1934 response_model bug did
+  NOT recur), `/health`→ok. Live CSS bundle carries the FIX #38 themed design (`--color-primary:#6f4e37` warm
+  brown + `fadeInUp`).
+- **What this proves:** FIX #43 cleared the crypto-key startup crash (backend came up healthy); FIX #42 held
+  (no reintroduced defects — the systemic 500s that plagued 1914/1934 are GONE, QA went 84→100); the design
+  system + menu image_url + owner-onboarding provisioning all worked end-to-end. First fresh generation that is
+  both LIVE and CLEAN.
+- Config restored: `SECURITY_REVIEW_ENABLED=true` back in `.env` (the ~$1 run was a one-off debug flip).
+- **Made playable** (LIVE-app hacks, NOT committed — like 1843): seeded published `menu_items` + a plain-HTTP
+  Caddy `:80` block for a no-cert-warning URL. Project 1935 + its stack left up.
+- **⏭️ REMAINING honest edges (LOW priority):** (a) the 1934 `MenuItemResponse` malformed-schema → `GET /menu`
+  500 is LLM-variance, not yet gated (1935 didn't hit it); a deterministic "response_model is a complete Pydantic
+  schema" gate would harden it. (b) A full **Opus-ON** run to a live app (the ~$3 version) is still worth doing
+  once budget allows, to confirm the Opus auto-fix + Fix #42 produce a live app together.
