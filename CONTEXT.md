@@ -79,7 +79,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 28 deterministic fixes (thru #45; +#44 frontend Connect-Stripe button) + onboarding epic are ALL live in the committed code.
+> list. The 31 deterministic fixes (thru #48; +#44 frontend Connect-Stripe button) + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4810,3 +4810,31 @@ developers/qa suites pass. Committed `1b09654`.
 - ⛔ Repo public-readiness: current files are scrubbed of the real infra identifiers + secrets-clean; the identifiers
   still linger in OLD git history (non-secret) — a `git filter-repo` history scrub is prepared but NOT run (user chose
   Option A: safe to publish as-is). `.env` stays gitignored (real STRIPE/AUTH0/SMTP test creds live there).
+
+## 1mm. run 1950 (user's 2nd hands-on run) — Fixes #46/#47/#48 from ONE run (2026-08-26)
+User did a 2nd hands-on run through the real UI ("raja foods" Italian restaurant, black luxury theme) — and this
+time COMPLETED the Stripe connect step (Fix #44's button worked; `stripe_connect.is_connected(1950)==True`). The
+run went Build 20/20 (**Fix #45 CAUGHT + repaired** the created_at bug live — flagged orders.order_date/
+stripe_accounts.created_at/menu_items.created_at, added server_default) → Opus certified → **QA 103/103 PERFECT**
+→ **DEPLOY FAILED**. Diagnosing the deploy surfaced THREE grounded platform bugs, all now fixed:
+- **FIX #46 (`05939a3`) — mint STRIPE_STATE_SIGNING_KEY:** stripe.py fail-fasts at import on 5 Stripe vars incl.
+  `STRIPE_STATE_SIGNING_KEY`, which the platform minted only as `STRIPE_STATE_SECRET` (Fix #43 name-contract class).
+  Added STRIPE_STATE_SIGNING_KEY/STRIPE_STATE_SIGN_KEY/STATE_SIGNING_KEY to `_CRYPTO_KEYS`.
+- **FIX #47 (`d9bb6b8`) — Auth0 deploy resilience:** per-project Auth0 provisioning 403'd (platform tenant app-limit
+  / lost Mgmt scope from our MANY runs) → app fail-fasted on missing AUTH0_* → whole deploy died. Now when Auth0
+  provisioning is unavailable AND the app needs it, the deploy injects safe PLACEHOLDER Auth0 config
+  (`auth0_provision.placeholder_config` — a non-resolving `.invalid` domain, so JWKS fails cleanly per-request, never
+  at import) → app BOOTS + goes LIVE for public features, login degraded, reported honestly (`auth_degraded`).
+  Verified triggering on redeploy.
+- **FIX #48 (`0249df4`) — re-validate FRONTEND rewrites (the frontend half of Fix #42):** the REAL deploy blocker —
+  `next build` failed on `admin/menu/page.tsx:401` ('Unexpected token div'). The file was CLEAN at the build gate but
+  a POST-build rewrite (Opus/QA) truncated it (2 unclosed openers), and `rewrite_integrity_gate` only re-checked
+  backend `.py`. Extended it to re-check frontend files (frontend_incomplete + frontend_css_leak → `frontend_repairs`;
+  repair_instructions renders FRONTEND_FILE_BROKEN). Now the reviewer rejects a truncating Opus frontend fix (keeps
+  the clean original). Verified: the gate flags 1950's real broken file.
+- **⚠️ 1950 itself:** its generated `admin/menu/page.tsx` is ALREADY truncated in the DB; Fix #48 prevents the class
+  GOING FORWARD but doesn't un-break 1950's file — 1950 would need that one file regenerated to deploy. Its
+  Auth0/Stripe/created_at issues are all fixed platform-side. Projects 1948/1949 (BA-walkthrough test convos) +
+  1950 left in DB.
+- **⚠️ Auth0 tenant is at/over its app limit** (403 on create) from all our runs — the user should delete old
+  auto-provisioned Auth0 apps in the dashboard, or Fix #47 keeps future deploys LIVE (login-degraded) regardless.
