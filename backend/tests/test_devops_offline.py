@@ -495,6 +495,30 @@ def test_provisioning():
     check("SECRET_KEY is still never an owner secret, just a random string",
           isinstance(minted["SECRET_KEY"], str) and len(minted["SECRET_KEY"]) >= 32)
 
+    # Fix #46 (run 1950): a connected-Stripe app's stripe.py fail-fasted at startup on
+    # STRIPE_STATE_SIGNING_KEY — an OAuth-state signing secret the platform minted only as
+    # STRIPE_STATE_SECRET. The platform now mints the common signing-key spellings.
+    ss = {"filepath": "backend/app/routes/stripe.py",
+          "content": "import os\nSTRIPE_STATE_SIGNING_KEY=os.getenv('STRIPE_STATE_SIGNING_KEY')\n"
+                     "if not STRIPE_STATE_SIGNING_KEY:\n    raise RuntimeError('x')\n"}
+    sne = provisioning.required_env([ss])
+    check("required_env surfaces STRIPE_STATE_SIGNING_KEY",
+          "STRIPE_STATE_SIGNING_KEY" in sne)
+
+    async def _mint3():
+        recorded = {}
+        async def _fake_set(pid, key, value):
+            recorded[key] = value
+        orig = secrets_store.set_secret
+        secrets_store.set_secret = _fake_set
+        try:
+            return await provisioning.ensure_crypto_keys(4244, sne, {})
+        finally:
+            secrets_store.set_secret = orig
+    sm = asyncio.run(_mint3())
+    check("the platform now MINTS STRIPE_STATE_SIGNING_KEY (connected-Stripe app boots)",
+          "STRIPE_STATE_SIGNING_KEY" in sm and len(sm["STRIPE_STATE_SIGNING_KEY"]) >= 32, str(sorted(sm)))
+
     # --- Fix B compose: redis service present only when needed, no host port ---
     names = {"project_id": 1, "compose_project": "p1", "db_container": "db",
              "db_user": "u", "db_password": "pw", "db_name": "d",

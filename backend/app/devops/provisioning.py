@@ -72,8 +72,14 @@ _CRYPTO_KEYS: dict[str, callable] = {
     "STRIPE_TOKEN_ENC_KEY": _fernet_key,
     "SESSION_SECRET_KEY": _random_secret,
     # A per-app signing secret some generated stripe.py needs (run 1614) — a random
-    # value the platform can mint, not an owner secret.
+    # value the platform can mint, not an owner secret. The LLM names this OAuth-state
+    # signing secret several ways (run 1950: stripe.py fail-fasted at DEPLOY startup on
+    # `STRIPE_STATE_SIGNING_KEY`, which the platform minted only as STRIPE_STATE_SECRET) —
+    # mint all the common spellings so a connected-Stripe app actually boots.
     "STRIPE_STATE_SECRET": _random_secret,
+    "STRIPE_STATE_SIGNING_KEY": _random_secret,
+    "STRIPE_STATE_SIGN_KEY": _random_secret,
+    "STATE_SIGNING_KEY": _random_secret,
     # Generic crypto/secret NAMES the LLM reaches for (run 1934: security.py fail-fasted
     # at DEPLOY startup on `ENCRYPTION_KEY`/`SECRET_KEY`, which QA's env auto-discovery
     # had filled but the deploy did not provision). These are platform-mintable (a Fernet
