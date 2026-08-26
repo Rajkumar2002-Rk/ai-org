@@ -1447,6 +1447,19 @@ def repair_instructions(result: dict) -> str:
             f"database schema (e.g. `source`, NOT `source_name`). Every contract column must "
             f"be present under its exact name — do not rename, alias, or drop them. Keep the "
             f"file's other behaviour unchanged.")
+
+    # FRONTEND_INCOMPLETE (fix #48) — a post-build rewrite left a frontend file truncated /
+    # with a top-level CSS leak, so `next build` fails at deploy.
+    frs = result.get("frontend_repairs") or []
+    if frs:
+        parts.append("\n=== FRONTEND_FILE_BROKEN — repair ONLY this file, do not touch any "
+                     "other file ===")
+        for f in frs:
+            parts.append(
+                f"\n{f['file']}: {f['reason']}.\nRepair: return the COMPLETE, valid file — all "
+                f"JSX tags closed, all braces/parens balanced, no unterminated string, and no "
+                f"raw CSS at the top level (styles go in a .css/.module.css or a style object). "
+                f"`next build` must succeed. Keep the component's behaviour and exports unchanged.")
     return "\n".join(parts)
 
 
@@ -1459,9 +1472,21 @@ def rewrite_integrity_gate(content: str, filepath: str, files: list[dict],
     `source`->`source_name`) because their output was never re-validated. Returns a
     repair-shaped dict (`syntax_error`/`symbol_repairs`/`attribute_repairs`/
     `http_swallow_repairs`/`missing_package_repairs`/`schema_repairs`) consumable by
-    `repair_instructions`, or {} if clean. Backend `.py` only (frontend/non-.py -> {}).
-    Symbols resolve against the CURRENT file set with THIS candidate swapped in, so the
-    check reflects exactly what would ship."""
+    `repair_instructions`, or {} if clean.
+    FRONTEND files are re-checked for truncation/CSS-leak (fix #48 — run 1950: Opus/QA
+    rewrote `admin/menu/page.tsx` into a state that FAILED `next build` with a JSX syntax
+    error, and the frontend half of this gate was missing, so the broken rewrite shipped a
+    certified, QA-clean app whose deploy could not build). Non-JS/non-.py -> {}. Symbols
+    resolve against the CURRENT file set with THIS candidate swapped in, so the check
+    reflects exactly what would ship."""
+    if (filepath or "").endswith(_FRONTEND_CODE_EXT):
+        fe = frontend_incomplete(filepath, content)
+        if fe:
+            return {"frontend_repairs": [{"file": filepath, "reason": fe, "kind": "incomplete"}]}
+        css = frontend_css_leak(filepath, content)
+        if css:
+            return {"frontend_repairs": [{"file": filepath, "reason": css, "kind": "css_leak"}]}
+        return {}
     if not (filepath or "").endswith(".py"):
         return {}
     syn = python_syntax_error(content, filepath)

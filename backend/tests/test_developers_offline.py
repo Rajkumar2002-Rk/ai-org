@@ -703,8 +703,21 @@ def test_rewrite_integrity_gate():
     rt = agents.repair_instructions(gm)
     check("repair renders a SCHEMA_MISMATCH naming the column + exact-name rule",
           "SCHEMA_MISMATCH" in rt and "source" in rt and "source_name" in rt, rt)
-    check("a non-.py (frontend) file is a no-op for the rewrite gate",
-          agents.rewrite_integrity_gate("const x=1", "frontend/app/page.tsx", [], schema) == {})
+    # Fix #48 (run 1950): a post-build rewrite of a FRONTEND file must be re-checked for
+    # truncation — Opus/QA left admin/menu/page.tsx unbalanced and it failed `next build`.
+    check("a COMPLETE frontend file passes the rewrite gate",
+          agents.rewrite_integrity_gate(
+              "export default function P(){ return <div>{[1].map(x=>(<b key={x}/>))}</div>; }",
+              "frontend/app/admin/menu/page.tsx", []) == {})
+    fg = agents.rewrite_integrity_gate(
+        "export default function P(){ return (<div>", "frontend/app/admin/menu/page.tsx", [])
+    check("a TRUNCATED/unbalanced frontend rewrite is FLAGGED (frontend_repairs)",
+          bool(fg.get("frontend_repairs")), str(fg))
+    check("the frontend repair renders FRONTEND_FILE_BROKEN with a next-build note",
+          "FRONTEND_FILE_BROKEN" in agents.repair_instructions(fg)
+          and "next build" in agents.repair_instructions(fg))
+    check("a non-JS, non-.py file is still a no-op for the rewrite gate",
+          agents.rewrite_integrity_gate("body { color: red }", "frontend/app/globals.css", []) == {})
 
 
 def test_reviewer_rejects_unsafe_autofix():
