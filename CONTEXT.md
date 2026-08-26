@@ -4773,7 +4773,17 @@ brand_color BLACK**, menu_setup=manual. Result, fully hands-on via Opus-ON pipel
   QA's 90/90 did NOT catch it (QA's create tests may not exercise this path, or the tested tables differ). Patched
   LIVE by `ALTER TABLE menu_items ALTER COLUMN created_at DROP NOT NULL` (create then returns 200). **NOT committed.**
 
-## ⏭️⏭️ TOMORROW (2026-08-27) — ADD THIS GATE TO THE PLATFORM (the run-1937 grounded bug)
+## ✅ FIX #44 (2026-08-26 morning) — render the Connect-Stripe button in the BA onboarding (run 1937)
+User's screenshot of their 1937 run exposed a real UI bug: the BA `connect_accounts` stage says "tap the button to
+connect" Stripe, and the backend (`ba/controller.py`) DOES send `ui.kind="connect_accounts"` + `providers[]`
+(label + `/connect/stripe/start?project_id=` URL) — but the platform frontend (`frontend/app/page.tsx`) had NO
+handler for that `ui.kind`, so it fell through to the plain text box and the **Connect button NEVER rendered**. The
+owner could only type skip/next — the interactive Stripe-connect step was unreachable (the AUTO Auth0/Stripe/email
+provisioning at deploy still ran, which is why the deployed apps HAD the creds). Fixed: added a `connect_accounts`
+render block (a per-provider button opening `${API_URL}${provider.url}` — the Stripe OAuth flow — in a new tab,
+plus next/skip) and extended the `UI` type. Frontend compiles clean + serves. Committed + pushed (`3fcc089`).
+
+## ⏭️⏭️ TODAY (2026-08-26/27) — ADD THIS GATE TO THE PLATFORM (the run-1937 grounded bug — STILL PENDING)
 **Deterministic build gate: a NOT-NULL column with NO default that NO handler populates.** For every generated
 SQLAlchemy model column that is `nullable=False` AND has no `default`/`server_default`, verify at least one generated
 handler sets it on create (INSERT/model construction) — OR the model gives it a `server_default`. If neither, flag +
@@ -4783,7 +4793,10 @@ detector wired into `_collect_stubs` (mirror the schema-mismatch / http-swallow 
 captured pattern. Consider also: the deterministic menu-schema contract could pin `created_at server_default`.
 (Also still open, LOWER priority: the 1934 `MenuItemResponse` malformed-Pydantic-schema → GET /menu 500 gate.)
 
-## 🧹 SESSION-END STATE (2026-08-26, user sleeping) — EVERYTHING TORN DOWN, $0 SPEND
+## 🧹 STATE (2026-08-26 morning) — platform UP (idle, $0), all ephemeral app stacks gone
+- **UPDATE:** the platform (`docker compose up -d`) is BACK UP as of this morning — brought up ONLY to verify Fix
+  #44 compiles (idle = no LLM = $0). All ephemeral generated-app stacks stay REMOVED. Last night's teardown note
+  below still describes the overnight state.
 - **All ephemeral generated-app stacks REMOVED**: `aiorg_p1843_*` (earlier), `aiorg_p1935_*`, `aiorg_p1936_*`,
   `aiorg_p1937_*` all torn down. **Platform itself STOPPED** (`docker compose down`). Nothing running → $0 spend.
   Volumes persist (platform DB + secrets safe). **Restart tomorrow: `docker compose up -d`.**
