@@ -79,7 +79,7 @@ The pipeline reliably reaches a LIVE deploy. Remaining REAL, grounded gaps (in p
 
 > This block is the AUTHORITATIVE resume point. §1k–§1y (most recent first, below §1) have full per-fix detail.
 > A fresh session with zero memory should execute from here. Read this whole block first, then skim §1's fix
-> list. The 26 deterministic fixes + onboarding epic are ALL live in the committed code.
+> list. The 28 deterministic fixes (thru #45; +#44 frontend Connect-Stripe button) + onboarding epic are ALL live in the committed code.
 
 ## 0. ONE-PARAGRAPH ORIENTATION
 This platform is an autonomous "AI engineering org": a BA agent interviews the user →
@@ -4783,15 +4783,17 @@ provisioning at deploy still ran, which is why the deployed apps HAD the creds).
 render block (a per-provider button opening `${API_URL}${provider.url}` — the Stripe OAuth flow — in a new tab,
 plus next/skip) and extended the `UI` type. Frontend compiles clean + serves. Committed + pushed (`3fcc089`).
 
-## ⏭️⏭️ TODAY (2026-08-26/27) — ADD THIS GATE TO THE PLATFORM (the run-1937 grounded bug — STILL PENDING)
-**Deterministic build gate: a NOT-NULL column with NO default that NO handler populates.** For every generated
-SQLAlchemy model column that is `nullable=False` AND has no `default`/`server_default`, verify at least one generated
-handler sets it on create (INSERT/model construction) — OR the model gives it a `server_default`. If neither, flag +
-repair (add `server_default=func.now()` for timestamps like `created_at`, or make the handler set it). This is the
-run-1937 `created_at` bug; it 500s every create and QA missed it. Likely lives in `developers/agents.py` as a new
-detector wired into `_collect_stubs` (mirror the schema-mismatch / http-swallow gates), with a test using the
-captured pattern. Consider also: the deterministic menu-schema contract could pin `created_at server_default`.
-(Also still open, LOWER priority: the 1934 `MenuItemResponse` malformed-Pydantic-schema → GET /menu 500 gate.)
+## ✅ FIX #45 (2026-08-26) — DONE — gate a NOT-NULL datetime column with no default (run-1937 create-500)
+The run-1937 `created_at` bug is now gated. `agents.timestamp_not_null_no_default(content, filepath)` — AST detector:
+flags a NOT-NULL **datetime-family** column (created_at/updated_at/order_time…) that has NO `default`/`server_default`
+(skips PKs + already-defaulted columns). Zero-FP by design: only datetime types (handlers virtually never set a
+timestamp on create), so NOT-NULL string/int columns that ARE set from the request body are never flagged.
+`repair_instructions` gains a TIMESTAMP_NO_DEFAULT section (add `server_default=sa.func.now()`). Wired into BOTH
+`_collect_stubs` (build gate) AND the shared `rewrite_integrity_gate` (Fix #42 → so Opus/QA rewrites are re-checked).
+Verified against 1937's REAL models.py — flags `orders.order_time`, `stripe_accounts.created_at`,
+`menu_items.created_at` (all latent create-500s, incl. `order_time` which wasn't found by hand). Tests +
+developers/qa suites pass. Committed `1b09654`.
+- **⏭️ STILL OPEN (LOWER priority):** the 1934 `MenuItemResponse` malformed-Pydantic-schema → GET /menu 500 gate.
 
 ## 🧹 STATE (2026-08-26 morning) — platform UP (idle, $0), all ephemeral app stacks gone
 - **UPDATE:** the platform (`docker compose up -d`) is BACK UP as of this morning — brought up ONLY to verify Fix
