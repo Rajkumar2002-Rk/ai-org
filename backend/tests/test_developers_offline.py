@@ -732,6 +732,60 @@ def test_reviewer_rejects_unsafe_autofix():
           rev._accept_or_reject_fix(gf2, clean2, files, None) == clean2)
 
 
+def test_timestamp_not_null_gate():
+    """Run 1937: the generated model wrote `created_at = Column(DateTime, nullable=False)`
+    with NO default, and the create handler never set it -> every INSERT sends NULL ->
+    NotNullViolation -> a masked 500 on EVERY create (QA missed it). The gate flags a
+    NOT-NULL datetime column with no default/server_default. Zero-FP: nullable/defaulted/PK
+    columns and non-datetime NOT-NULL columns (set from the request) are never flagged."""
+    HEAD = "import sqlalchemy as sa\nfrom sqlalchemy import Column, Integer, String, DateTime\n"
+    def model(cols):
+        return HEAD + "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n" + \
+            "    id = Column(Integer, primary_key=True)\n" + \
+            "".join(f"    {c}\n" for c in cols)
+    P = "backend/app/models.py"
+    # THE 1937 BUG — flagged.
+    bug = model(["created_at = Column(DateTime, nullable=False)"])
+    f = agents.timestamp_not_null_no_default(bug, P)
+    check("a NOT-NULL datetime column with no default is flagged (run 1937)",
+          len(f) == 1 and f[0]["column"] == "created_at" and f[0]["table"] == "menu_items", str(f))
+    # Zero-FP cases — NOT flagged.
+    check("server_default present -> NOT flagged",
+          agents.timestamp_not_null_no_default(
+              model(["created_at = Column(DateTime, nullable=False, server_default=sa.func.now())"]), P) == [])
+    check("a Python default present -> NOT flagged",
+          agents.timestamp_not_null_no_default(
+              model(["created_at = Column(DateTime, nullable=False, default=sa.func.now())"]), P) == [])
+    check("a NULLABLE timestamp -> NOT flagged",
+          agents.timestamp_not_null_no_default(
+              model(["created_at = Column(DateTime, nullable=True)"]), P) == [])
+    check("a NOT-NULL STRING column (set from the request) -> NOT flagged",
+          agents.timestamp_not_null_no_default(
+              model(["name = Column(String, nullable=False)"]), P) == [])
+    check("the primary key is never flagged",
+          agents.timestamp_not_null_no_default(
+              HEAD + "class T(Base):\n    __tablename__='t'\n    id = Column(DateTime, primary_key=True, nullable=False)\n", P) == [])
+    # DateTime(timezone=True) and a name-first-positional both still detect the type.
+    check("Column(DateTime(timezone=True), nullable=False) is flagged",
+          len(agents.timestamp_not_null_no_default(
+              model(["updated_at = Column(DateTime(timezone=True), nullable=False)"]), P)) == 1)
+    check("a non-model file / non-.py is a no-op",
+          agents.timestamp_not_null_no_default(bug, "frontend/app/page.tsx") == []
+          and agents.timestamp_not_null_no_default("x=1", P) == [])
+    # Repair text names the column + the server_default fix.
+    rt = agents.repair_instructions({"timestamp_default_repairs": f})
+    check("repair is TIMESTAMP_NO_DEFAULT naming the column + server_default=sa.func.now()",
+          "TIMESTAMP_NO_DEFAULT" in rt and "created_at" in rt and "server_default" in rt
+          and "func.now()" in rt, rt)
+    # Build-gate wiring: _collect_stubs flags the model file.
+    from app.developers import orchestrator as orch
+    built = [{"ticket_id": "FND-1", "filepath": P, "content": bug, "status": "generated"}]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("the build gate flags the model with the NOT-NULL-no-default timestamp",
+          [s["ticket_id"] for s in stubbed] == ["FND-1"]
+          and built[0].get("timestamp_default_repairs"), str(stubbed))
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1389,6 +1443,7 @@ async def main():
         test_hallucinated_package_gate()
         test_rewrite_integrity_gate()
         test_reviewer_rejects_unsafe_autofix()
+        test_timestamp_not_null_gate()
         test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()

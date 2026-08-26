@@ -178,6 +178,13 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
             miss = agents.model_schema_mismatches(content, schema)
             if miss:
                 problems.append(f"model renamed/omitted contract column(s) {miss}")
+            # NOT-NULL datetime column with no default that no handler sets -> a 500 on
+            # every create (run 1937 `created_at`).
+            ts = agents.timestamp_not_null_no_default(content, rel)
+            if ts:
+                r["timestamp_default_repairs"] = ts
+                problems.append("NOT-NULL timestamp column(s) with no default " +
+                                ", ".join(f"{t.get('table')}.{t['column']}" for t in ts))
         fe = agents.frontend_incomplete(rel, content)
         if fe:
             problems.append(f"frontend file {fe}")

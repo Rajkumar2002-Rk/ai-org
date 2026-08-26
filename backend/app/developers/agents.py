@@ -510,6 +510,89 @@ def model_schema_mismatches(models_content: str, database_schema: list) -> list[
     return missing
 
 
+# ---------------------------------------------------------- NOT-NULL timestamp, no default
+# CREATE-500 (run 1937): a generated model wrote `created_at = Column(DateTime,
+# nullable=False)` with NO default/server_default, and the create handler never sets it —
+# so every INSERT sends created_at=NULL and Postgres raises NotNullViolation, masked by the
+# handler's broad `except SQLAlchemyError -> 500`. It 500s EVERY create and QA missed it.
+# The reliable, zero-FP signal is a DATETIME-family column: handlers virtually never set a
+# timestamp on create (they expect the DB/model to auto-fill it), so a NOT-NULL datetime
+# with no default is a latent create-500. Non-datetime NOT-NULL columns (name/email/price)
+# ARE set from the request body, so they are deliberately NOT flagged.
+_TS_TYPE_NAMES = {"datetime", "timestamp", "date"}
+
+
+def _column_call_typename(call: ast.Call) -> str | None:
+    """Lowercased SQLAlchemy TYPE name of a `Column(...)` call — the first positional arg
+    (a leading string positional is the DB column NAME, skipped), or a `type_=` kw. Handles
+    `Column(DateTime, …)`, `Column(DateTime(timezone=True), …)`, `sa.DateTime`. None if
+    undeterminable."""
+    type_node = None
+    for a in call.args:
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            continue                       # `Column('created_at', DateTime, …)` — skip name
+        type_node = a
+        break
+    if type_node is None:
+        type_node = next((k.value for k in call.keywords if k.arg == "type_"), None)
+    if type_node is None:
+        return None
+    if isinstance(type_node, ast.Call):    # e.g. DateTime(timezone=True)
+        type_node = type_node.func
+    name = getattr(type_node, "id", None) or getattr(type_node, "attr", None)
+    return name.lower() if name else None
+
+
+def timestamp_not_null_no_default(content: str, filepath: str) -> list[dict]:
+    """Findings for a NOT-NULL datetime column (created_at/updated_at/…) with NO `default`
+    AND no `server_default` (run 1937) — a latent 500 on every create. Only backend model
+    files (`__tablename__`); only datetime-family types; PRIMARY KEYs and columns that
+    already carry a default/server_default are never flagged (zero-FP). Each finding:
+    {column, line, table}."""
+    if not filepath.endswith(".py") or "__tablename__" not in (content or ""):
+        return []
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    out: list[dict] = []
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        table = None
+        for stmt in cls.body:
+            if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)
+                    and stmt.targets[0].id == "__tablename__"
+                    and isinstance(stmt.value, ast.Constant)):
+                table = stmt.value.value
+        if table is None:
+            continue
+        for stmt in cls.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            tgt = stmt.targets[0]
+            if not isinstance(tgt, ast.Name) or not isinstance(stmt.value, ast.Call):
+                continue
+            fn = stmt.value.func
+            if (getattr(fn, "id", None) or getattr(fn, "attr", None)) not in ("Column", "mapped_column"):
+                continue
+            if _column_call_typename(stmt.value) not in _TS_TYPE_NAMES:
+                continue
+            kw = {k.arg: k.value for k in stmt.value.keywords if k.arg}
+
+            def _is(n, val):
+                return isinstance(kw.get(n), ast.Constant) and kw[n].value is val
+            if _is("primary_key", True):
+                continue
+            if "default" in kw or "server_default" in kw:
+                continue
+            if not _is("nullable", False):      # only an EXPLICIT nullable=False is the bug
+                continue
+            out.append({"column": tgt.id, "line": stmt.lineno, "table": table})
+    return out
+
+
 # ------------------------------------------------- duplicate endpoints (FIX #33)
 # DUPLICATE ROUTE (run 1614): the Architect over-split the order feature into `order.py`
 # AND `orders.py`, and BOTH defined `POST /orders`. main.py includes both routers, so
@@ -1335,6 +1418,24 @@ def repair_instructions(result: dict) -> str:
                 f"NEVER invent a package name like `starlette_limiter`. Keep the file's public "
                 f"names and behaviour otherwise unchanged.")
 
+    # TIMESTAMP_NO_DEFAULT (fix #45) — a NOT-NULL datetime column with no default that no
+    # handler sets, so every INSERT is a NOT NULL violation (a 500 on every create).
+    ts = result.get("timestamp_default_repairs") or []
+    if ts:
+        parts.append("\n=== TIMESTAMP_NO_DEFAULT — repair ONLY this file, do not touch any "
+                     "other file ===")
+        for t in ts:
+            col = t.get("column")
+            parts.append(
+                f"\nColumn `{col}` (line {t.get('line')}) is a NOT-NULL datetime column with "
+                f"NO `default`/`server_default`, and create handlers do not set it — so every "
+                f"INSERT sends `{col}=NULL` and Postgres raises a NOT NULL violation (an HTTP "
+                f"500 on EVERY create).\nRepair: give the column a SERVER-SIDE default so the "
+                f"database fills it automatically — e.g. `{col} = sa.Column(sa.DateTime, "
+                f"nullable=False, server_default=sa.func.now())` (use `func.now()` / "
+                f"`func.current_timestamp()`). Keep it NOT NULL; do NOT drop the column. For an "
+                f"`updated_at`, also add `onupdate=sa.func.now()`.")
+
     # SCHEMA_MISMATCH (fix #42) — a model renamed/omitted a binding-contract column.
     sc = result.get("schema_repairs") or []
     if sc:
@@ -1386,10 +1487,14 @@ def rewrite_integrity_gate(content: str, filepath: str, files: list[dict],
     hx = http_exception_swallow(content, filepath)
     if hx:
         return {"http_swallow_repairs": hx}
-    if "__tablename__" in content and schema:
-        miss = model_schema_mismatches(content, schema)
-        if miss:
-            return {"schema_repairs": miss}
+    if "__tablename__" in content:
+        ts = timestamp_not_null_no_default(content, filepath)
+        if ts:
+            return {"timestamp_default_repairs": ts}
+        if schema:
+            miss = model_schema_mismatches(content, schema)
+            if miss:
+                return {"schema_repairs": miss}
     return {}
 
 
