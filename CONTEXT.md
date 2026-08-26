@@ -8,13 +8,15 @@ fully before doing anything else in this project.
 # ⏭️⏭️ RESUME HERE (handoff 2026-08-21, Fri night — user back MONDAY, fresh chat, "read CONTEXT.md")
 
 ## 🎯 30-SECOND ORIENTATION (read this first)
-**🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-25, run 1935): the FIRST fresh full run to reach a genuinely LIVE,
-CLEAN app end-to-end with a PERFECT QA** — BA → Architect → Build 20/20 → smoke_boot → QA **100/100 (zero
-fails)** → **DEPLOY LIVE at https://localhost:45439** (themed warm-brown design + fadeInUp animation in the live
-bundle; `/`, `/menu`, `/api/menu`, `/health` all 200). Ran with Opus OFF (~$1) purely to test the deploy path.
-This was the payoff of the 2026-08-24/25 fix wave (#37–#43) — see §1cc–§1ii. Prior milestone: run 1614 (first
-LIVE deploy, but the app was not usable end-to-end). (Note: the earlier RESUME text below is from the 2026-08-21
-handoff and is stale; §1cc–§1jj are the current record.)
+**🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-
+CERTIFIED, CLEAN app via the COMPLETE PRODUCTION FLOW (real Opus ON)** — BA → Architect → Build 19/19 →
+smoke_boot → **real Opus PASS (claude-opus-4-8, 99 found/86 fixed, CERTIFIED)** → **QA 93/93 (zero fails)** →
+**DEPLOY LIVE + security_certified=true at https://localhost:58171**, with **Stripe Connect + Auth0 + email +
+crypto keys** all provisioned live at deploy. `/`, `/menu`, `/api/menu`, `/health` all 200. **Fix #42 HELD even
+after Opus rewrote 86 issues** (no reintroduced defects — QA perfect). See §1kk.
+Prior: run 1935 (2026-08-25) — same but Opus OFF (~$1, QA 100/100, §1jj); run 1614 (first LIVE deploy, not usable
+end-to-end). The 2026-08-24/26 fix wave (#37–#43) is what got here — §1cc–§1kk. (The RESUME text below is the
+STALE 2026-08-21 handoff; §1cc–§1kk are the current record.)
 
 **Everything is COMMITTED + PUSHED. `HEAD == origin/master == 9114b0c`, clean tree.** All 15 offline suites
 pass. Platform is TORN DOWN for the weekend (nothing running, $0 spend). Volumes persist (DB/secrets safe).
@@ -4731,6 +4733,22 @@ a full Opus run risked a mid-review credit-out; Opus isn't needed to test a DEPL
 - **Made playable** (LIVE-app hacks, NOT committed — like 1843): seeded published `menu_items` + a plain-HTTP
   Caddy `:80` block for a no-cert-warning URL. Project 1935 + its stack left up.
 - **⏭️ REMAINING honest edges (LOW priority):** (a) the 1934 `MenuItemResponse` malformed-schema → `GET /menu`
-  500 is LLM-variance, not yet gated (1935 didn't hit it); a deterministic "response_model is a complete Pydantic
-  schema" gate would harden it. (b) A full **Opus-ON** run to a live app (the ~$3 version) is still worth doing
-  once budget allows, to confirm the Opus auto-fix + Fix #42 produce a live app together.
+  500 is LLM-variance, not yet gated (1935/1936 didn't hit it); a deterministic "response_model is a complete
+  Pydantic schema" gate would harden it. (b) ✅ DONE — the Opus-ON live run (§1kk).
+
+## 1kk. 🏆🏆 MILESTONE — run 1936: LIVE + SECURITY-CERTIFIED via the FULL production flow (Opus ON) (2026-08-26)
+The definitive end-to-end success. User recharged Anthropic credits + asked for a full fresh run "including stripe
+and authentication". Torn down the 1843 stack first. `SECURITY_REVIEW_ENABLED=true` (real Opus). Result:
+- BA → PI → Architect (19 tickets) → **Build 19/19 done** → smoke_boot → **REAL Opus review PASSED**
+  (`claude-opus-4-8`, 99 issues found / 86 fixed, **CERTIFIED**) → **QA 93/93, ZERO fails** → **DEPLOY LIVE +
+  `security_certified=true` at `https://localhost:58171`** (isolated `aiorg_p1936_*` stack, self-signed HTTPS).
+- Verified serving: `/`, `/menu`, `/api/menu`, `/health` all 200. **Stripe Connect** (`STRIPE_CLIENT_ID=ca_…`) +
+  **Auth0** (`AUTH0_DOMAIN`/`AUTH0_CLIENT_ID`/`AUTH0_AUDIENCE`) provisioned into the deployed backend.
+- **THE KEY PROOF: Fix #42 held through a REAL Opus run** — Opus rewrote 86 issues, yet QA came back 93/93 with
+  NO systemic 500s (the reviewer's re-validation kept any defect-reintroducing "fix" out). This is the exact
+  failure mode that made 1914 a certified-but-broken app; now the full flow yields a certified-AND-working app.
+- All this session's fixes proven together live: #37 (audience), #38 (design), #39/#40 (hallucinated pkg),
+  #41 (apostrophe FP), #42 (post-build re-validate), #43 (crypto key names).
+- **Made playable** (LIVE-app hacks, NOT committed — like 1843/1935): seeded published `menu_items` + plain-HTTP
+  Caddy `:80` block. Project 1936 + stack left up.
+- Config unchanged (Opus stays ON — this was the intended full run, not a debug flip).
