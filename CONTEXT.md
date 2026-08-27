@@ -14,9 +14,12 @@ fully before doing anything else in this project.
   (`aiorg_p1843/1935/1936/1937/1950_*`). Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.**
   Platform DB + secrets volumes PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows
   (1934/1935/1936/1937/1948/1949/1950) remain in the platform DB as fixture sources.
-- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master == f4b3657`, clean tree.** Git user Rajkumar2002-Rk,
-  repo github.com/Rajkumar2002-Rk/ai-org (still PRIVATE — user chose to publish as-is when ready; see 0-E).
-  **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master` (tip = the Auth0 tenant-cleanup commit), clean tree.**
+  Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (still PRIVATE — user chose to publish as-is when
+  ready; see 0-E). **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+- **2026-08-27 follow-up:** Auth0 tenant CLEANED (0-G #1 now DONE) via the new operator tool
+  `backend/tools/auth0_cleanup.py` — deleted 8 stale `proj-*` clients + 9 `proj-*` APIs, tenant headroom restored,
+  M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
 - **Config (.env):** `SECURITY_REVIEW_ENABLED=true` (Opus ON), `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`. `.env`
   is gitignored and holds the REAL Stripe test keys / Auth0 Mgmt / SMTP creds — NEVER commit it.
 - **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes.** All grounded in REAL captured run bugs,
@@ -125,10 +128,14 @@ fully before doing anything else in this project.
   demo auth-bypass to the deployed `auth.py` + patch the frontend admin page's isAuthenticated gate + `npm run build`.
 
 ## 0-G. OPEN ITEMS / TODO FOR NEXT SESSION (priority order)
-1. **⚠️ Auth0 tenant is AT/OVER its app limit** (403 on create — from our MANY runs). USER ACTION: delete old
-   auto-provisioned per-project apps in the Auth0 dashboard, and/or verify the Mgmt M2M app still has
-   `create:clients`+`create:resource_servers`. Fix #47 keeps future deploys LIVE (login-degraded) regardless, but real
-   login needs a working tenant.
+1. ✅ **DONE (2026-08-27) — Auth0 tenant cleaned, headroom restored.** The tenant had filled with 8 auto-provisioned
+   `proj-*` clients + 9 `proj-*` APIs from our many runs (403 on create). Built an operator cleanup tool
+   `backend/tools/auth0_cleanup.py` (read-only inventory by default; `--delete` to apply; never touches non-`proj-`
+   apps — Default App / Mgmt M2M / Auth0 Management API are safe). Ran it via
+   `docker compose run --rm --no-deps -e PYTHONPATH=/app -v "$PWD/backend:/app" backend python tools/auth0_cleanup.py`
+   → deleted ALL 8 clients + 9 APIs (a few 429 rate-limits cleared on a re-run). Successful deletes PROVE the M2M app
+   holds `delete:clients`+`delete:resource_servers`. `create:*` scopes are separate (only proven by a live deploy) but
+   were never removed. Fix #47 still keeps deploys LIVE (login-degraded) if the tenant ever refills; run the tool again.
 2. **LOWER priority gate:** the run-1934 `MenuItemResponse` malformed-Pydantic-schema → `GET /menu` 500 is still ungated
    (a "response_model is a complete Pydantic schema" gate would harden it). LLM-variance; 1935/1936/1950 didn't hit it.
 3. **Optional:** run the `git filter-repo` history scrub (0-E) if the user wants the non-secret identifiers gone from
