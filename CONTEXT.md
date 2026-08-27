@@ -5,9 +5,138 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️ RESUME HERE (handoff 2026-08-21, Fri night — user back MONDAY, fresh chat, "read CONTEXT.md")
+# ⏭️⏭️⏭️ RESUME HERE — AUTHORITATIVE HANDOFF (2026-08-26 night). A FRESH CHAT STARTS FROM THIS BLOCK.
+> Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1mm are the
+> current per-fix record for THIS session's work (Fixes #37–#48). Read THIS block first; drill into §1cc–§1mm as needed.
 
-## 🎯 30-SECOND ORIENTATION (read this first)
+## 0-A. WHERE WE ARE RIGHT NOW (2026-08-26 night)
+- **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed
+  (`aiorg_p1843/1935/1936/1937/1950_*`). Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.**
+  Platform DB + secrets volumes PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows
+  (1934/1935/1936/1937/1948/1949/1950) remain in the platform DB as fixture sources.
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master == f4b3657`, clean tree.** Git user Rajkumar2002-Rk,
+  repo github.com/Rajkumar2002-Rk/ai-org (still PRIVATE — user chose to publish as-is when ready; see 0-E).
+  **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+- **Config (.env):** `SECURITY_REVIEW_ENABLED=true` (Opus ON), `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`. `.env`
+  is gitignored and holds the REAL Stripe test keys / Auth0 Mgmt / SMTP creds — NEVER commit it.
+- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes.** All grounded in REAL captured run bugs,
+  each locked with a regression test. Detail per fix in §1cc–§1mm.
+
+## 0-B. THE MILESTONES REACHED THIS SESSION (the payoff)
+- 🏆 **Run 1935 (Opus OFF, ~$1):** FIRST fresh full run to a genuinely LIVE + CLEAN app end-to-end, QA 100/100. §1jj.
+- 🏆🏆 **Run 1936 (Opus ON, ~$3):** FIRST LIVE + SECURITY-CERTIFIED app via the COMPLETE production flow —
+  Build 19/19 → real Opus PASS (certified) → QA 93/93 → DEPLOY LIVE, with Stripe+Auth0+email provisioned. §1kk.
+- 🏆🏆🏆 **Runs 1937 & 1950 (user's OWN HANDS-ON runs via the UI at localhost:3000):** the user personally drove the
+  BA conversation → onboarding → build → deploy. 1937 went LIVE + certified (QA 90/90). 1950 the user COMPLETED the
+  Stripe connect step (real acct_), Build/Opus/QA all perfect (103/103), deploy exposed 3 more bugs (all fixed). §1ll, §1mm.
+
+## 0-C. EVERY FIX THIS SESSION — bug → how found → how fixed → where (all committed, tested, live)
+- **#37 (§1cc)** — frontend Auth0 `NEXT_PUBLIC_AUTH0_AUDIENCE` empty at deploy (mapped only from `API_AUDIENCE`, run
+  1843 stored it as `AUTH0_AUDIENCE`) → gated calls 401 post-login. Fix: `manifest.frontend_public_env` maps audience
+  from EITHER alias. `devops/manifest.py`.
+- **#38 (§1cc)** — generated apps looked "plain" (FND-5 globals.css said "keep minimal"). Fix: `builder._design_system_css`
+  bakes a DETERMINISTIC themed globals.css from the BA's brand_color+vibe (tokens, styled native elements, animations,
+  prefers-reduced-motion); `_brand_palette` maps free-text colours ('black'→#000, 'warm brown'→coffee). Boilerplate
+  tickets with fixed `content` are written verbatim (no LLM). `architect/builder.py`. ALSO added menu-item PHOTOS
+  (`image_url` column + MENU-1 persist + MENU-2 form + a frontend-prompt mandate to render `<img>`).
+- **#39 (§1ee)** — a HALLUCINATED pip package (`starlette_limiter`) failed the whole install → boot_failed (run 1869).
+  Fix: `assembly._nonexistent_pkgs` parses pip "No matching distribution" → `_missing_package_findings` maps to the
+  importing file → boot-repair loop regenerates it. `qa/assembly.py` + prompt nudge (use `slowapi`).
+- **#40 (§1ff)** — companion to #39: OFFLINE build-gate blocklist `agents.hallucinated_package_imports` +
+  `_HALLUCINATED_PACKAGES={starlette-limiter}` catches KNOWN hallucinations before smoke_boot. `developers/agents.py`.
+- **#41 (§1gg)** — frontend truncation gate FALSE-POSITIVE on an apostrophe in JSX text ("Stripe's") → failed a COMPLETE
+  file (run 1887). Fix: in `_strip_code`, a `'`/`"` preceded by a word char is a contraction, not a string delimiter.
+  `developers/agents.py`.
+- **#42 (§1hh)** — 🔑 KEY ARCHITECTURAL FIX. The build gate certifies clean code, then Opus auto-fix + QA regen REWRITE
+  files WITHOUT re-validation → reintroduce caught defects (run 1914: Opus wrapped get_db in the #24 swallow → a
+  CERTIFIED app that 500'd on every DB endpoint; QA renamed `source`→`source_name`). Fix: `agents.rewrite_integrity_gate`
+  (the full build-gate checks as a reusable fn) + `reviewer._accept_or_reject_fix` (rejects an Opus fix that reintroduces
+  a defect, keeps the certified-clean original) + QA `_gate_regenerated` delegates to it. `reviewer/orchestrator.py`,
+  `qa/orchestrator.py`, `developers/agents.py`.
+- **#43 (§1ii)** — deploy startup crash: `security.py` fail-fasts at import on `ENCRYPTION_KEY`/`SECRET_KEY`, but the
+  platform minted only `FERNET_KEY`/`TOKEN_ENCRYPTION_KEY`/`SESSION_SECRET_KEY` (run 1934). QA passed (auto-fills any
+  var); deploy injects only the real set. Fix: add generic crypto/secret NAMES to `provisioning._CRYPTO_KEYS`
+  (ENCRYPTION_KEY/TOKEN_ENC_KEY/APP_ENCRYPTION_KEY→Fernet; SECRET_KEY/APP_SECRET_KEY/JWT_SECRET_KEY→random). `devops/provisioning.py`.
+- **#44 (top of §TODO, `3fcc089`)** — FRONTEND UI BUG (user's screenshot): the BA `connect_accounts` stage said "tap the
+  button" but the frontend had NO handler for `ui.kind="connect_accounts"` → NO button rendered → owner could never
+  connect Stripe. Fix: added a `connect_accounts` render block in `frontend/app/page.tsx` (a per-provider button opening
+  `${API_URL}${provider.url}` = the Stripe OAuth flow, + next/skip). VERIFIED end-to-end (button payload + the endpoint
+  307-redirects to connect.stripe.com).
+- **#45 (§TODO, `1b09654`)** — a NOT-NULL datetime column with no default that no handler sets → 500 on EVERY create
+  (run 1937 `created_at`). Fix: `agents.timestamp_not_null_no_default` AST detector (datetime-only = zero-FP) → repair
+  adds `server_default=sa.func.now()`. Wired into `_collect_stubs` AND `rewrite_integrity_gate`. **PROVEN LIVE in run
+  1950** — caught + auto-repaired 3 columns. `developers/agents.py` + `orchestrator.py`.
+- **#46 (§1mm, `05939a3`)** — deploy startup: `stripe.py` fail-fasts on `STRIPE_STATE_SIGNING_KEY`, platform minted only
+  `STRIPE_STATE_SECRET` (run 1950; #43 class). Fix: add STRIPE_STATE_SIGNING_KEY/STRIPE_STATE_SIGN_KEY/STATE_SIGNING_KEY
+  to `_CRYPTO_KEYS`. `devops/provisioning.py`.
+- **#47 (§1mm, `d9bb6b8`)** — Auth0 per-project provisioning 403 (tenant app-limit) KILLED the whole deploy (run 1950).
+  Fix: `auth0_provision.placeholder_config` injects safe `.invalid` placeholder Auth0 config so the app BOOTS + goes LIVE
+  (public features work, login degraded, reported as `auth_degraded`) instead of dying. `onboarding/auth0_provision.py`,
+  `devops/orchestrator.py`.
+- **#48 (§1mm, `0249df4`)** — the frontend half of #42: a post-build rewrite truncated `admin/menu/page.tsx` → `next build`
+  failed at deploy (run 1950). `rewrite_integrity_gate` only re-checked backend `.py`. Fix: it now re-checks FRONTEND files
+  (frontend_incomplete + frontend_css_leak → `frontend_repairs`); the reviewer rejects a truncating Opus frontend fix.
+  `developers/agents.py`.
+
+## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
+1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
+1914 CERTIFIED-but-500s (Opus reintroduced the swallow) → #42. 1934 deploy startup crash → #43; QA 84/88.
+**1935 LIVE+clean (Opus off) 🏆.** **1936 LIVE+CERTIFIED (Opus on) 🏆🏆.** **1937 user's run → LIVE+certified 🏆🏆🏆.**
+**1950 user's run, Stripe connected → #45 proven live, then #46/#47/#48.** (1843 is the older LIVE-but-unusable run; §1w/§1x.)
+
+## 0-E. NON-FIX WORK THIS SESSION (all committed)
+- **README rewritten for RECRUITERS** (`fefc7ad` etc.) — hero screenshot `docs/demo.png`, badges, a rendered mermaid
+  architecture diagram, a Code Integrity Engine gate table, tech-stack table, "what this demonstrates" skills section.
+  **MIT LICENSE added** (`Copyright (c) 2026 Rajkumar` — user may swap full name). Purpose: the user is job-hunting and
+  uses this repo as proof (they list it under Work History as an independent project; portable blurb was given).
+- **Pre-public identifier scrub** (`9bfac76`): the working tree is scrubbed of the real infra identifiers
+  (`rajkumarai.dev`→example.com, Auth0 tenant `dev-eldyvyvbd3kd2gnw`→dev-tenant, Route53 zone `Z027…`→placeholder) and is
+  secrets-clean. Those identifiers STILL linger in OLD git history (NON-secret). A `git filter-repo --replace-text` history
+  scrub is PREPARED (rules at `scratchpad/history-scrub-replacements.txt`; a backup bundle exists) but NOT run — the
+  **classifier blocks the destructive rewrite**, so the USER must run it if they want it. User chose Option A = publish
+  as-is (identifiers are non-secret). To make public: `gh repo edit Rajkumar2002-Rk/ai-org --visibility public --accept-visibility-change-consequences`.
+- The full 133-commit history was scanned: NO real credentials/API keys/tokens/.env ever committed. `.gitignore` now
+  also ignores `.claude/settings.local.json`.
+
+## 0-F. HOW TO OPERATE THE PLATFORM (for the next session)
+- **Start:** `docker compose up -d` (backend :8000, frontend :3000, postgres, redis). Health: `curl localhost:8000/health`.
+- **A full run costs money** (real LLM). Opus ON ≈ $3, Opus OFF (skip-cert) ≈ $1 — flip `SECURITY_REVIEW_ENABLED` in
+  `.env` + `docker compose up -d backend`. Opus OFF is enough to test codegen/deploy; Opus ON for the full certified flow.
+  ALWAYS get the user's OK before a paid run.
+- **Two ways to run:** (a) the UI — user opens localhost:3000, talks to the BA, does onboarding, watches stages;
+  (b) the scripted driver `docker compose exec -T backend python tests/verify_pipeline.py` (a coffee-shop idea; walks
+  BA→Architect→Build→smoke_boot→Opus→QA→Deploy). A conversation-only walkthrough (no build) is in
+  `scratchpad/onboarding_walkthrough.py`.
+- **Check a run's progress** (used constantly): query the DB/redis, e.g. `docker compose exec -T backend python -c "..."`
+  reading `projects.status` + redis keys `build:status:<pid>` / `secure:` / `qa:` / `deploy:status:<pid>` +
+  `qa_report:<pid>` / `deploy_report:<pid>`. Generated files live in `generated_files` (project_id, filepath, content, status).
+  The newest `projects.id` is the user's latest run.
+- **💡 CHEAP diagnosis without paying (§1cc):** (a) $0 — load a run's stored `generated_files` and run any deterministic
+  gate against them offline; (b) near-$0 — DEPLOY existing files without codegen: mint `reviewer.skipped_certificate` into
+  redis `security_cert:<pid>` then POST `/pipeline/deploy` (the classifier may block the direct cert write — ask the user).
+  Do NOT re-run `/pipeline/build` to "redeploy existing files" — it REGENERATES everything (~$1 + variance).
+- **Offline test suites** (deterministic, LLM-free, no $): `docker compose run --rm --no-deps -e PYTHONPATH=/app -v
+  "$PWD/backend:/app" backend python tests/test_developers_offline.py` (also test_qa_offline, test_devops_offline,
+  test_onboarding_offline, test_architect_offline, …). ALWAYS `docker compose build backend && docker compose up -d backend`
+  after editing backend code so the running container has your change (the image is baked, not mounted).
+- **Make a deployed app PLAYABLE** (throwaway, NEVER commit): seed `menu_items` into the app's DB (created_at may be
+  NOT-NULL with no default → provide it or `ALTER … DROP NOT NULL`); add a plain-HTTP Caddy `:80` block (copy
+  `scratchpad/Caddyfile_1935_http` into the caddy container, `caddy reload`) for a no-cert-warning URL; for admin, append a
+  demo auth-bypass to the deployed `auth.py` + patch the frontend admin page's isAuthenticated gate + `npm run build`.
+
+## 0-G. OPEN ITEMS / TODO FOR NEXT SESSION (priority order)
+1. **⚠️ Auth0 tenant is AT/OVER its app limit** (403 on create — from our MANY runs). USER ACTION: delete old
+   auto-provisioned per-project apps in the Auth0 dashboard, and/or verify the Mgmt M2M app still has
+   `create:clients`+`create:resource_servers`. Fix #47 keeps future deploys LIVE (login-degraded) regardless, but real
+   login needs a working tenant.
+2. **LOWER priority gate:** the run-1934 `MenuItemResponse` malformed-Pydantic-schema → `GET /menu` 500 is still ungated
+   (a "response_model is a complete Pydantic schema" gate would harden it). LLM-variance; 1935/1936/1950 didn't hit it.
+3. **Optional:** run the `git filter-repo` history scrub (0-E) if the user wants the non-secret identifiers gone from
+   history before/after going public. Prepared, not run (classifier-blocked for me — user runs it).
+4. **1950 itself** won't deploy without regenerating its already-broken `admin/menu/page.tsx` (Fix #48 prevents the class
+   going forward, not that specific file).
+
+## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-
 CERTIFIED, CLEAN app via the COMPLETE PRODUCTION FLOW (real Opus ON)** — BA → Architect → Build 19/19 →
 smoke_boot → **real Opus PASS (claude-opus-4-8, 99 found/86 fixed, CERTIFIED)** → **QA 93/93 (zero fails)** →
