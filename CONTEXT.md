@@ -163,8 +163,15 @@ fully before doing anything else in this project.
    infra identifiers (the last HEAD occurrence was this file's own scrub note, now genericized). Chose NOT to run
    `git filter-repo`: identifiers are non-secret, already public, and a full rewrite would change every commit SHA
    (invalidating the hash refs throughout this file). See 0-E.
-4. **1950 itself** won't deploy without regenerating its already-broken `admin/menu/page.tsx` (Fix #48 prevents the class
-   going forward, not that specific file).
+4. ✅ **FILE FIXED (2026-08-27) — 1950's `admin/menu/page.tsx` un-broken in the DB, $0, no LLM.** The stored row
+   (`generated_files.id=4265`, project 1950) was truncated mid-form (cut off inside the description `<label>` at
+   line 459 — 2 unclosed `(`/`{`). The surviving ~90% fully determined the intent (state/handlers/styles/backend
+   contract `/admin/menu` + `/admin/menu/{id}`), so the missing tail (description + image_url fields, submit/cancel
+   buttons, the `items.map` list render, closing tags) was completed deterministically by hand — NO regen LLM call.
+   Validated 3 ways: real `tsc` parse (0 errors; the broken original threw the exact TS17008/TS1005 truncation that
+   killed `next build`), the platform's own `frontend_incomplete`/`css_leak`/`rewrite_integrity_gate` (all clean),
+   and a byte-exact DB round-trip. **Remaining to see 1950 LIVE:** an actual deploy (assemble → build images →
+   provision Auth0/Stripe/keys → up) — a side-effectful step, NOT yet run.
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-
@@ -4995,9 +5002,10 @@ stripe_accounts.created_at/menu_items.created_at, added server_default) → Opus
   backend `.py`. Extended it to re-check frontend files (frontend_incomplete + frontend_css_leak → `frontend_repairs`;
   repair_instructions renders FRONTEND_FILE_BROKEN). Now the reviewer rejects a truncating Opus frontend fix (keeps
   the clean original). Verified: the gate flags 1950's real broken file.
-- **⚠️ 1950 itself:** its generated `admin/menu/page.tsx` is ALREADY truncated in the DB; Fix #48 prevents the class
-  GOING FORWARD but doesn't un-break 1950's file — 1950 would need that one file regenerated to deploy. Its
-  Auth0/Stripe/created_at issues are all fixed platform-side. Projects 1948/1949 (BA-walkthrough test convos) +
+- **✅ 1950's file un-broken (2026-08-27):** `generated_files.id=4265` was hand-completed deterministically ($0, no
+  LLM) — see 0-G #4. Was truncated mid-form; now valid TSX (tsc 0 errors, platform gate clean, byte-exact
+  round-trip). Its Auth0/Stripe/created_at issues are all fixed platform-side, so 1950 should now deploy; the actual
+  deploy is a side-effectful step and has NOT been run yet. Projects 1948/1949 (BA-walkthrough test convos) +
   1950 left in DB.
 - **⚠️ Auth0 tenant is at/over its app limit** (403 on create) from all our runs — the user should delete old
   auto-provisioned Auth0 apps in the dashboard, or Fix #47 keeps future deploys LIVE (login-degraded) regardless.
