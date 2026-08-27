@@ -156,6 +156,9 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
     # Build the in-project symbol table ONCE from the whole file set, then resolve
     # every backend file's imports against it (fix #16).
     sym_index = agents.build_symbol_index(built)
+    # Whole-build set of every table a model defines — so a ForeignKey pointing at a table
+    # NO model creates (run 1934: `users`) can be flagged even when models span files.
+    defined_tables = agents.collect_tablenames(built)
     for r in built:
         if r.get("status") == agents.STUB_STATUS:
             continue
@@ -185,6 +188,14 @@ def _collect_stubs(built: list, blueprint: dict, project_id: int) -> list:
                 r["timestamp_default_repairs"] = ts
                 problems.append("NOT-NULL timestamp column(s) with no default " +
                                 ", ".join(f"{t.get('table')}.{t['column']}" for t in ts))
+            # ForeignKey to a table NO model defines (run 1934: `users`) -> create_all
+            # raises NoReferencedTableError, the DDL transaction rolls back, and the DB
+            # is left with ZERO tables so every query 500s.
+            fk = agents.dangling_foreign_keys(content, defined_tables)
+            if fk:
+                r["foreign_key_repairs"] = fk
+                problems.append("foreign key(s) to undefined table " +
+                                ", ".join(f"{f['referenced']}" for f in fk))
         fe = agents.frontend_incomplete(rel, content)
         if fe:
             problems.append(f"frontend file {fe}")

@@ -7,7 +7,7 @@ fully before doing anything else in this project.
 
 # ⏭️⏭️⏭️ RESUME HERE — AUTHORITATIVE HANDOFF (2026-08-26 night). A FRESH CHAT STARTS FROM THIS BLOCK.
 > Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1mm are the
-> current per-fix record for THIS session's work (Fixes #37–#48). Read THIS block first; drill into §1cc–§1mm as needed.
+> current per-fix record for THIS session's work (Fixes #37–#49). Read THIS block first; drill into §1cc–§1mm as needed.
 
 ## 0-A. WHERE WE ARE RIGHT NOW (2026-08-26 night)
 - **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed
@@ -22,8 +22,9 @@ fully before doing anything else in this project.
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
 - **Config (.env):** `SECURITY_REVIEW_ENABLED=true` (Opus ON), `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`. `.env`
   is gitignored and holds the REAL Stripe test keys / Auth0 Mgmt / SMTP creds — NEVER commit it.
-- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes.** All grounded in REAL captured run bugs,
-  each locked with a regression test. Detail per fix in §1cc–§1mm.
+- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49** on 08-27, the run-1934 dangling-FK
+  gate + QA create_all-swallow fix). All grounded in REAL captured run bugs, each locked with a regression test. Detail
+  per fix in §1cc–§1mm (§0-C for #49).
 
 ## 0-B. THE MILESTONES REACHED THIS SESSION (the payoff)
 - 🏆 **Run 1935 (Opus OFF, ~$1):** FIRST fresh full run to a genuinely LIVE + CLEAN app end-to-end, QA 100/100. §1jj.
@@ -80,6 +81,21 @@ fully before doing anything else in this project.
   failed at deploy (run 1950). `rewrite_integrity_gate` only re-checked backend `.py`. Fix: it now re-checks FRONTEND files
   (frontend_incomplete + frontend_css_leak → `frontend_repairs`); the reviewer rejects a truncating Opus frontend fix.
   `developers/agents.py`.
+- **#49 (§1ii-fix, 2026-08-27)** — the run-1934 GET /menu 500 (0-G #2). CONTEXT's "malformed `MenuItemResponse` Pydantic
+  schema" hypothesis was WRONG (proven false by reproducing the exact query+serialize path — it works). REAL cause:
+  1934's `Order.owner_id = Column(Integer, ForeignKey('users.id'))` but NO `users` model was ever generated. The class
+  IMPORTS fine (app boots), but `Base.metadata.create_all` resolves the FK at DDL time → `NoReferencedTableError` → the
+  single DDL transaction ROLLS BACK → **zero tables created** → every query 500s via the app's own `except SQLAlchemyError`
+  ("Could not retrieve menu items."). That's why ALL FOUR GET /menu tests failed identically. COMPOUNDING platform bug:
+  QA's `_create_tables` called `_run(...)` but **discarded its result**, silently swallowing the create_all failure → QA
+  booted against a schema-less DB and mislabeled it as 4 per-endpoint bugs. Fix (two parts): (a) build gate
+  `dangling_foreign_keys(content, defined_tables)` + `collect_tablenames(built)` flags a string-form `ForeignKey('X.col')`
+  whose table X no model defines — wired into `_collect_stubs` AND `rewrite_integrity_gate`; repair text `FOREIGN_KEY_DANGLING`;
+  backend prompt gained a foreign-key rule. (b) QA `_create_tables` now returns Failures and surfaces a create_all failure
+  as ONE accurate assembly finding instead of swallowing it (stops before booting a schema-less app). PROVEN: the gate
+  rejects the REAL 1934 `models.py` (dangling FK on `orders.owner_id`). Tests: `test_developers_offline.test_dangling_foreign_key_gate`,
+  `test_qa_offline.test_create_tables_surfaces_schema_failure`; all 16 offline suites green; backend image rebuilt.
+  `developers/agents.py`, `developers/orchestrator.py`, `qa/assembly.py`.
 
 ## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
 1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
@@ -136,8 +152,12 @@ fully before doing anything else in this project.
    → deleted ALL 8 clients + 9 APIs (a few 429 rate-limits cleared on a re-run). Successful deletes PROVE the M2M app
    holds `delete:clients`+`delete:resource_servers`. `create:*` scopes are separate (only proven by a live deploy) but
    were never removed. Fix #47 still keeps deploys LIVE (login-degraded) if the tenant ever refills; run the tool again.
-2. **LOWER priority gate:** the run-1934 `MenuItemResponse` malformed-Pydantic-schema → `GET /menu` 500 is still ungated
-   (a "response_model is a complete Pydantic schema" gate would harden it). LLM-variance; 1935/1936/1950 didn't hit it.
+2. ✅ **DONE (2026-08-27) — Fix #49 (see 0-C).** The run-1934 `GET /menu` 500 was NOT a "malformed Pydantic schema"
+   (that hypothesis was disproven by reproducing the exact query+serialize path against real Postgres — it works). REAL
+   cause: a dangling `ForeignKey('users.id')` with no `users` model → `create_all` NoReferencedTableError → DDL rollback →
+   zero tables → every query 500s; and QA's `_create_tables` silently swallowed that failure. Both fixed: a `dangling_foreign_keys`
+   build gate (+ `collect_tablenames`), and `_create_tables` now surfaces create_all failures. Proven against the real 1934
+   files; 16/16 offline suites green; image rebuilt.
 3. **Optional:** run the `git filter-repo` history scrub (0-E) if the user wants the non-secret identifiers gone from
    history before/after going public. Prepared, not run (classifier-blocked for me — user runs it).
 4. **1950 itself** won't deploy without regenerating its already-broken `admin/menu/page.tsx` (Fix #48 prevents the class
@@ -4848,8 +4868,12 @@ orders + stripe endpoints — a security-CERTIFIED app that 500s on every DB end
   suite passes; backend rebuilt.
 - **WHAT 1934 VALIDATED:** ✅ **Fix #42 held** — no reintroduced get_db swallow / `source` rename; QA 500s dropped
   31→4. ✅ Fixes #39/#40/#41 held. ✅ Design system + menu images landed again. Furthest + cleanest run to date.
-- **⚠️ KNOWN separate bug (does NOT block deploy):** 1934's `menu.py` `MenuItemResponse` Pydantic schema is
-  malformed → `GET /menu` 500s (the 4 remaining QA fails). Codegen-quality/LLM-variance; logged for follow-up.
+- **⚠️ KNOWN separate bug (does NOT block deploy):** 1934's `GET /menu` 500s (the 4 remaining QA fails). ORIGINAL
+  hypothesis here — "1934's `menu.py` `MenuItemResponse` Pydantic schema is malformed" — was **WRONG** (corrected
+  2026-08-27, Fix #49 / 0-C): reproducing the exact query+serialize path proves the menu.py code is FINE. The real
+  cause is `Order.owner_id = ForeignKey('users.id')` with no `users` table → `create_all` NoReferencedTableError →
+  DDL rollback → zero tables → every query 500s; masked because QA's `_create_tables` swallowed the create_all failure.
+  Now gated (dangling-FK build gate) + surfaced (QA hardening). See §0-C #49.
 - **⏭️ NEXT:** with #43 the app should START in deploy → a re-run has a real shot at the FIRST genuinely LIVE app
   (menu may 500 until the response_model bug is addressed). Project 1934 left in DB.
 

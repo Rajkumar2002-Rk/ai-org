@@ -867,10 +867,18 @@ async def _drop_db(db_name: str) -> None:
 
 
 def _create_tables(venv_dir: str, root: str, module: str, db_url: str,
-                   extra_env: dict | None = None) -> None:
-    """Best effort: import the generated models and create their tables.
+                   extra_env: dict | None = None) -> list[Failure]:
+    """Import the generated models and create their tables. Tries both import styles.
 
-    Tries both import styles, since generated code uses either.
+    Returns any Failure — a NON-empty list means schema creation FAILED and no tables
+    exist, so the caller must stop rather than run tests against an empty database.
+
+    This surfacing matters (run 1934): a dangling `ForeignKey('users.id')` with no `users`
+    table makes `Base.metadata.create_all` raise NoReferencedTableError, its single DDL
+    transaction rolls back, and the DB is left with ZERO tables. When this step swallowed
+    that error, QA booted the app anyway and every DB endpoint 500'd — reported as four
+    separate per-endpoint bugs (GET /menu ...) instead of the one real cause. Now the
+    create_all error becomes a single, accurate assembly finding.
     """
     pkg = module.rsplit(".", 1)[0] if "." in module else ""      # e.g. backend.app
     candidates = [c for c in (pkg, "app", "backend.app") if c]
@@ -894,10 +902,21 @@ def _create_tables(venv_dir: str, root: str, module: str, db_url: str,
         "    async with eng.begin() as c:\n"
         "        await c.run_sync(Base.metadata.create_all)\n"
         "asyncio.run(go())\n"
+        "print('schema-ok')\n"
     )
     env = {**os.environ, **(extra_env or {}), **_TEST_ENV, "DATABASE_URL": db_url,
            "PYTHONPATH": _python_path(root)}
-    _run([_venv_python(venv_dir), "-c", boot], cwd=root, timeout=60, env=env)
+    code, out = _run([_venv_python(venv_dir), "-c", boot], cwd=root, timeout=60, env=env)
+    if code != 0:
+        return [Failure(
+            "assembly: database schema could not be created",
+            "The app imports, but creating its database tables failed — so the test "
+            "database has NO tables and every DB-backed endpoint would 500 on a query. "
+            "This is the real root cause (not the individual endpoints). A common cause "
+            "is a ForeignKey pointing at a table no model defines (create_all then raises "
+            "NoReferencedTableError and rolls back the whole schema). create_all output:\n"
+            + (out or "")[-1000:])]
+    return []
 
 
 async def _wait_healthy(base_url: str, proc: subprocess.Popen, timeout: int) -> bool:
@@ -1032,7 +1051,13 @@ async def assemble(files: list[dict],
             env.db_name = None
             db_url = settings.database_url
         else:
-            _create_tables(venv_dir, env.root, module, db_url, extra_env=auto_env)
+            schema_fails = _create_tables(venv_dir, env.root, module, db_url,
+                                          extra_env=auto_env)
+            if schema_fails:
+                # No tables => every DB endpoint would 500. Report the real cause once,
+                # instead of booting and mislabelling it as N per-endpoint failures.
+                env.failures.extend(schema_fails)
+                return env
 
         # Launch on a random free port, bound to loopback only.
         env.port = _free_port()

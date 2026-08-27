@@ -799,6 +799,69 @@ def test_timestamp_not_null_gate():
           and built[0].get("timestamp_default_repairs"), str(stubbed))
 
 
+def test_dangling_foreign_key_gate():
+    """Run 1934: `owner_id = Column(Integer, ForeignKey('users.id'))` but NO `users` table
+    was ever generated. The class imports fine so the app BOOTS, but `create_all` raises
+    NoReferencedTableError, the DDL transaction rolls back, and the DB is left with ZERO
+    tables -> every query 500s (it looked like a per-endpoint GET /menu bug). The gate flags
+    a ForeignKey whose table no model defines. Zero-FP: a FK to a defined table is clean."""
+    HEAD = "from sqlalchemy import Column, Integer, String, ForeignKey\n"
+    order_bad = (HEAD + "class Order(Base):\n    __tablename__ = 'orders'\n"
+                 "    id = Column(Integer, primary_key=True)\n"
+                 "    owner_id = Column(Integer, ForeignKey('users.id'), nullable=False)\n")
+    tables_no_users = {"orders", "menu_items"}
+    f = agents.dangling_foreign_keys(order_bad, tables_no_users)
+    check("a ForeignKey to an undefined table is flagged (run 1934: users)",
+          len(f) == 1 and f[0]["table"] == "users" and f[0]["column"] == "owner_id"
+          and f[0]["referenced"] == "users.id", str(f))
+    # Zero-FP: the referenced table IS defined somewhere in the build.
+    check("a ForeignKey to a DEFINED table is NOT flagged",
+          agents.dangling_foreign_keys(order_bad, {"orders", "users"}) == [])
+    # Object-form ForeignKey(User.id) can never dangle -> not flagged.
+    obj_form = (HEAD + "class Order(Base):\n    __tablename__ = 'orders'\n"
+                "    id = Column(Integer, primary_key=True)\n"
+                "    owner_id = Column(Integer, ForeignKey(User.id))\n")
+    check("object-form ForeignKey(Model.col) is NOT flagged (cannot dangle)",
+          agents.dangling_foreign_keys(obj_form, set()) == [])
+    check("a non-model file (no __tablename__) is a no-op",
+          agents.dangling_foreign_keys("x = ForeignKey('users.id')", set()) == [])
+    # collect_tablenames unions tablenames across the whole build (models may span files).
+    built_files = [
+        {"filepath": "backend/app/models.py", "content": order_bad},
+        {"filepath": "backend/app/more_models.py",
+         "content": "class MenuItem(Base):\n    __tablename__ = 'menu_items'\n    id = Column(Integer)\n"},
+    ]
+    check("collect_tablenames gathers every __tablename__ across files",
+          agents.collect_tablenames(built_files) == {"orders", "menu_items"}, "")
+    # Build-gate wiring: _collect_stubs rejects the model file + attaches the repair.
+    built = [
+        {"ticket_id": "FND-1", "filepath": "backend/app/models.py",
+         "content": order_bad, "status": "generated"},
+        {"ticket_id": "BE-1", "filepath": "backend/app/routes/menu.py",
+         "content": "def ok():\n    return 1\n", "status": "generated"},
+    ]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    check("the model with the dangling FK is rejected by the build gate",
+          [s["ticket_id"] for s in stubbed] == ["FND-1"], str([s["ticket_id"] for s in stubbed]))
+    check("the gate problem names the dangling reference",
+          any("users.id" in p for p in built[0].get("gate_problems", [])), str(built[0].get("gate_problems")))
+    check("the structural repair is attached for a precise retry",
+          built[0].get("foreign_key_repairs") == f, str(built[0].get("foreign_key_repairs")))
+    # Repair text explains the fix (drop the FK / identity is in the JWT).
+    rt = agents.repair_instructions({"foreign_key_repairs": f})
+    check("repair is FOREIGN_KEY_DANGLING naming the column + table + the drop-FK fix",
+          "FOREIGN_KEY_DANGLING" in rt and "owner_id" in rt and "users" in rt
+          and "ForeignKey" in rt, rt)
+    # rewrite_integrity_gate re-catches a dangling FK reintroduced by a post-build rewrite.
+    rg = agents.rewrite_integrity_gate(order_bad, "backend/app/models.py", built_files)
+    check("rewrite_integrity_gate re-flags a reintroduced dangling FK",
+          rg.get("foreign_key_repairs") and rg["foreign_key_repairs"][0]["table"] == "users", str(rg))
+    # Backend prompt forbids it.
+    sysp = agents._system("backend")
+    check("backend prompt has a foreign-key rule forbidding a dangling ForeignKey",
+          "foreign-key rule" in sysp.lower() and "users" in sysp and "create_all" in sysp, "")
+
+
 def test_frontend_completeness_gate():
     """Regression (project 1007): the generated admin/menu/review/page.tsx was
     TRUNCATED mid-JSX (styles/inputStyle undefined, component unclosed). It passed
@@ -1457,6 +1520,7 @@ async def main():
         test_rewrite_integrity_gate()
         test_reviewer_rejects_unsafe_autofix()
         test_timestamp_not_null_gate()
+        test_dangling_foreign_key_gate()
         test_missing_in_project_module_gate()
         await scenario_all_good()
         await scenario_one_stub()

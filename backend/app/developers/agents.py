@@ -78,6 +78,20 @@ def _system(agent_type: str) -> str:
         "`source_name`, `user` into `user_id`, etc.). A response-schema field that "
         "does not match a real model attribute raises ResponseValidationError (500) "
         "as soon as a row is serialized."
+        # Dangling ForeignKey (run 1934): Order.owner_id = ForeignKey('users.id') but no
+        # `users` table/model was ever generated. The class still IMPORTS fine, so the app
+        # boots — but SQLAlchemy resolves the reference only at metadata.create_all time,
+        # where it raises NoReferencedTableError; the single DDL transaction rolls back and
+        # NO tables are created, so every DB query then 500s.
+        " CRITICAL foreign-key rule: every `ForeignKey('<table>.<col>')` must point at a "
+        "table that one of YOUR generated SQLAlchemy models actually defines (a class with "
+        "`__tablename__ = '<table>'`). Do NOT reference a table you never created — e.g. "
+        "do NOT write `ForeignKey('users.id')` unless you also define a `users` model. This "
+        "app authenticates via Auth0 (identity lives in the JWT, there is no local users "
+        "table unless the contract asks for one): store an owner/user id as a plain "
+        "`Column(String)`/`Column(Integer)` WITHOUT a ForeignKey rather than pointing at a "
+        "non-existent table. A dangling ForeignKey makes create_all fail and leaves the "
+        "whole database with no tables."
         # Error propagation in get_db (project 1289): `get_db` wrapped `yield session`
         # in `except Exception: raise HTTPException(500)`. FastAPI runs the request
         # inside the yield, so a downstream HTTPException(401) got re-raised as a 500 —
@@ -508,6 +522,75 @@ def model_schema_mismatches(models_content: str, database_schema: list) -> list[
             if name and name not in model_cols[tname]:
                 missing.append(f"{tname}.{name}")
     return missing
+
+
+# ---------------------------------------------------------- dangling ForeignKey
+# create_all-500 (run 1934): a generated model wrote
+# `owner_id = Column(Integer, ForeignKey('users.id'), ...)` but NO model ever defined a
+# `users` table. The class imports fine (the FK string is resolved lazily), so the app
+# BOOTS — but `Base.metadata.create_all` raises NoReferencedTableError while emitting DDL,
+# its single transaction ROLLS BACK, and the database is left with ZERO tables. Every
+# DB-backed endpoint then 500s (caught by the app's own `except SQLAlchemyError`), which
+# looked like a per-endpoint bug (GET /menu) but was really a schema-wide failure.
+def collect_tablenames(project_files: list[dict]) -> set:
+    """The union of every SQLAlchemy `__tablename__` defined across ALL generated backend
+    `.py` files — exactly the tables `metadata.create_all` will build. Used to tell whether
+    a `ForeignKey('<table>.<col>')` points at a table some model actually defines (models
+    may be split across files, so this must be whole-build, not per-file)."""
+    names: set = set()
+    for f in project_files or []:
+        fp = (f.get("filepath") or f.get("filename") or "")
+        if fp.endswith(".py"):
+            names |= set(_model_columns(f.get("content") or "").keys())
+    return names
+
+
+def _foreign_key_target(call: ast.Call) -> str | None:
+    """The `'<table>.<col>'` string target of a `ForeignKey(...)` call, if it uses the
+    STRING form (the only form that can dangle). Returns None for `ForeignKey(Model.col)`
+    object form (its column already exists, so it can never reference a missing table),
+    or for any non-ForeignKey call."""
+    fn = call.func
+    if (getattr(fn, "id", None) or getattr(fn, "attr", None)) != "ForeignKey":
+        return None
+    for a in call.args:
+        if isinstance(a, ast.Constant) and isinstance(a.value, str):
+            return a.value
+    return None
+
+
+def dangling_foreign_keys(content: str, defined_tables: set) -> list[dict]:
+    """Findings for a string-form `ForeignKey('<table>.<col>')` in a model file whose
+    referenced TABLE is not defined by ANY generated model (run 1934: `ForeignKey('users.id')`
+    with no `users` table). Such a reference makes `create_all` raise NoReferencedTableError
+    and leaves the whole DB with no tables. Only backend model files (`__tablename__`); only
+    the string form. Each finding: {column, referenced, table, line}."""
+    if "ForeignKey" not in (content or "") or "__tablename__" not in content:
+        return []
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return []
+    out: list[dict] = []
+    for cls in ast.walk(tree):
+        if not isinstance(cls, ast.ClassDef):
+            continue
+        for stmt in cls.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            tgt = stmt.targets[0]
+            colname = tgt.id if isinstance(tgt, ast.Name) else None
+            for sub in ast.walk(stmt.value):
+                if not isinstance(sub, ast.Call):
+                    continue
+                target = _foreign_key_target(sub)
+                if not target:
+                    continue
+                ref_table = target.rsplit(".", 1)[0] if "." in target else target
+                if ref_table not in defined_tables:
+                    out.append({"column": colname, "referenced": target,
+                                "table": ref_table, "line": getattr(sub, "lineno", None)})
+    return out
 
 
 # ---------------------------------------------------------- NOT-NULL timestamp, no default
@@ -1448,6 +1531,26 @@ def repair_instructions(result: dict) -> str:
             f"be present under its exact name — do not rename, alias, or drop them. Keep the "
             f"file's other behaviour unchanged.")
 
+    # FOREIGN_KEY_DANGLING (run 1934) — a ForeignKey pointing at a table no model defines,
+    # so create_all raises NoReferencedTableError and the whole schema fails to build.
+    fk = result.get("foreign_key_repairs") or []
+    if fk:
+        parts.append("\n=== FOREIGN_KEY_DANGLING — repair ONLY this file, do not touch any "
+                     "other file ===")
+        for f in fk:
+            col = f.get("column")
+            parts.append(
+                f"\nColumn `{col}` (line {f.get('line')}) has `ForeignKey('{f.get('referenced')}')`, "
+                f"but NO generated model defines the table `{f.get('table')}` (no class with "
+                f"`__tablename__ = '{f.get('table')}'`). SQLAlchemy resolves this only at "
+                f"`create_all`, where it raises NoReferencedTableError and the DDL transaction "
+                f"rolls back — leaving the database with ZERO tables, so every query 500s.\n"
+                f"Repair: remove the ForeignKey and keep the column as a plain "
+                f"`Column(Integer)`/`Column(String)` (identity comes from the Auth0 JWT — there "
+                f"is no local `{f.get('table')}` table unless the contract defines one). Only add "
+                f"a `{f.get('table')}` model instead if the binding contract actually requires "
+                f"that table. Keep the file's other behaviour unchanged.")
+
     # FRONTEND_INCOMPLETE (fix #48) — a post-build rewrite left a frontend file truncated /
     # with a top-level CSS leak, so `next build` fails at deploy.
     frs = result.get("frontend_repairs") or []
@@ -1516,6 +1619,9 @@ def rewrite_integrity_gate(content: str, filepath: str, files: list[dict],
         ts = timestamp_not_null_no_default(content, filepath)
         if ts:
             return {"timestamp_default_repairs": ts}
+        fk = dangling_foreign_keys(content, collect_tablenames(swapped))
+        if fk:
+            return {"foreign_key_repairs": fk}
         if schema:
             miss = model_schema_mismatches(content, schema)
             if miss:

@@ -727,6 +727,37 @@ def test_entrypoint_ticket_forbids_workarounds():
     check("forbids wildcard CORS with credentials", 'allow_origins=["*"]' in desc)
 
 
+def test_create_tables_surfaces_schema_failure():
+    """Run 1934: a dangling `ForeignKey('users.id')` (no `users` table) makes create_all
+    raise NoReferencedTableError and roll back the WHOLE schema, so the test DB has NO
+    tables and every endpoint 500s. `_create_tables` used to DISCARD the boot subprocess
+    result, so QA booted anyway and mislabelled it as four per-endpoint GET /menu failures.
+    It must now surface the create_all error as ONE accurate assembly Failure."""
+    orig = assembly._run
+    try:
+        # create_all FAILED (non-zero exit) -> exactly one Failure carrying the traceback.
+        assembly._run = lambda *a, **k: (1,
+            "sqlalchemy.exc.NoReferencedTableError: Foreign key associated with column "
+            "'orders.owner_id' could not find table 'users'")
+        fails = assembly._create_tables("/venv", "/root", "backend.app.main", "postgresql://x")
+        check("a create_all failure becomes exactly one assembly Failure",
+              len(fails) == 1, str(fails))
+        check("the Failure names schema creation as the root cause",
+              "schema could not be created" in fails[0].test_name, str(fails[0].test_name))
+        check("the Failure carries the create_all error text for attribution",
+              "NoReferencedTableError" in fails[0].reason, fails[0].reason[:120])
+        # Healthy create_all (exit 0) -> no failure.
+        assembly._run = lambda *a, **k: (0, "schema-ok")
+        check("a successful create_all yields no failure",
+              assembly._create_tables("/venv", "/root", "backend.app.main", "postgresql://x") == [])
+        # App with no DB models (exit 0, 'no-models') -> no failure.
+        assembly._run = lambda *a, **k: (0, "no-models")
+        check("an app with no DB models yields no failure",
+              assembly._create_tables("/venv", "/root", "backend.app.main", "postgresql://x") == [])
+    finally:
+        assembly._run = orig
+
+
 async def main():
     await test_vulnerable()
     await test_well_built()
@@ -744,6 +775,7 @@ async def main():
     await test_frontend_truncation_caught_statically()
     test_env_provides_provider_config()
     test_entrypoint_ticket_forbids_workarounds()
+    test_create_tables_surfaces_schema_failure()
 
     print("\n" + "=" * 60)
     if _failures:
