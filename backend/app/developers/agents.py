@@ -1349,12 +1349,30 @@ def _canon_pkg(name: str) -> str:
 # wrong entry would block a real package and fail good builds. Grows as runs surface more.
 _HALLUCINATED_PACKAGES = frozenset({"starlette-limiter"})
 
+# Known-HALLUCINATED MODULE PATHS — a real, installed package (root exists) but a
+# dotted SUBMODULE the LLM invented that the package does not provide, so the import is
+# a ModuleNotFoundError at STARTUP (not a pip-install failure — the package installs
+# fine). run 1950: the Opus security auto-fix added rate limiting via
+# `from starlette.middleware.rate_limit import RateLimitMiddleware` — starlette ships no
+# rate-limit middleware at all, so the app crashed on import. The root-package check
+# above can't catch this (root `starlette` is real); QA's assembly probe caught it only
+# AFTER the paid review had certified the broken file. Curated like the package list:
+# ONLY paths proven non-existent (starlette's middleware submodules are a fixed set that
+# has never included rate limiting). Grows as runs surface more.
+_HALLUCINATED_MODULES = frozenset({
+    "starlette.middleware.rate_limit",
+    "starlette.middleware.ratelimit",
+})
+
 
 def hallucinated_package_imports(content: str, filepath: str) -> list[dict]:
     """OFFLINE build-gate finding: a backend `.py` that imports a KNOWN-non-existent PyPI
-    package (curated blocklist, deterministic, no network). Each: {module, root, line,
-    names}. Only `.py`; relative/in-project/stdlib imports are never flagged (a name only
-    matches if it is literally on the blocklist)."""
+    package OR a KNOWN-non-existent dotted submodule of a real package (curated blocklists,
+    deterministic, no network). Each: {module, root, line, names, kind}. `kind` is
+    "package" (the root package does not exist -> whole install fails) or "module" (the
+    root package IS real but the submodule does not exist -> ModuleNotFoundError at
+    startup; run 1950's `starlette.middleware.rate_limit`). Only `.py`; relative/in-project/
+    stdlib imports are never flagged (a name only matches if it is literally on a blocklist)."""
     if not filepath.endswith(".py"):
         return []
     try:
@@ -1366,16 +1384,24 @@ def hallucinated_package_imports(content: str, filepath: str) -> list[dict]:
         if isinstance(node, ast.ImportFrom):
             if node.level:             # relative import -> local module
                 continue
-            root = (node.module or "").split(".")[0]
+            module = node.module or ""
+            root = module.split(".")[0]
             if _canon_pkg(root) in _HALLUCINATED_PACKAGES:
-                out.append({"module": node.module, "root": root, "line": node.lineno,
-                            "names": [a.name for a in node.names]})
+                out.append({"module": module, "root": root, "line": node.lineno,
+                            "names": [a.name for a in node.names], "kind": "package"})
+            elif module in _HALLUCINATED_MODULES:
+                out.append({"module": module, "root": root, "line": node.lineno,
+                            "names": [a.name for a in node.names], "kind": "module"})
         elif isinstance(node, ast.Import):
             for a in node.names:
-                root = (a.name or "").split(".")[0]
+                name = a.name or ""
+                root = name.split(".")[0]
                 if _canon_pkg(root) in _HALLUCINATED_PACKAGES:
-                    out.append({"module": a.name, "root": root, "line": node.lineno,
-                                "names": []})
+                    out.append({"module": name, "root": root, "line": node.lineno,
+                                "names": [], "kind": "package"})
+                elif name in _HALLUCINATED_MODULES:
+                    out.append({"module": name, "root": root, "line": node.lineno,
+                                "names": [], "kind": "module"})
     return out
 
 
@@ -1483,8 +1509,10 @@ def repair_instructions(result: dict) -> str:
                 f"routes at all, still return a valid module with its `APIRouter()` so it "
                 f"imports cleanly.")
 
-    # MISSING_PACKAGE (fix #40) — a KNOWN-hallucinated package caught at the BUILD GATE
-    # (offline blocklist), before smoke_boot. Same guidance as the smoke_boot repair.
+    # MISSING_PACKAGE (fix #40 packages; fix #50 submodules) — a KNOWN-hallucinated import
+    # caught at the BUILD or REWRITE gate (offline blocklist), before smoke_boot. A
+    # "package" kind is a whole non-existent PyPI package; a "module" kind (run 1950) is a
+    # real installed package with an invented submodule -> ModuleNotFoundError at startup.
     miss_pkg = result.get("missing_package_repairs") or []
     if miss_pkg:
         parts.append("\n=== MISSING_PACKAGE — repair ONLY this file, do not touch any "
@@ -1492,14 +1520,21 @@ def repair_instructions(result: dict) -> str:
         for m in miss_pkg:
             names = ", ".join(m.get("names") or [])
             imp = f"from {m['module']} import {names}" if names else f"import {m['module']}"
+            if m.get("kind") == "module":
+                why = (f"the submodule `{m['module']}` does NOT exist in the installed "
+                       f"package `{m.get('root') or m['module']}` — a ModuleNotFoundError "
+                       f"that crashes the app at startup")
+            else:
+                why = (f"`{m.get('root') or m['module']}` does NOT exist on PyPI — a "
+                       f"hallucinated package that fails the whole install")
             parts.append(
-                f"\n`{imp}` (line {m.get('line')}) imports `{m.get('root') or m['module']}`, "
-                f"which does NOT exist on PyPI — a hallucinated package that fails the whole "
-                f"install.\nRepair: REMOVE this import and re-implement the behaviour with a "
-                f"REAL, widely-used package or the standard library / inline code. For RATE "
-                f"LIMITING use `slowapi` (`from slowapi import Limiter`) or drop the limiter; "
-                f"NEVER invent a package name like `starlette_limiter`. Keep the file's public "
-                f"names and behaviour otherwise unchanged.")
+                f"\n`{imp}` (line {m.get('line')}) is invalid: {why}.\nRepair: REMOVE this "
+                f"import and re-implement the behaviour with a REAL, widely-used package or "
+                f"the standard library / inline code. For RATE LIMITING use `slowapi` "
+                f"(`from slowapi import Limiter`) or drop the limiter; NEVER invent a package "
+                f"name like `starlette_limiter` or a submodule like "
+                f"`starlette.middleware.rate_limit`. Keep the file's public names and "
+                f"behaviour otherwise unchanged.")
 
     # TIMESTAMP_NO_DEFAULT (fix #45) — a NOT-NULL datetime column with no default that no
     # handler sets, so every INSERT is a NOT NULL violation (a 500 on every create).
@@ -1579,7 +1614,14 @@ def rewrite_integrity_gate(content: str, filepath: str, files: list[dict],
     FRONTEND files are re-checked for truncation/CSS-leak (fix #48 — run 1950: Opus/QA
     rewrote `admin/menu/page.tsx` into a state that FAILED `next build` with a JSX syntax
     error, and the frontend half of this gate was missing, so the broken rewrite shipped a
-    certified, QA-clean app whose deploy could not build). Non-JS/non-.py -> {}. Symbols
+    certified, QA-clean app whose deploy could not build) AND for a real PARSE error via
+    esbuild (fix #52 — the balance check can't see JSX STRUCTURE, so the Opus reviewer kept
+    re-shipping `order/page.tsx` rewrites with unclosed tags; the real parse makes the
+    reviewer keep the certified-clean original instead). Backend `.py` are re-checked for
+    a hallucinated third-party import too (fix #50 — run 1950: the Opus auto-fix injected
+    `from starlette.middleware.rate_limit import RateLimitMiddleware`, a non-existent
+    submodule of real `starlette`, and this gate did not re-run the import probe, so the
+    crash-on-startup import shipped into the certificate). Non-JS/non-.py -> {}. Symbols
     resolve against the CURRENT file set with THIS candidate swapped in, so the check
     reflects exactly what would ship."""
     if (filepath or "").endswith(_FRONTEND_CODE_EXT):
@@ -1589,6 +1631,9 @@ def rewrite_integrity_gate(content: str, filepath: str, files: list[dict],
         css = frontend_css_leak(filepath, content)
         if css:
             return {"frontend_repairs": [{"file": filepath, "reason": css, "kind": "css_leak"}]}
+        pe = frontend_parse_error(filepath, content)     # fix #52 — real parse (esbuild)
+        if pe:
+            return {"frontend_repairs": [{"file": filepath, "reason": pe, "kind": "parse_error"}]}
         return {}
     if not (filepath or "").endswith(".py"):
         return {}
@@ -1756,6 +1801,46 @@ def frontend_incomplete(rel: str, content: str) -> str | None:
         return (f"truncated/incomplete — {len(stack)} unclosed "
                 f"{'/'.join(sorted(set(stack)))} at end of file")
     return None
+
+
+def _esbuild_loader(rel: str) -> str:
+    """esbuild loader for a frontend file. `.ts`/`.mts`/`.cts` are parsed as TS (where
+    `<T>` is a type assertion); everything else in the frontend set is parsed as TSX/JSX
+    (where `<T>` is an element) — matching how Next compiles each."""
+    if rel.endswith((".ts", ".mts", ".cts")):
+        return "ts"
+    return "tsx"
+
+
+def frontend_parse_error(rel: str, content: str) -> str | None:
+    """Reason string if a frontend JS/TS file does NOT PARSE, per a REAL parser (esbuild),
+    else None. This catches the JSX-STRUCTURE class the Python brace-balance check
+    (frontend_incomplete) cannot — an unclosed `<section>`, a stray `<`, an `Unexpected
+    token` — the run-1950 defects that passed the balance check but failed `next build`.
+
+    Fail-OPEN when the parser is unavailable (no esbuild on PATH, or it errors as a tool):
+    the check can only ADD confidence, never block a build merely because the harness lacks
+    the binary — the balance check and QA's real `next build` remain. The backend image
+    ships esbuild (fix #52), so the reviewer's rewrite gate does get the real parse."""
+    if not rel.endswith(_FRONTEND_CODE_EXT) or not (content or "").strip():
+        return None
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["esbuild", f"--loader={_esbuild_loader(rel)}", "--log-level=error", "--color=false"],
+            input=content, capture_output=True, text=True, timeout=20,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None                      # parser unavailable -> fail open (see docstring)
+    if proc.returncode == 0:
+        return None
+    err = (proc.stderr or "").strip()
+    # Keep the first real error line (esbuild prints "✘ [ERROR] <msg>" then a code frame).
+    for line in err.splitlines():
+        s = line.strip()
+        if "[ERROR]" in s or "error:" in s.lower():
+            return "does not parse: " + s.split("[ERROR]", 1)[-1].strip(" :")
+    return "does not parse (esbuild rejected the file)" if err else None
 
 
 # ---------------------------------------------------------------- frontend deps + CSS-leak

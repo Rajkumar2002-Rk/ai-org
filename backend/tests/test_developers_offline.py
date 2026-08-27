@@ -673,6 +673,49 @@ def test_hallucinated_package_gate():
           flagged == ["SEC-1"], str(flagged))
 
 
+def test_hallucinated_submodule_gate():
+    """Fix #50 (run 1950): the Opus security auto-fix added rate limiting via
+    `from starlette.middleware.rate_limit import RateLimitMiddleware` — starlette ships no
+    rate-limit middleware, so the app crashed on import. The root package (`starlette`) IS
+    real, so the fix-#40 package check can't see it; the REWRITE gate did not re-run the
+    import probe, so the crash-on-startup import shipped into the certificate and only QA's
+    assembly caught it. The probe now also flags a KNOWN-non-existent dotted submodule, and
+    rewrite_integrity_gate re-runs it on backend .py."""
+    from app.developers import orchestrator as orch
+    rel = "backend/app/main.py"
+    bad = ("import os\nfrom starlette.middleware.rate_limit import RateLimitMiddleware\n"
+           "app = None\n")
+    finds = agents.hallucinated_package_imports(bad, rel)
+    check("the invented starlette submodule is flagged (kind=module, real root)",
+          len(finds) == 1 and finds[0]["module"] == "starlette.middleware.rate_limit"
+          and finds[0]["root"] == "starlette" and finds[0]["kind"] == "module"
+          and finds[0]["line"] == 2, str(finds))
+    check("the plain `import starlette.middleware.rate_limit` form is flagged too",
+          agents.hallucinated_package_imports(
+              "import starlette.middleware.rate_limit\n", rel)[:1] != []
+          and agents.hallucinated_package_imports(
+              "import starlette.middleware.rate_limit\n", rel)[0]["kind"] == "module")
+    check("a REAL starlette submodule (cors) is NOT flagged",
+          agents.hallucinated_package_imports(
+              "from starlette.middleware.cors import CORSMiddleware\n", rel) == [])
+    # THE Fix #50 CORE: the REWRITE gate (Opus/QA re-validation) now catches it.
+    g = agents.rewrite_integrity_gate(bad, rel, [{"filepath": rel, "content": bad}])
+    check("rewrite_integrity_gate catches the reintroduced bad submodule",
+          bool(g.get("missing_package_repairs")), str(g))
+    rt = agents.repair_instructions(g)
+    check("repair says the SUBMODULE does not exist in the installed package + slowapi",
+          "MISSING_PACKAGE" in rt and "submodule" in rt and "does NOT exist in the installed"
+          in rt and "slowapi" in rt, rt)
+    # Build-gate wiring: _collect_stubs rejects the file + attaches the repair.
+    built = [{"ticket_id": "FND-1", "status": "generated", "filepath": rel, "content": bad},
+             {"ticket_id": "BE-1", "status": "generated", "filepath": "backend/app/routes/menu.py",
+              "content": "from fastapi import APIRouter\nrouter = APIRouter()\n"}]
+    stubbed = orch._collect_stubs(built, {}, 1)
+    flagged = [s["ticket_id"] for s in stubbed if s.get("missing_package_repairs")]
+    check("the build gate flags the offending FND-1 file (not the clean one)",
+          flagged == ["FND-1"], str(flagged))
+
+
 def test_rewrite_integrity_gate():
     """Run 1914: the build gate certified clean code, then a POST-build stage rewrote
     files and REINTRODUCED defects the gate prevents — Opus's security 'fix' wrapped get_db
@@ -718,6 +761,52 @@ def test_rewrite_integrity_gate():
           and "next build" in agents.repair_instructions(fg))
     check("a non-JS, non-.py file is still a no-op for the rewrite gate",
           agents.rewrite_integrity_gate("body { color: red }", "frontend/app/globals.css", []) == {})
+
+
+def test_frontend_parse_gate():
+    """Fix #52 (run 1950): the Opus reviewer kept re-shipping order/page.tsx rewrites with
+    JSX-STRUCTURE errors (an unclosed `<section>`, a stray `<`). Braces stayed balanced so
+    frontend_incomplete PASSED, and only the deploy's real `next build` — four stages after
+    the certificate — caught them, re-breaking a file that had just been fixed. The rewrite
+    gate now runs a REAL parse (esbuild) so the reviewer keeps the certified-clean original.
+    Fails OPEN where esbuild is absent (the balance check + QA's real build remain)."""
+    import shutil
+    rel = "frontend/app/order/page.tsx"
+    broken = ("export default function P(){\n  return (\n    <main>\n      <section>\n"
+              "        <p>hi</p>\n    </main>\n  );\n}\n")          # <section> never closed
+    clean = ("export default function P(){\n  return (\n    <main>\n      <section>\n"
+             "        <p>hi</p>\n      </section>\n    </main>\n  );\n}\n")
+    check("the brace-balance check alone MISSES the unclosed <section> (why fix #52 exists)",
+          agents.frontend_incomplete(rel, broken) is None,
+          str(agents.frontend_incomplete(rel, broken)))
+    # WIRING (env-independent): force a parse error, assert the gate surfaces it as a repair.
+    _orig = agents.frontend_parse_error
+    try:
+        agents.frontend_parse_error = lambda r, c: "does not parse: mock"
+        g = agents.rewrite_integrity_gate(broken, rel, [{"filepath": rel, "content": broken}])
+        check("the rewrite gate surfaces a parse error as frontend_repairs/parse_error",
+              bool(g.get("frontend_repairs")) and g["frontend_repairs"][0]["kind"] == "parse_error",
+              str(g))
+        rt = agents.repair_instructions(g)
+        check("repair renders FRONTEND_FILE_BROKEN carrying the parse reason",
+              "FRONTEND_FILE_BROKEN" in rt and "does not parse" in rt, rt)
+    finally:
+        agents.frontend_parse_error = _orig
+    # REAL parse — only where esbuild is on PATH (the backend image ships it, fix #52).
+    if shutil.which("esbuild"):
+        check("esbuild REJECTS the unclosed-<section> JSX (real parse)",
+              agents.frontend_parse_error(rel, broken) is not None,
+              str(agents.frontend_parse_error(rel, broken)))
+        check("esbuild ACCEPTS a well-formed component",
+              agents.frontend_parse_error(rel, clean) is None,
+              str(agents.frontend_parse_error(rel, clean)))
+        real = agents.rewrite_integrity_gate(broken, rel, [{"filepath": rel, "content": broken}])
+        check("end-to-end: the real gate returns parse_error for the broken rewrite",
+              (real.get("frontend_repairs") or [{}])[0].get("kind") == "parse_error", str(real))
+    else:
+        print("  [skip] esbuild not on PATH — real-parse assertions skipped (fail-open path)")
+    check("frontend_parse_error never flags a .py file",
+          agents.frontend_parse_error("backend/app/main.py", "import os\n") is None)
 
 
 def test_reviewer_rejects_unsafe_autofix():
@@ -1517,7 +1606,9 @@ async def main():
         test_frontend_missing_login_gate()
         test_duplicate_endpoint_gate()
         test_hallucinated_package_gate()
+        test_hallucinated_submodule_gate()
         test_rewrite_integrity_gate()
+        test_frontend_parse_gate()
         test_reviewer_rejects_unsafe_autofix()
         test_timestamp_not_null_gate()
         test_dangling_foreign_key_gate()

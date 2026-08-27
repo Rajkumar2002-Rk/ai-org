@@ -72,9 +72,11 @@ services:
       # AWS deploy and the deploy is honestly marked NOT security-certified.
       SECURITY_REVIEW_ENABLED: ${SECURITY_REVIEW_ENABLED:-true}
       # Step 5 verification: run a real `next build` against generated frontend
-      # code instead of the cheap syntax-only check. Off by default — a full
-      # build downloads a node toolchain and is slow.
-      QA_FRONTEND_FULL_BUILD: ${QA_FRONTEND_FULL_BUILD:-false}
+      # code in addition to the cheap static check. ON by default (fix #51, run
+      # 1950): the static check can't parse JSX tag structure, so an unclosed
+      # `<p>` passed QA and only failed the deploy's build. Set false for a fast
+      # local codegen loop.
+      QA_FRONTEND_FULL_BUILD: ${QA_FRONTEND_FULL_BUILD:-true}
       # ---- Week 7 DevOps ----
       # "local" (default) builds+runs REAL containers on the host daemon (the
       # socket below); "aws" is the real EC2 path (boto3 uses the mounted creds).

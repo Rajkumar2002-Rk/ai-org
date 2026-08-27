@@ -91,10 +91,14 @@ class Settings(BaseSettings):
     qa_request_timeout: int = 10
     # Max retries per failing issue before it is escalated (never infinite).
     qa_max_retries: int = 3
-    # Full `npm install && next build` for generated UI. Off by default: it
-    # downloads hundreds of MB and takes minutes per run. When off, the frontend
-    # check still validates imports, hallucinated deps and structure.
-    qa_frontend_full_build: bool = False
+    # Full `npm install && next build` for generated UI. ON by default (fix #51,
+    # run 1950): the cheap static check validates imports, hallucinated deps and
+    # brace/paren BALANCE, but it does NOT parse JSX tag structure — an unclosed
+    # `<p>` (order/page.tsx) keeps braces balanced yet fails the real `next build`,
+    # so it passed QA 103/103 and only crashed the DEPLOY's build. A real build is
+    # the only thing that catches this class, so QA now runs it by default (costs
+    # an npm install + build per run). Set false only for a local codegen-speed loop.
+    qa_frontend_full_build: bool = True
 
     # ---------------------------------------------------------------- DevOps (Week 7)
     # DevOps runs on GPT-4o mini per the locked routing, but it is deliberately

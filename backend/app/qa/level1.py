@@ -11,9 +11,11 @@ Endpoints are discovered from the RUNNING app's own /openapi.json rather than
 from the blueprint, so we test what was actually built, not what was intended.
 
 Generated UI files get a static pass (imports actually resolve, pages export a
-component). A real `npm install && next build` is opt-in via
-settings.qa_frontend_full_build — it downloads hundreds of MB and takes minutes,
-which is too slow to run on every QA pass.
+component) AND a real `npm install && next build` (settings.qa_frontend_full_build,
+ON by default since fix #51 — run 1950's unclosed `<p>` kept braces balanced so the
+static check passed but the deploy's build failed; only a real build catches that
+JSX-structure class). The build costs an npm install + compile per QA pass; set the
+flag false only for a fast local codegen loop.
 
 Rule used throughout: a 5xx (or a hang/crash) is a FAILURE. A 4xx is the app
 correctly rejecting bad input — that is a PASS.
@@ -281,7 +283,7 @@ def _check_frontend(env: TestEnv) -> list[TestOutcome]:
 
 
 async def _full_frontend_build(env: TestEnv) -> list[TestOutcome]:
-    """Opt-in real build (settings.qa_frontend_full_build)."""
+    """Real `next build` (settings.qa_frontend_full_build, on by default — fix #51)."""
     from app.qa.assembly import _run  # local import: internal helper
 
     fe = os.path.join(env.root or "", "frontend")

@@ -701,7 +701,13 @@ async def test_frontend_truncation_caught_statically():
         "frontend/app/admin/menu/review/page.tsx": truncated,               # 1007's cut-off file
         "frontend/app/page.tsx": "export default function P(){ return <div/>; }",  # complete
     }
-    out = await level1.run_static(env)   # qa_frontend_full_build stays OFF (default)
+    from app.config import settings
+    _prev = settings.qa_frontend_full_build
+    settings.qa_frontend_full_build = False   # isolate the ALWAYS-ON static check (fix #51 made the real build the default)
+    try:
+        out = await level1.run_static(env)
+    finally:
+        settings.qa_frontend_full_build = _prev
     parse = [o for o in out if "complete & parseable" in o.name]
     trunc = [o for o in parse if "review/page.tsx" in o.name]
     good = [o for o in parse if "app/page.tsx" in o.name and "review" not in o.name]

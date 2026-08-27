@@ -7,7 +7,7 @@ fully before doing anything else in this project.
 
 # ⏭️⏭️⏭️ RESUME HERE — AUTHORITATIVE HANDOFF (2026-08-26 night). A FRESH CHAT STARTS FROM THIS BLOCK.
 > Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1mm are the
-> current per-fix record for THIS session's work (Fixes #37–#49). Read THIS block first; drill into §1cc–§1mm as needed.
+> current per-fix record for THIS session's work (Fixes #37–#52). Read THIS block first; drill into §1cc–§1nn as needed.
 
 ## 0-A. WHERE WE ARE RIGHT NOW (2026-08-26 night)
 - **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed
@@ -22,9 +22,10 @@ fully before doing anything else in this project.
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
 - **Config (.env):** `SECURITY_REVIEW_ENABLED=true` (Opus ON), `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`. `.env`
   is gitignored and holds the REAL Stripe test keys / Auth0 Mgmt / SMTP creds — NEVER commit it.
-- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49** on 08-27, the run-1934 dangling-FK
-  gate + QA create_all-swallow fix). All grounded in REAL captured run bugs, each locked with a regression test. Detail
-  per fix in §1cc–§1mm (§0-C for #49).
+- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49–#52** on 08-27: run-1934 dangling-FK
+  gate + QA create_all-swallow (#49); then the run-1950 re-deploy saga (§1nn) — hallucinated-submodule import gate (#50),
+  QA real-`next build` default-on (#51), esbuild parse in the rewrite gate (#52)). All grounded in REAL captured run bugs,
+  each locked with a regression test. Detail per fix in §1cc–§1nn (§0-C for #49–#52).
 
 ## 0-B. THE MILESTONES REACHED THIS SESSION (the payoff)
 - 🏆 **Run 1935 (Opus OFF, ~$1):** FIRST fresh full run to a genuinely LIVE + CLEAN app end-to-end, QA 100/100. §1jj.
@@ -96,6 +97,23 @@ fully before doing anything else in this project.
   rejects the REAL 1934 `models.py` (dangling FK on `orders.owner_id`). Tests: `test_developers_offline.test_dangling_foreign_key_gate`,
   `test_qa_offline.test_create_tables_surfaces_schema_failure`; all 16 offline suites green; backend image rebuilt.
   `developers/agents.py`, `developers/orchestrator.py`, `qa/assembly.py`.
+- **#50 (§1nn, 2026-08-27)** — the Opus security auto-fix injected `from starlette.middleware.rate_limit import
+  RateLimitMiddleware` into run-1950 `main.py` — a non-existent SUBMODULE of REAL `starlette` (crash-on-startup import).
+  `hallucinated_package_imports` only checked the top-level package (`starlette` is real), so `rewrite_integrity_gate`
+  passed it and it shipped into the certificate; only QA's assembly probe caught it. Fix: `_HALLUCINATED_MODULES` blocklist
+  of known-bad dotted module paths + the probe now flags them (kind `module` vs `package`), wired via the shared
+  `missing_package_repairs` into BOTH the build gate and the rewrite gate. Test `test_hallucinated_submodule_gate`.
+  `developers/agents.py`.
+- **#51 (§1nn, 2026-08-27)** — QA's frontend check was static-only (brace balance); an unclosed `<p>` in run-1950
+  `order/page.tsx` kept braces balanced, PASSED QA 103/103, and only failed the deploy's real `next build`. Fix: flipped
+  `qa_frontend_full_build` DEFAULT to True (Node is already in the backend image) so QA runs a real `npm install && next
+  build` every run — costs an install+compile per QA pass; set false for a fast local codegen loop. `config.py`,
+  `docker-compose.yml`, `qa/level1.py`; test `test_qa_offline` G isolates the static path explicitly.
+- **#52 (§1nn, 2026-08-27)** — the balance check can't parse JSX STRUCTURE, so the Opus reviewer kept RE-SHIPPING
+  `order/page.tsx` rewrites with unclosed tags on each re-cert (it reverted the exact `</p>` fix). Fix: `frontend_parse_error`
+  shells out to **esbuild** (added to the backend image, `npm i -g esbuild@0.24.2`) for a real ~ms parse; wired into
+  `rewrite_integrity_gate`'s frontend branch (kind `parse_error`) so the reviewer keeps the certified-clean original.
+  Fails OPEN if esbuild is absent (offline tests). Test `test_frontend_parse_gate`. `developers/agents.py`, `Dockerfile`.
 
 ## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
 1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
@@ -168,10 +186,28 @@ fully before doing anything else in this project.
    line 459 — 2 unclosed `(`/`{`). The surviving ~90% fully determined the intent (state/handlers/styles/backend
    contract `/admin/menu` + `/admin/menu/{id}`), so the missing tail (description + image_url fields, submit/cancel
    buttons, the `items.map` list render, closing tags) was completed deterministically by hand — NO regen LLM call.
-   Validated 3 ways: real `tsc` parse (0 errors; the broken original threw the exact TS17008/TS1005 truncation that
-   killed `next build`), the platform's own `frontend_incomplete`/`css_leak`/`rewrite_integrity_gate` (all clean),
-   and a byte-exact DB round-trip. **Remaining to see 1950 LIVE:** an actual deploy (assemble → build images →
-   provision Auth0/Stripe/keys → up) — a side-effectful step, NOT yet run.
+   Validated 3 ways: real `tsc` parse, the platform's own gate, and a byte-exact DB round-trip. **Then the deploy was
+   ATTEMPTED (§1nn) — see below.**
+   ⏸️ **DEPLOY ATTEMPTED, then STOPPED by user after 6 paid Opus passes (2026-08-27, §1nn).** Re-certifying 1950 (its
+   Redis cert had expired) surfaced a cascade of pre-existing + Opus-INTRODUCED defects, each fixed in the DB at $0:
+   `main.py` bad import (#50), `order/page.tsx` unclosed `<p>` (#51 caught it), `customer/page.tsx` `[...Set]` spread,
+   and a MISSING `frontend/tsconfig.json` (Next auto-generated one has NO `target` → ES3 → all Set/Map iteration fails;
+   added `frontend/tsconfig.json` id=4435 = Next's config + `target:ES2017`, which killed the whole iteration + strict
+   class). Fixes #50/#51/#52 landed. BUT the deploy never completed: the **Opus reviewer STOCHASTICALLY rewrites the
+   frontend on every re-cert and introduces a NEW type error each time** (Set-spread → unclosed-`<p>` → `reduce<T>()` on
+   an untyped value …). #52 (esbuild parse) + the tsconfig closed the PARSE + iteration + strict classes, but a plain
+   type-arg error still slipped through — no cheap gate catches type errors; only the full `next build` does, and any fix
+   DRIFTS the cert → another paid pass. User chose to STOP rather than keep paying. **1950's 24 DB files are ALL fixed and
+   the full `next build` passes clean locally** (verified in scratch build dir), but there is NO valid cert over that exact
+   state (the last cert fingerprinted an Opus-degraded frontend), so a deploy would fail-closed on drift.
+   **PENDING to finish 1950 + harden the platform (pick one, all PAID — a re-cert):**
+   - **Fix #53 (recommended):** stop the security reviewer from APPLYING rewrites to FRONTEND files (still review + report,
+     don't mutate — client-side auto-fixes are low-value, high-breakage). ~2-line change in `reviewer/orchestrator._reconciled_content`
+     (return `gf.content` for frontend). Then one re-cert keeps the clean frontend → QA → deploy converges.
+   - **Fix #53-alt:** run a real `tsc` type-check in `rewrite_integrity_gate` for frontend (keep clean original if it
+     doesn't compile). Heavier (needs node_modules/types), robust for backend too.
+   - **Fix #54 (codegen gap):** generated Next apps ship NO `tsconfig.json`; codegen should EMIT one (target ES2017) so
+     every app avoids the ES3-default iteration trap — not just 1950's hand-added one.
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-

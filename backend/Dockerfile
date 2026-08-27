@@ -30,6 +30,14 @@ RUN apt-get update \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Fast TSX/JSX parser for the reviewer's rewrite-integrity gate (fix #52, run 1950):
+# the Python brace-balance check cannot parse JSX STRUCTURE, so the Opus security
+# reviewer kept re-shipping frontend rewrites with unclosed tags / unexpected tokens
+# that only a real `next build` (four stages later, at deploy) caught. esbuild is a
+# single ~10MB binary that parses a .tsx in milliseconds; the gate now rejects any
+# unparseable rewrite so the reviewer keeps the certified-clean original.
+RUN npm install -g esbuild@0.24.2
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
