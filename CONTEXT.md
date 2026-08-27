@@ -108,12 +108,13 @@ fully before doing anything else in this project.
   architecture diagram, a Code Integrity Engine gate table, tech-stack table, "what this demonstrates" skills section.
   **MIT LICENSE added** (`Copyright (c) 2026 Rajkumar` — user may swap full name). Purpose: the user is job-hunting and
   uses this repo as proof (they list it under Work History as an independent project; portable blurb was given).
-- **Pre-public identifier scrub** (`9bfac76`): the working tree is scrubbed of the real infra identifiers
-  (`rajkumarai.dev`→example.com, Auth0 tenant `dev-eldyvyvbd3kd2gnw`→dev-tenant, Route53 zone `Z027…`→placeholder) and is
-  secrets-clean. Those identifiers STILL linger in OLD git history (NON-secret). A `git filter-repo --replace-text` history
-  scrub is PREPARED (rules at `scratchpad/history-scrub-replacements.txt`; a backup bundle exists) but NOT run — the
-  **classifier blocks the destructive rewrite**, so the USER must run it if they want it. User chose Option A = publish
-  as-is (identifiers are non-secret). To make public: `gh repo edit Rajkumar2002-Rk/ai-org --visibility public --accept-visibility-change-consequences`.
+- **Pre-public identifier scrub** (`9bfac76` + forward scrub 2026-08-27): the working tree is scrubbed of the real infra
+  identifiers (a personal domain → example.com, the Auth0 tenant subdomain → dev-tenant, the Route53 hosted-zone id →
+  a placeholder) and is secrets-clean. **The repo is now PUBLIC.** Those identifiers still linger in OLD git history but
+  are NON-secret (no credential ever hit history — see below). **Decision (2026-08-27): FORWARD scrub only** — the tip is
+  clean; NO `git filter-repo` history rewrite, because it is non-secret, already public, and a full rewrite would change
+  every commit SHA (invalidating the hash references throughout this file) while unable to retract already-cloned copies.
+  If a history rewrite is ever wanted, the USER must run it (classifier-blocked for the agent) and re-check every SHA ref here.
 - The full 133-commit history was scanned: NO real credentials/API keys/tokens/.env ever committed. `.gitignore` now
   also ignores `.claude/settings.local.json`.
 
@@ -158,8 +159,10 @@ fully before doing anything else in this project.
    zero tables → every query 500s; and QA's `_create_tables` silently swallowed that failure. Both fixed: a `dangling_foreign_keys`
    build gate (+ `collect_tablenames`), and `_create_tables` now surfaces create_all failures. Proven against the real 1934
    files; 16/16 offline suites green; image rebuilt.
-3. **Optional:** run the `git filter-repo` history scrub (0-E) if the user wants the non-secret identifiers gone from
-   history before/after going public. Prepared, not run (classifier-blocked for me — user runs it).
+3. ✅ **RESOLVED (2026-08-27) — forward scrub, no history rewrite.** Repo is PUBLIC. The tip is now clean of the real
+   infra identifiers (the last HEAD occurrence was this file's own scrub note, now genericized). Chose NOT to run
+   `git filter-repo`: identifiers are non-secret, already public, and a full rewrite would change every commit SHA
+   (invalidating the hash refs throughout this file). See 0-E.
 4. **1950 itself** won't deploy without regenerating its already-broken `admin/menu/page.tsx` (Fix #48 prevents the class
    going forward, not that specific file).
 
