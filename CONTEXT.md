@@ -5045,3 +5045,127 @@ stripe_accounts.created_at/menu_items.created_at, added server_default) → Opus
   1950 left in DB.
 - **⚠️ Auth0 tenant is at/over its app limit** (403 on create) from all our runs — the user should delete old
   auto-provisioned Auth0 apps in the dashboard, or Fix #47 keeps future deploys LIVE (login-degraded) regardless.
+
+## 1nn. run 1950 RE-DEPLOY SAGA — Fixes #50/#51/#52 + the reviewer-degrades-frontend loop (2026-08-27)
+FULL blow-by-blow of the attempt to take 1950 LIVE (the "actual deploy" 0-G #4 left pending). **Outcome: 3 platform
+fixes shipped (#50/#51/#52); 1950's 24 DB files ALL fixed and building clean locally; deploy STOPPED by the user after
+6 PAID Opus re-cert passes because the Opus reviewer keeps re-degrading the frontend with type errors no cheap gate
+catches.** Everything below is grounded in commands actually run this session.
+
+### 0. Lead-up (0-G #3 + #4-file, both committed)
+- **Forward identifier scrub PUSHED** — `ffe9ab1` (0-E/0-G #3) pushed to origin so the PUBLIC tip is clean of the 3
+  real infra identifiers. (This session's first action.)
+- **0-G #4 file fix — `admin/menu/page.tsx` (`generated_files.id=4265`), $0, no LLM** — was truncated mid-form (line 459,
+  inside the description `<label>`, 2 unclosed `(`/`{`). Hand-completed the missing tail (description + image_url fields,
+  submit/cancel buttons, `items.map` list, closing tags) from the surviving ~90%. Validated via real `tsc` (0 errors;
+  the broken original threw TS17008/TS1005), the platform gate, and a byte-exact DB round-trip. Committed CONTEXT `a58d5da`.
+
+### 1. The deploy is fail-CLOSED — why a re-cert was unavoidable (paid)
+- `devops/orchestrator._security_gate` requires: a certificate EXISTS in Redis (`security_cert:{pid}`), says `passed`,
+  and NO file has DRIFTED (`reviewer/orchestrator.drifted_files` = per-file sha256 vs the cert's recorded `file_hashes`).
+- 1950's Redis cert + `qa_report` had EXPIRED (24h TTL; run was 08-26) — only `ba:state:1950` survived. And my
+  `admin/menu` edit would have registered as drift anyway. So a certified live deploy REQUIRED re-running the Opus
+  security review (real money). User chose **"Re-certify + deploy (paid)"** (AskUserQuestion).
+- Pipeline endpoints (backend `:8000`): `POST /pipeline/secure`→`_run_review` (general gpt-4o-mini + Opus
+  `SECURITY_MODEL="claude-opus-4-8"` hardcoded), `/pipeline/qa`→`_run_qa`, `/pipeline/deploy`→`_run_deploy`→devops
+  orchestrator. **Deploy re-uses the stored generated_files (NO BA/Architect/Build re-run, NO LLM except the reviewer).**
+  `DEPLOY_TARGET=local` (local docker HTTPS, no cloud bill). Only spend = the Opus review API cost (~$3/pass).
+
+### 2. The smoke-boot gate (free, no LLM)
+- `_run_review` HARD-refuses unless `redis build:status:{pid} == "done"` — that key had expired too. Re-established it
+  HONESTLY: ran the standalone `_smoke_boot(1950, blueprint)` (which calls `qa/assembly.assemble` — venv + throwaway DB +
+  uvicorn boot, NO LLM) → `BOOT_OK` (23 files, 14 endpoints) → then set `build:status:1950=done`. Not faked — produced
+  from a real boot each time files changed.
+
+### 3. Pass 1 → QA finds the Opus-injected import → FIX #50
+- Pass 1 secure PASSED (23 files fingerprinted). QA run 1 (full-build flag still OFF): 19 tests, **1 fail** =
+  `assembly: bad third-party import in main.py` → `from starlette.middleware.rate_limit import RateLimitMiddleware`.
+- Proof it was **Opus-introduced**: smoke-boot PASSED on the original main.py, `files_rewritten_by_qa=0`, and the only
+  actor between smoke-boot and QA is the Opus secure pass. `starlette` is real but has NO rate-limit middleware →
+  ModuleNotFoundError at startup. The build/rewrite gate's `hallucinated_package_imports` only checked the top-level
+  package (`starlette` real) so it passed into the cert; QA's assembly probe caught it. → **Fix #50** (see 0-C).
+- Fixed main.py in DB (id 4269): removed the 4 Opus rate-limit lines (2 imports incl. unused `from starlette.middleware
+  import Middleware`, the comment, the `add_middleware`). Rebuilt+restarted backend, re-smoke-booted, set build:status.
+
+### 4. Pass 2 → deploy attempt 1 FAILS on a PRE-EXISTING frontend bug → FIX #51
+- Pass 2 (re-cert) PASSED; main.py stayed clean (Fix #50 held). QA run 2: **103/103**, `files_rewritten_by_qa=0`,
+  `still_certified=True`. **Deploy attempt 1 → FAILED**: `compose up failed` → the generated app's `next build` died on
+  `frontend/app/order/page.tsx` (`deployment.id=597`, error_message carried it). An unclosed `<p>` ("Your cart is empty.
+  Add it" — text truncated, no `</p>`) at line 346 → TS17008. **Pre-existing** (1950 never deployed, so its real
+  `next build` never ran). `tsc`-swept all 9 frontend files → ONLY order broken. Fixed order (`</p>`).
+- ROOT of why QA missed it: QA's frontend check was **static-only** (brace balance) — an unclosed TAG keeps braces
+  balanced. The real `next build` was opt-in and OFF (`qa_frontend_full_build=false`). → **Fix #51** (flip default ON;
+  Node already in the image). User chose **"Harden QA too, then deploy"**.
+
+### 5. Pass 3 → QA's NEW real build catches a Set-spread (Fix #51 working)
+- Fix #51 implemented + rebuilt. Pass 3 (re-cert) PASSED. QA run 3 (WITH real `next build`): **104 tests, 1 fail** =
+  `frontend — build` → `customer/page.tsx:43` `return [...found]` where `found: Set<string>` — a Set spread that fails
+  the project's TS target. (Fix #51 doing exactly its job — caught before deploy, not at deploy.) Fixed customer
+  (`Array.from`), verified the FULL `next build` passes locally, wrote to DB.
+
+### 6. Pass 4 → the LOOP reveals itself → FIX #52
+- Pass 4 (re-cert) PASSED. But Opus REWROTE both files: customer → `Array.from(labels)` (fine) AND **order → REVERTED my
+  `</p>` fix, re-introducing the identical unclosed `<p>`**. Local build FAILED again on order. **This is the loop:** the
+  reviewer's rewrite gate (`rewrite_integrity_gate`) uses the Python brace-balance check, which CANNOT parse JSX
+  STRUCTURE, so `reviewer/orchestrator._reconciled_content` (which keeps the clean original only when the gate flags the
+  rewrite) ACCEPTED Opus's unparseable order rewrite. → **Fix #52** (real esbuild parse in the rewrite gate). User chose
+  **"Fix #52: real parser in gate"**.
+- Fix #52 implemented (esbuild in Dockerfile; `frontend_parse_error`; wired into the gate; test). Rebuilt+restarted.
+  Verified esbuild 0.24.2 live + the gate catches an unclosed `<section>`. Re-fixed order (`</p>`), full build passes
+  locally, wrote to DB.
+
+### 7. Pass 5 → parse now safe, but a Set-spread TYPE error returns → the tsconfig ROOT-CAUSE
+- Pass 5 (re-cert, Fix #52 active) PASSED. **esbuild sweep of all frontend files = ALL PARSE CLEAN** — Fix #52 held
+  (Opus rewrote order again but to a PARSEABLE version, correctly accepted). BUT the full local `next build` FAILED on
+  `customer/page.tsx:47` `[...new Set(labels)]` — Opus reintroduced a Set spread. **esbuild parses it fine; it's a TYPE
+  error**, which Fix #52 (parse-only) does not catch.
+- **ROOT CAUSE found:** 1950 ships NO `tsconfig.json`, so `next build` auto-generates one with **`target` UNSET (→ ES3)**
+  and `strict:false`; under ES3, ALL Set/Map iteration (`[...set]`, `Array.from(set)` in some cases) fails. Added a
+  `frontend/tsconfig.json` = **Next's exact auto-generated config + `target:ES2017`** (first tried `strict:true` which
+  surfaced unrelated catch-`unknown`/implicit-`any` errors — matching Next's real `strict:false` baseline fixed those
+  with ZERO code edits). With the tsconfig the whole Set/Map-iteration + strict class vanishes. Inserted it as a new
+  generated_files row (**id=4435**, ticket FND-3) → 1950 now has **24 files**.
+
+### 8. Pass 6 → a NEW type-arg error → user STOPS
+- Pass 6 (re-cert) PASSED (24 files). Full local `next build`: parse clean (Fix #52 + tsconfig holding — Set/strict
+  classes gone), but a NEW error: `customer/page.tsx:197` `data.items.reduce<MenuItem[]>(...)` — "Untyped function calls
+  may not accept type arguments" (a type-arg error, not parse, not strict). Fixed it (drop the type arg, annotate the
+  accumulator); full build passes; wrote to DB.
+- **The definitive pattern (6 paid Opus passes):** the reviewer STOCHASTICALLY rewrites the frontend on EVERY re-cert and
+  introduces a DIFFERENT type error each time (Set-spread → unclosed-`<p>` → `reduce<T>()` …). #52 + tsconfig closed the
+  parse + iteration + strict classes, but plain type errors still slip through — **nothing but a full `next build` catches
+  a type error, and any fix DRIFTS the cert → another paid pass.** Presented Fix #53 / #53-alt / Stop. **User chose STOP.**
+
+### 9. Final state (as of the STOP)
+- **All 24 of 1950's DB files are fixed** (main.py + admin/menu + order + customer + the added tsconfig) and the FULL
+  `next build` passes CLEAN locally (verified in the scratch build dir with node_modules cached). BUT there is **NO valid
+  certificate over that exact state** (the last cert fingerprinted an Opus-degraded frontend), so a deploy would
+  fail-closed on drift. To actually go LIVE still needs one of the pending fixes below + one more paid re-cert.
+- **Deploy attempts:** exactly ONE real `/pipeline/deploy` (attempt 1, failed at order's `next build`); everything after
+  was diagnosed with FREE local `next build`s, not paid re-deploys. Only the 6 secure passes cost money.
+- **Commits:** `a58d5da` (0-G #4 note), `9bbbc7c` (Fixes #50/#51/#52 + this CONTEXT). Both offline suites green. Backend
+  image rebuilt with esbuild + Fix #51/#52. **Local master is 2 commits AHEAD of origin — NOT yet pushed.**
+- Infra torn down to $0 (`docker compose down`; volumes persist so the 1950 DB fixes + tsconfig survive). Leftover
+  `aiorg_p1950-caddy:latest` image from deploy attempt 1 is idle disk only.
+
+### 10. PENDING — NONE of these are implemented; they are PLANNED ONLY (each needs a paid re-cert to verify)
+- **Fix #53 (recommended):** stop the security reviewer from APPLYING rewrites to FRONTEND files — still REVIEW + report,
+  don't mutate (Opus's client-side auto-fixes are low-value, high-breakage). ~2-line change in
+  `reviewer/orchestrator._reconciled_content`: for a frontend `filepath`, `return gf.content` (the original). Then the
+  certified frontend = the build-gated originals; one re-cert keeps the (now-clean) 24 files → QA → deploy CONVERGES.
+- **Fix #53-alt:** run a real `tsc --noEmit` type-check on Opus frontend rewrites inside `rewrite_integrity_gate` (keep
+  the clean original if it doesn't compile). Robust for backend too, but heavier (needs node_modules/types) and slower.
+- **Fix #54 (codegen gap):** generated Next apps ship NO `tsconfig.json`; codegen should EMIT one (`target:ES2017`) so
+  every app avoids the ES3-default iteration trap — not just 1950's hand-added `id=4435`.
+
+### 11. Reusable how-to (mechanics proven this session)
+- **DB edits to generated_files:** `docker compose run --rm --no-deps --entrypoint python -v "$SP:/data" backend
+  <script>` using `asyncpg` and `DATABASE_URL` from the service env (strip `+asyncpg`). Do NOT inline the password on the
+  CLI — the auto-mode classifier blocks it. Each write asserts the row is in the expected broken state first.
+- **Free local `next build` repro (matches QA's `_full_frontend_build`):** dump all `frontend/%` rows (strip the
+  `frontend/` prefix) into a dir, `docker run --rm -v dir:/app -w /app node:20-alpine sh -c 'npm install && npx next
+  build'`. node_modules persists in the mounted dir, so later rebuilds skip install.
+- **esbuild parse gotcha:** `--loader` applies ONLY to stdin; with a FILE arg esbuild infers the loader from the
+  extension (passing `--loader` + a file errors "loader without extension only applies when reading from stdin").
+- **Regenerate Next's auto tsconfig to inspect it:** remove tsconfig.json, run `next build` once (it writes one even on a
+  failing build), read it — that's how the `target:None`/`strict:false` root cause was confirmed.
