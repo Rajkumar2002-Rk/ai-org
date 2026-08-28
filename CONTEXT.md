@@ -22,10 +22,11 @@ fully before doing anything else in this project.
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
 - **Config (.env):** `SECURITY_REVIEW_ENABLED=true` (Opus ON), `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`. `.env`
   is gitignored and holds the REAL Stripe test keys / Auth0 Mgmt / SMTP creds — NEVER commit it.
-- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49–#52** on 08-27: run-1934 dangling-FK
+- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49–#53** on 08-27: run-1934 dangling-FK
   gate + QA create_all-swallow (#49); then the run-1950 re-deploy saga (§1nn) — hallucinated-submodule import gate (#50),
-  QA real-`next build` default-on (#51), esbuild parse in the rewrite gate (#52)). All grounded in REAL captured run bugs,
-  each locked with a regression test. Detail per fix in §1cc–§1nn (§0-C for #49–#52).
+  QA real-`next build` default-on (#51), esbuild parse in the rewrite gate (#52); then **#53** — the reviewer now REVIEWS
+  but NEVER MUTATES frontend files, ending the stochastic re-cert breakage loop). All grounded in REAL captured run bugs,
+  each locked with a regression test. Detail per fix in §1cc–§1nn (§0-C for #49–#53).
 
 ## 0-B. THE MILESTONES REACHED THIS SESSION (the payoff)
 - 🏆 **Run 1935 (Opus OFF, ~$1):** FIRST fresh full run to a genuinely LIVE + CLEAN app end-to-end, QA 100/100. §1jj.
@@ -114,6 +115,20 @@ fully before doing anything else in this project.
   shells out to **esbuild** (added to the backend image, `npm i -g esbuild@0.24.2`) for a real ~ms parse; wired into
   `rewrite_integrity_gate`'s frontend branch (kind `parse_error`) so the reviewer keeps the certified-clean original.
   Fails OPEN if esbuild is absent (offline tests). Test `test_frontend_parse_gate`. `developers/agents.py`, `Dockerfile`.
+- **#53 (§1nn, 2026-08-27)** — the ROOT cause of the run-1950 re-deploy loop: the Opus security reviewer STOCHASTICALLY
+  rewrites FRONTEND `.tsx`/`.ts` files on every re-cert and injects a NEW type error each pass (unclosed `<p>` → `[...Set]`
+  spread → bad `reduce<T>()` type-arg). No cheap gate catches a type error — only the full `next build` does — so each
+  'fix' drifted the cert fingerprint and forced another PAID pass without ever converging. Fix: the reviewer now REVIEWS +
+  REPORTS frontend files but NEVER mutates them. `reviewer.review_file` routes any frontend file to the new
+  `_review_frontend_readonly` (runs BOTH passes to report issues, forms an HONEST security verdict on the file AS WRITTEN
+  via `_confirmed_critical`, applies NO fix, returns `new_content=None`); `orchestrator._accept_or_reject_fix` also discards
+  any frontend rewrite (defense-in-depth, `reviewer._is_frontend_path`). Backend `.py` are STILL mutated — that is where the
+  real authz/data-isolation/secret controls live. A genuine CONFIRMED frontend critical still FAILS the cert (blocks the
+  deploy) instead of being auto-broken-then-shipped. Cost DROPS (no wasted frontend `_fix` Opus calls). Tests
+  `test_reviewer_never_mutates_frontend_sync` + `test_review_file_frontend_readonly` (stubs codegen: backend mutates,
+  frontend does not); developers + QA offline suites green. `reviewer/reviewer.py`, `reviewer/orchestrator.py`.
+  ⚠️ NOT YET proven on a live re-cert (that is PAID) — the offline logic is verified; the 1950 convergence proof is the
+  pending paid re-cert in 0-G #4. ⚠️ Backend image must be REBUILT (`docker compose build backend`) before the next run.
 
 ## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
 1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
@@ -200,14 +215,19 @@ fully before doing anything else in this project.
    DRIFTS the cert → another paid pass. User chose to STOP rather than keep paying. **1950's 24 DB files are ALL fixed and
    the full `next build` passes clean locally** (verified in scratch build dir), but there is NO valid cert over that exact
    state (the last cert fingerprinted an Opus-degraded frontend), so a deploy would fail-closed on drift.
-   **PENDING to finish 1950 + harden the platform (pick one, all PAID — a re-cert):**
-   - **Fix #53 (recommended):** stop the security reviewer from APPLYING rewrites to FRONTEND files (still review + report,
-     don't mutate — client-side auto-fixes are low-value, high-breakage). ~2-line change in `reviewer/orchestrator._reconciled_content`
-     (return `gf.content` for frontend). Then one re-cert keeps the clean frontend → QA → deploy converges.
+   **✅ Fix #53 IMPLEMENTED (2026-08-27) — the reviewer no longer mutates frontend files (see 0-C #53).** This is the
+   platform cure for the loop: `review_file` reviews + reports frontend but returns `new_content=None`, so a re-cert can no
+   longer DRIFT the frontend and the certified bytes are exactly what QA + the deploy build. Offline-verified (developers +
+   QA suites green). **STILL PENDING — the PAID proof:** actually run ONE re-cert of 1950 to confirm it now converges to a
+   valid cert over the clean frontend → QA → deploy LIVE. Steps: `docker compose build backend && docker compose up -d`,
+   then re-certify 1950 (its 24 DB files already all pass `next build` locally) and deploy. Needs the user's OK (it spends
+   Opus on the re-cert). Only after that LIVE convergence should 1950 be marked fully DONE.
+   **Complementary hardening still open (optional, not required now that #53 lands):**
    - **Fix #53-alt:** run a real `tsc` type-check in `rewrite_integrity_gate` for frontend (keep clean original if it
-     doesn't compile). Heavier (needs node_modules/types), robust for backend too.
+     doesn't compile). Heavier (needs node_modules/types); now largely redundant for the reviewer path (#53 stops the
+     mutation at the source) but would also guard QA's frontend regen.
    - **Fix #54 (codegen gap):** generated Next apps ship NO `tsconfig.json`; codegen should EMIT one (target ES2017) so
-     every app avoids the ES3-default iteration trap — not just 1950's hand-added one.
+     every app avoids the ES3-default iteration trap — not just 1950's hand-added one. Independent of #53; still worth doing.
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-

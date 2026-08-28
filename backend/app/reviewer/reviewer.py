@@ -115,6 +115,35 @@ def _is_menu_extraction(file: dict) -> bool:
     return any(hint in path for hint in _MENU_EXTRACTION_PATH_HINTS)
 
 
+# FRONTEND (fix #53) — a generated Next.js app file. The reviewer REVIEWS and REPORTS
+# these but NEVER mutates them (see `review_file`). These mirror devops.manifest._is_frontend
+# (path prefix first, extension fallback) without importing it — that module pulls in the
+# heavy QA assembler.
+_FRONTEND_EXT = (".tsx", ".ts", ".jsx", ".js", ".css", ".json")
+
+
+def _is_frontend_path(path: str) -> bool:
+    """Path-only frontend test (no agent_type). Used where only a filepath is known."""
+    p = (path or "").lower()
+    if p.startswith("frontend/"):
+        return True
+    if p.startswith("backend/"):
+        return False
+    return p.endswith(_FRONTEND_EXT)
+
+
+def _is_frontend(file: dict) -> bool:
+    """True for a generated frontend file, which the reviewer must not auto-fix (fix #53)."""
+    path = (file.get("filepath") or file.get("filename") or "").lower()
+    if path.startswith("frontend/"):
+        return True
+    if path.startswith("backend/"):
+        return False
+    if path.endswith(_FRONTEND_EXT):
+        return "backend" not in (file.get("agent_type") or "")
+    return False
+
+
 async def _review(model: str, system: str, file: dict, content: str, bypass: bool) -> list[dict]:
     text, _ = await codegen.generate(
         model, system,
@@ -166,16 +195,63 @@ async def _confirmed_critical(system: str, file: dict, content: str) -> bool:
     return any(i.get("severity") == "critical" for i in second)
 
 
+async def _review_frontend_readonly(file: dict, general_model: str,
+                                    general_sys: str, security_sys: str) -> dict:
+    """Fix #53 — review + report a FRONTEND file WITHOUT ever mutating it.
+
+    The Opus security reviewer is stochastic and kept rewriting generated `.tsx`/`.ts`
+    files into states that failed the deploy's real `next build` on every re-cert (run
+    1950: an unclosed `<p>`, then a `[...Set]` spread, then a bad `reduce<T>()` type-arg —
+    a *new* type error each pass). No cheap gate catches a type error, so each 'fix' drifted
+    the certificate's fingerprint and forced another paid pass without ever converging.
+    Client-side auto-fixes are low value anyway: the real authorization, data-isolation and
+    secret-handling controls live in the backend, which the reviewer STILL mutates. So for a
+    frontend file we run BOTH passes to report issues and to form an HONEST security verdict
+    on the file AS WRITTEN, apply NO fix, and return `new_content=None` so the certified
+    bytes are exactly what QA and the deploy build. A genuine, CONFIRMED frontend critical
+    still fails the certificate (blocking the deploy) rather than being silently
+    auto-broken-then-shipped."""
+    content = file["content"]
+    g_issues = await _review(general_model, general_sys, file, content, bypass=False)
+    s_issues = await _review(SECURITY_MODEL, security_sys, file, content, bypass=True)
+    security_passed = True
+    if any(i.get("severity") == "critical" for i in s_issues):
+        # Confirm on the ORIGINAL content (two passes) before failing the cert — a
+        # reproducible vuln shows on every pass; a one-off flake does not (mirrors the
+        # backend path). We never apply the fix, so the verdict is on what actually ships.
+        security_passed = not await _confirmed_critical(security_sys, file, content)
+    return {
+        "file_id": file["id"],
+        "issues_found": len(g_issues) + len(s_issues),
+        "issues_fixed": 0,            # frontend files are never mutated (fix #53)
+        "security_passed": security_passed,
+        "reviewed_by_model": f"{general_model} + {SECURITY_MODEL}",
+        "new_content": None,
+    }
+
+
 async def review_file(file: dict, general_model: str) -> dict:
-    """Run both passes on one file. Returns a summary dict."""
+    """Run both passes on one file. Returns a summary dict.
+
+    FRONTEND files are reviewed + reported but NEVER mutated — see
+    `_review_frontend_readonly` (fix #53)."""
     content = file["content"]
     found = fixed = 0
 
-    # --- PASS 1: general review (respects cheap mode) ---
-    # Menu upload/extraction files get an extra file-handling checklist here.
+    # Menu upload/extraction files get an extra file-handling checklist in the general
+    # pass; Stripe Connect (PAY-*) files get the payment-security checklist in the Opus
+    # pass so it specifically verifies encrypted tokens / OAuth / no leakage.
     general_sys = _GENERAL_SYS + (
         _MENU_EXTRACTION_FOCUS if _is_menu_extraction(file) else ""
     )
+    security_sys = _SECURITY_SYS + (
+        _PAYMENT_SECURITY_FOCUS if _is_payment_sensitive(file) else ""
+    )
+
+    if _is_frontend(file):
+        return await _review_frontend_readonly(file, general_model, general_sys, security_sys)
+
+    # --- PASS 1: general review (respects cheap mode) ---
     g_issues = await _review(general_model, general_sys, file, content, bypass=False)
     found += len(g_issues)
     g_fixable = [i for i in g_issues if i.get("severity") in ("minor", "medium")]
@@ -185,11 +261,6 @@ async def review_file(file: dict, general_model: str) -> dict:
             content, fixed = new, fixed + len(g_fixable)
 
     # --- PASS 2: SECURITY review (ALWAYS Opus, bypass cheap) ---
-    # Stripe Connect (PAY-*) files get the extra payment-security checklist so the
-    # Opus pass specifically verifies encrypted tokens / OAuth / no leakage.
-    security_sys = _SECURITY_SYS + (
-        _PAYMENT_SECURITY_FOCUS if _is_payment_sensitive(file) else ""
-    )
     s_issues = await _review(SECURITY_MODEL, security_sys, file, content, bypass=True)
     found += len(s_issues)
     security_passed = True

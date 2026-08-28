@@ -834,6 +834,72 @@ def test_reviewer_rejects_unsafe_autofix():
           rev._accept_or_reject_fix(gf2, clean2, files, None) == clean2)
 
 
+def test_reviewer_never_mutates_frontend_sync():
+    """Fix #53 (deterministic seam): the reviewer must NEVER mutate a FRONTEND file.
+    `_accept_or_reject_fix` keeps the certified-clean ORIGINAL for a frontend path even when
+    the candidate 'fix' is itself clean — mirroring the invariant that `review_file` returns
+    new_content=None for frontend. The Opus reviewer stochastically re-broke `next build` on
+    every re-cert (run 1950), and no cheap gate catches a type error, so frontend rewrites
+    are dropped wholesale rather than parse-checked."""
+    from app.reviewer import reviewer as rv
+    from app.reviewer import orchestrator as rev
+    check("_is_frontend_path: .tsx under frontend/ is frontend",
+          rv._is_frontend_path("frontend/app/order/page.tsx") is True)
+    check("_is_frontend_path: backend .py is NOT frontend",
+          rv._is_frontend_path("backend/app/main.py") is False)
+    check("_is_frontend: agent_type=backend overrides a bare .ts",
+          rv._is_frontend({"filepath": "seed.ts", "agent_type": "backend"}) is False)
+    check("_is_frontend: a .tsx under frontend/ is frontend",
+          rv._is_frontend({"filepath": "frontend/app/page.tsx", "agent_type": "frontend"}) is True)
+
+    class _GF:
+        def __init__(self, id, filepath, content):
+            self.id, self.filepath, self.filename, self.content = id, filepath, None, content
+    original = "export default function Page(){ return <p>hi</p>; }\n"
+    clean_fix = "export default function Page(){ return <p>hi there</p>; }\n"
+    gf = _GF(9, "frontend/app/order/page.tsx", original)
+    files = [{"id": 9, "filepath": "frontend/app/order/page.tsx", "content": original}]
+    kept = rev._accept_or_reject_fix(gf, clean_fix, files, None)
+    check("a frontend rewrite is DISCARDED even when it is clean (original kept)",
+          kept == original, "frontend fix was wrongly applied")
+
+
+async def test_review_file_frontend_readonly():
+    """Fix #53: review_file REVIEWS + REPORTS a frontend file but returns new_content=None
+    (never mutates it), while a BACKEND file with the same issues IS rewritten. Proven by
+    stubbing the LLM so every review reports a medium issue and every fix returns new text."""
+    from app.reviewer import reviewer as rv
+    from app import codegen
+
+    MUT = "def fixed():\n    return 'this is the rewritten file body'\n"
+
+    async def fake_generate(model, system, prompt, temperature=0.0, bypass_cheap=False):
+        if system.startswith("You are fixing specific issues"):
+            return json.dumps({"content": MUT}), None
+        # both review passes report one medium (non-critical) issue
+        return json.dumps({"issues": [{"type": "x", "severity": "medium", "detail": "d"}]}), None
+
+    orig_gen = codegen.generate
+    codegen.generate = fake_generate
+    try:
+        be = {"id": 1, "filepath": "backend/app/routes/menu.py",
+              "content": "def orig():\n    return 1\n", "agent_type": "backend", "ticket_id": "BE-1"}
+        fe = {"id": 2, "filepath": "frontend/app/order/page.tsx",
+              "content": "export default function P(){return <p>hi</p>}\n",
+              "agent_type": "frontend", "ticket_id": "FE-1"}
+        rbe = await rv.review_file(be, "gpt-4o-mini")
+        rfe = await rv.review_file(fe, "gpt-4o-mini")
+    finally:
+        codegen.generate = orig_gen
+
+    check("backend file IS rewritten by the reviewer (new_content set, issues fixed)",
+          rbe["new_content"] == MUT and rbe["issues_fixed"] >= 1, str(rbe))
+    check("frontend file is NEVER rewritten (new_content None, issues_fixed 0)",
+          rfe["new_content"] is None and rfe["issues_fixed"] == 0, str(rfe))
+    check("frontend file is still REVIEWED + REPORTED (both passes ran, issues_found 2)",
+          rfe["issues_found"] == 2, str(rfe))
+
+
 def test_timestamp_not_null_gate():
     """Run 1937: the generated model wrote `created_at = Column(DateTime, nullable=False)`
     with NO default, and the create handler never set it -> every INSERT sends NULL ->
@@ -1610,6 +1676,8 @@ async def main():
         test_rewrite_integrity_gate()
         test_frontend_parse_gate()
         test_reviewer_rejects_unsafe_autofix()
+        test_reviewer_never_mutates_frontend_sync()
+        await test_review_file_frontend_readonly()
         test_timestamp_not_null_gate()
         test_dangling_foreign_key_gate()
         test_missing_in_project_module_gate()

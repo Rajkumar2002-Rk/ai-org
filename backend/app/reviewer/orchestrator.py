@@ -26,6 +26,12 @@ def _accept_or_reject_fix(gf, new_content: str, files: list[dict],
     into a masked 500), keep the certified original rather than ship a security hardening
     that broke correctness. Returns the content to store."""
     fp = gf.filepath or gf.filename or ""
+    # Fix #53 — the reviewer NEVER mutates a frontend file. `review_file` already returns
+    # new_content=None for frontend so this branch is not normally reached, but the invariant
+    # is enforced here too: a frontend rewrite is discarded, keeping the certified-clean
+    # original (the Opus reviewer stochastically re-broke `next build` on every re-cert).
+    if reviewer._is_frontend_path(fp):
+        return gf.content
     new_problems = dev_agents.rewrite_integrity_gate(new_content, fp, files, schema, file_id=gf.id)
     if not new_problems:
         return new_content
