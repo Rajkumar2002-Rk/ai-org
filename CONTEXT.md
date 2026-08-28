@@ -22,11 +22,13 @@ fully before doing anything else in this project.
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
 - **Config (.env):** `SECURITY_REVIEW_ENABLED=true` (Opus ON), `CODEGEN_MODE=real`, `DEPLOY_TARGET=local`. `.env`
   is gitignored and holds the REAL Stripe test keys / Auth0 Mgmt / SMTP creds — NEVER commit it.
-- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49–#53** on 08-27: run-1934 dangling-FK
+- **This session = the Fix #37–#48 wave (2026-08-24 → 08-26), 12 fixes** (+ **#49–#54** on 08-27: run-1934 dangling-FK
   gate + QA create_all-swallow (#49); then the run-1950 re-deploy saga (§1nn) — hallucinated-submodule import gate (#50),
   QA real-`next build` default-on (#51), esbuild parse in the rewrite gate (#52); then **#53** — the reviewer now REVIEWS
-  but NEVER MUTATES frontend files, ending the stochastic re-cert breakage loop). All grounded in REAL captured run bugs,
-  each locked with a regression test. Detail per fix in §1cc–§1nn (§0-C for #49–#53).
+  but NEVER MUTATES frontend files, ending the stochastic re-cert breakage loop; then **#54** — codegen now EMITS a
+  deterministic `frontend/tsconfig.json` (target ES2017) on every build, closing the ES3-default iteration trap for ALL
+  apps, not just 1950's hand-added one). All grounded in REAL captured run bugs, each locked with a regression test.
+  Detail per fix in §1cc–§1nn (§0-C for #49–#54).
 
 ## 0-B. THE MILESTONES REACHED THIS SESSION (the payoff)
 - 🏆 **Run 1935 (Opus OFF, ~$1):** FIRST fresh full run to a genuinely LIVE + CLEAN app end-to-end, QA 100/100. §1jj.
@@ -129,6 +131,20 @@ fully before doing anything else in this project.
   frontend does not); developers + QA offline suites green. `reviewer/reviewer.py`, `reviewer/orchestrator.py`.
   ⚠️ NOT YET proven on a live re-cert (that is PAID) — the offline logic is verified; the 1950 convergence proof is the
   pending paid re-cert in 0-G #4. ⚠️ Backend image must be REBUILT (`docker compose build backend`) before the next run.
+- **#54 (2026-08-27)** — CODEGEN GAP surfaced by the 1950 saga (0-G #4): generated Next apps shipped NO
+  `frontend/tsconfig.json`, so `next build` auto-generated one with NO `compilerOptions.target` → TS defaults to ES3 →
+  every Set/Map iteration + iterable spread (`[...new Set(x)]`) is a HARD compile error visible only at DEPLOY. 1950 was
+  cured by hand-adding a tsconfig; #54 makes EVERY build ship one. Fix: `builder._frontend_tsconfig_ticket()` (FND-8) — a
+  deterministic `is_boilerplate` ticket carrying Next's own config with `target: ES2017` baked in (`_FRONTEND_TSCONFIG`),
+  written VERBATIM (no LLM, first wave, no deps), wired into the foundation-ticket list next to FND-5. Under `frontend/` so
+  the fix-#53 read-only reviewer reports but never mutates it; Next preserves an existing `target` on build. Test:
+  `test_architect_offline` FND-8 block (exists, owns the path, first-wave, boilerplate, valid JSON, target ES2017).
+  `architect/builder.py`. ALSO fixed a PRE-EXISTING red suite found while verifying (red on HEAD b530514, NOT caused by
+  #54): `test_qa_regen_gate_offline` still asserted "a frontend .tsx is a no-op for this gate" and "ZERO false positives
+  across 888" — both stale since #45/#48/#50/#52. Realigned to shipped behaviour: a broken frontend file IS now flagged
+  (fix #48), a complete one passes; and 888's `models.py` (#45 NOT-NULL `created_at`) + `security.py` (#50 hallucinated
+  `starlette.middleware.ratelimit`) are TRUE positives, excluded from the false-positive set with a citing comment.
+  ⚠️ Backend image must be REBUILT (`docker compose build backend`) before the next run (also carries #50/#52's image deps).
 
 ## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
 1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
@@ -226,8 +242,10 @@ fully before doing anything else in this project.
    - **Fix #53-alt:** run a real `tsc` type-check in `rewrite_integrity_gate` for frontend (keep clean original if it
      doesn't compile). Heavier (needs node_modules/types); now largely redundant for the reviewer path (#53 stops the
      mutation at the source) but would also guard QA's frontend regen.
-   - **Fix #54 (codegen gap):** generated Next apps ship NO `tsconfig.json`; codegen should EMIT one (target ES2017) so
-     every app avoids the ES3-default iteration trap — not just 1950's hand-added one. Independent of #53; still worth doing.
+   - ✅ **Fix #54 DONE (2026-08-27, see 0-C #54):** codegen now EMITS `frontend/tsconfig.json` (FND-8, target ES2017) on
+     every build, so no generated app can fall into the ES3-default iteration trap again. Offline-verified (architect suite
+     + the whole 12-suite offline sweep green). Independent of #53. Like #53, the PAID live proof rides along with the 0-G #4
+     re-cert (a fresh run will now carry the tsconfig from the start; 1950 already has its hand-added one).
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-

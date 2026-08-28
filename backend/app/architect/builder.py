@@ -856,6 +856,70 @@ def _frontend_globals_ticket(summary: dict | None = None) -> dict:
     }
 
 
+# The compiler config every generated Next.js app should ship (fix #54). BAKED verbatim.
+# WHY: when `frontend/tsconfig.json` is absent, `next build` auto-generates one that has NO
+# `compilerOptions.target`, which TypeScript then defaults to ES3. Under an ES3/ES5 target,
+# every Set/Map iteration and array spread of an iterable (`[...new Set(x)]`, `for (const v
+# of map)`) is a HARD type error unless `downlevelIteration` is on — so a perfectly good page
+# fails to compile at DEPLOY time only (run 1950: `customer/page.tsx` `[...Set]`, plus the
+# whole strict/iteration class, all traced to the missing tsconfig). Pinning `target: ES2017`
+# makes native iteration legal and gives async/await without a polyfill. This is Next's own
+# `create-next-app` config with `target` set explicitly; Next preserves an existing `target`
+# on build (it only fills in MISSING options), so shipping it forecloses the ES3 default.
+_FRONTEND_TSCONFIG = """{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+"""
+
+
+def _frontend_tsconfig_ticket() -> dict:
+    """The TypeScript compiler config for the generated Next.js app (fix #54).
+
+    Same class as FND-4/FND-5: a framework file no feature ticket owns, commissioned
+    deterministically. Without it `next build` writes a tsconfig with no `target`, TS
+    defaults to ES3, and every Set/Map iteration / iterable spread in an otherwise-correct
+    page becomes a compile error visible only at DEPLOY (run 1950). Pinning `target: ES2017`
+    removes the trap for EVERY app, not just the one whose tsconfig was hand-added.
+
+    Written VERBATIM (is_boilerplate) — identical on every build, no generation variance,
+    one fewer paid ticket. Lands in the first wave (FND-*); no dependencies. Being under
+    `frontend/` it is classified as a frontend file, so the fix-#53 read-only reviewer
+    reports on it but never mutates it.
+    """
+    return {
+        "id": "FND-8",
+        "title": "Frontend TypeScript config (tsconfig.json)",
+        "assigned_to": "frontend",
+        "filepath": "frontend/tsconfig.json",
+        "is_boilerplate": True,
+        "content": _FRONTEND_TSCONFIG,
+        "description": (
+            "Deterministic frontend/tsconfig.json with compilerOptions.target set to "
+            "ES2017 so native Set/Map iteration and iterable spreads compile. Written "
+            "verbatim from the ticket content; no generation needed."
+        ),
+        "dependencies": [],
+    }
+
+
 def _frontend_page_routes(tickets: list[dict]) -> list[str]:
     """The real App-Router routes of the generated frontend — one per
     `frontend/app/<route>/page.tsx` ticket, EXCLUDING the root `frontend/app/page.tsx`.
@@ -1479,7 +1543,7 @@ async def build_blueprint(summary: dict) -> dict:
     # `next build` cannot start, and without the root layout no page can build.
     tickets = (_foundation_tickets()
                + [_frontend_foundation_ticket(), _frontend_layout_ticket(),
-                  _frontend_globals_ticket(summary)]
+                  _frontend_globals_ticket(summary), _frontend_tsconfig_ticket()]
                + list(creative.get("sprint_tickets", [])))
 
     # Deterministic guarantees on top of the creative output:

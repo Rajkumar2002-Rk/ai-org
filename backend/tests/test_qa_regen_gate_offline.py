@@ -143,16 +143,23 @@ def test_gate_http_swallow():
 
 
 def test_gate_clean_and_noop():
-    """A valid regeneration passes; non-.py / frontend files are a no-op (not this gate's job)."""
+    """A valid regeneration passes; a BROKEN frontend file is now flagged (fix #48/#52 —
+    the shared rewrite gate re-checks frontend), while a complete frontend page and a
+    plain stylesheet stay clean."""
     good = ("from backend.app.database import get_db\n"
             "def handler(db=None):\n    return {'ok': True}\n")
     files = [_MODELS, _DATABASE, _AUTH,
              {"id": 12, "filepath": "backend/app/routes/ok.py", "content": good}]
     check("a clean regenerated backend .py passes the gate ({})",
           orch._gate_regenerated(good, "backend/app/routes/ok.py", files, 12) == {}, "should be clean")
-    check("a frontend .tsx is a no-op for this gate",
-          orch._gate_regenerated("const x = (", "frontend/app/page.tsx", files, 99) == {})
-    check("a non-.py file is a no-op",
+    # Fix #48/#52: the gate now RE-CHECKS frontend, so a truncated/broken page is caught
+    # HERE (a QA regeneration) instead of surviving to the deploy's real `next build`.
+    check("a truncated frontend .tsx IS flagged (fix #48 — no longer a no-op)",
+          orch._gate_regenerated("const x = (", "frontend/app/page.tsx", files, 99) != {})
+    check("a COMPLETE frontend .tsx passes the gate",
+          orch._gate_regenerated("export default function Page() {\n  return <div>hi</div>;\n}\n",
+                                 "frontend/app/page.tsx", files, 97) == {})
+    check("a plain stylesheet is a no-op",
           orch._gate_regenerated("body {", "frontend/app/globals.css", files, 98) == {})
 
 
@@ -170,15 +177,24 @@ def test_gate_zero_false_positives():
                   if orch._gate_regenerated(f["content"], f["filepath"], plat, f["id"])]
     check(f"ZERO false positives across the platform's own {len(plat)} backend modules",
           plat_flags == [], str(plat_flags[:6]))
-    # (b) 888 WORKING files (exclude the known-orphaned order/stripe dead code)
+    # (b) 888 WORKING files. Two exclusion classes:
+    #   - orphaned: known dead order/stripe code (unresolved symbols by design).
+    #   - latent_defects: files the 888 run shipped that gates added AFTER this fixture
+    #     legitimately flag as TRUE positives, not false ones — models.py has a NOT-NULL
+    #     `created_at` with no server_default (fix #45: 500 on every create), and
+    #     security.py imports the hallucinated `starlette.middleware.ratelimit` submodule
+    #     (fix #50). Excluded here because this check measures FALSE positives on clean
+    #     code; the newer gates each carry their own regression test proving these fire.
     gdir = os.path.join(_FX, "gen888")
     orphaned = {"backend/app/routes/order.py", "backend/app/routes/order_be_2.py",
                 "backend/app/routes/stripe.py"}
+    latent_defects = {"backend/app/models.py", "backend/app/security.py"}
+    excluded = orphaned | latent_defects
     g = []
     for i, p in enumerate(sorted(glob.glob(os.path.join(gdir, "*.py")))):
         rel = os.path.basename(p).replace("__", "/")
         g.append({"id": i, "filepath": rel, "content": open(p, encoding="utf-8").read()})
-    g_flags = [f["filepath"] for f in g if f["filepath"] not in orphaned
+    g_flags = [f["filepath"] for f in g if f["filepath"] not in excluded
                and orch._gate_regenerated(f["content"], f["filepath"], g, f["id"])]
     check("ZERO false positives across 888's real WORKING generated files", g_flags == [], str(g_flags))
 

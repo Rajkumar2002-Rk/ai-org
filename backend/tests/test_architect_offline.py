@@ -11,6 +11,7 @@ Run:  docker compose run --rm --no-deps -v "$PWD/backend:/app" backend \
           python tests/test_architect_offline.py
 """
 import asyncio
+import json
 import sys
 
 import app.llm as llm_mod
@@ -418,6 +419,21 @@ async def test_unique_filepaths():
     warm_css = builder._design_system_css({"design": {"brand_color": "warm brown"}})
     check("brand_color 'warm brown' themes coffee primary on a cream ground",
           "--color-primary: #6f4e37;" in warm_css and "--color-bg: #faf6f1;" in warm_css)
+
+    # FND-8 (fix #54): the app ships its own tsconfig with an explicit ES2017 target, so
+    # `next build` cannot fall back to the ES3 default that breaks Set/Map iteration.
+    check("FND-8 tsconfig ticket exists", "FND-8" in tk)
+    check("FND-8 owns frontend/tsconfig.json",
+          tk.get("FND-8", {}).get("filepath") == "frontend/tsconfig.json")
+    check("FND-8 runs in the FIRST wave (FND- prefix, no dependencies)",
+          tk.get("FND-8", {}).get("dependencies") == [])
+    fnd8 = tk.get("FND-8", {}).get("content", "")
+    check("FND-8 carries baked, boilerplate tsconfig content (no LLM generation)",
+          bool(fnd8) and tk.get("FND-8", {}).get("is_boilerplate") is True)
+    check("FND-8 pins compilerOptions.target to ES2017 (kills the ES3 iteration trap)",
+          '"target": "ES2017"' in fnd8)
+    check("FND-8 content is valid JSON",
+          json.loads(fnd8).get("compilerOptions", {}).get("target") == "ES2017")
 
     # The entrypoint must be flagged so the Developer injects the real router
     # module paths — guessing conventional names is what broke a real build.
