@@ -9,14 +9,20 @@ fully before doing anything else in this project.
 > Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1mm are the
 > current per-fix record for THIS session's work (Fixes #37–#52). Read THIS block first; drill into §1cc–§1nn as needed.
 
-## 0-A. WHERE WE ARE RIGHT NOW (2026-08-26 night)
-- **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed
-  (`aiorg_p1843/1935/1936/1937/1950_*`). Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.**
-  Platform DB + secrets volumes PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows
-  (1934/1935/1936/1937/1948/1949/1950) remain in the platform DB as fixture sources.
-- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master` (tip = the Auth0 tenant-cleanup commit), clean tree.**
-  Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (still PRIVATE — user chose to publish as-is when
-  ready; see 0-E). **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+## 0-A. WHERE WE ARE RIGHT NOW (2026-08-28)
+- **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed.
+  Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.** Platform DB + secrets volumes
+  PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows (…/1950/**2080**) remain in the
+  platform DB as fixture sources. **2080 is the newest run — a full-flow proof of #53 + #54 (Opus ON); see 0-D.**
+- **⏭️ CURRENT FRONTIER: Fix #55 is DESIGNED, not implemented (0-G #5).** Run 2080 proved #53 (reviewer never mutates
+  frontend) + #54 (tsconfig emitted) but fail-closed at the security gate on a REAL generated-app vuln (JWT-in-URL in
+  `integrate.tsx`) + a stochastic false-positive (`tip.tsx`). #55 (a: harden `_confirmed_critical` quorum; b: a bounded,
+  build-re-validated frontend repair path that absorbs #53-alt) is the chosen next work. User picked "design first"; the
+  implement/hold decision is still OPEN. Backend image was REBUILT 2026-08-28 (carries #50/#52/#54 deps) — no rebuild
+  needed next session unless backend code changed again.
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master` (tip = the #54 tsconfig + run-2080/#55-design context), clean tree.**
+  Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC; see 0-E). **COMMIT RULE: NO Claude
+  co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
 - **2026-08-27 follow-up:** Auth0 tenant CLEANED (0-G #1 now DONE) via the new operator tool
   `backend/tools/auth0_cleanup.py` — deleted 8 stale `proj-*` clients + 9 `proj-*` APIs, tenant headroom restored,
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
@@ -151,6 +157,16 @@ fully before doing anything else in this project.
 1914 CERTIFIED-but-500s (Opus reintroduced the swallow) → #42. 1934 deploy startup crash → #43; QA 84/88.
 **1935 LIVE+clean (Opus off) 🏆.** **1936 LIVE+CERTIFIED (Opus on) 🏆🏆.** **1937 user's run → LIVE+certified 🏆🏆🏆.**
 **1950 user's run, Stripe connected → #45 proven live, then #46/#47/#48.** (1843 is the older LIVE-but-unusable run; §1w/§1x.)
+**2080 (2026-08-28, Opus ON, ~$3, image rebuilt with #50/#52/#54) — PROVED #53 + #54, blocked at the security gate.**
+Fresh coffee-shop run via `verify_pipeline.py`. Architect emitted **FND-8** (#54's `frontend/tsconfig.json`, `target:ES2017`)
+in the first wave — CONFIRMED in the DB. Build 20/20. Reviewer left ALL frontend `issues_fixed=0` (#53 held — no mutation,
+no `next build`-breaking loop). Did NOT reach LIVE: the Opus security pass fail-closed on 2/20 files —
+`integrate/page.tsx` (FE-3) carried a **REAL critical** (the generated code does `url.searchParams.set("token", token)` —
+Auth0 bearer JWT in a URL query param → leaks via logs/Referer/history; the gate was RIGHT to block), and `tip/page.tsx`
+(FE-4) was a **stochastic false-positive** (a fresh Opus pass on the identical bytes returns ZERO issues — the model is
+not fully deterministic even at temp 0, and the 2-pass `_confirmed_critical` guard didn't clear it). NET: #53 killed the
+breakage LOOP but exposed the **#55 gap** (below) — a confirmed frontend critical now has NO remediation path, and a rare
+flake can fail-close a clean deploy. This run is a full-flow proof of #53/#54, not a LIVE deploy.
 
 ## 0-E. NON-FIX WORK THIS SESSION (all committed)
 - **README rewritten for RECRUITERS** (`fefc7ad` etc.) — hero screenshot `docs/demo.png`, badges, a rendered mermaid
@@ -244,8 +260,35 @@ fully before doing anything else in this project.
      mutation at the source) but would also guard QA's frontend regen.
    - ✅ **Fix #54 DONE (2026-08-27, see 0-C #54):** codegen now EMITS `frontend/tsconfig.json` (FND-8, target ES2017) on
      every build, so no generated app can fall into the ES3-default iteration trap again. Offline-verified (architect suite
-     + the whole 12-suite offline sweep green). Independent of #53. Like #53, the PAID live proof rides along with the 0-G #4
-     re-cert (a fresh run will now carry the tsconfig from the start; 1950 already has its hand-added one).
+     + the whole 12-suite offline sweep green). Independent of #53. **PROVEN LIVE in run 2080** — FND-8 emitted first-wave,
+     ES2017 confirmed in the DB. Also proved #53 held (frontend never mutated). Neither reached a LIVE deploy in 2080 — it
+     fail-closed at the security gate (see run 2080 in 0-D + the #55 gap below), but that block was a REAL generated-app vuln,
+     not a #53/#54 defect.
+
+5. 🔵 **OPEN — Fix #55 (design chosen by user 2026-08-28; NOT yet implemented).** The gap run 2080 exposed: #53 made the
+   reviewer READ-ONLY on frontend and keeps an honest fail-closed verdict, so a CONFIRMED frontend critical now (a) has NO
+   remediation path (the reviewer won't rewrite frontend, and nothing else regenerates a blocked frontend file → deploy just
+   dies), and (b) a STOCHASTIC false-positive (run 2080's `tip/page.tsx`) can fail-close a clean deploy. Design (recommended
+   combination, cheap part first):
+   - **#55a — harden `_confirmed_critical` (small, cheap; directly fixes the 2080 tip flake).** Today it needs "any critical"
+     on 2 passes. Change to a QUORUM that requires the SAME issue type/locus to RECUR across ≥2 of 3 passes (a real vuln
+     reproduces as the same finding; independent flakes usually don't, and two different spurious criticals should not
+     "confirm" each other). A few extra Opus passes ONLY when a critical is first seen. Reduces false fail-closes without
+     weakening real detection.
+   - **#55b — a bounded, RE-VALIDATED frontend repair path (the substantive work; SUPERSEDES/absorbs #53-alt).** When a
+     frontend critical is CONFIRMED, hand the file ONE (bounded ≤N) targeted regeneration with the specific issue as a repair
+     instruction (mirror QA `_regenerate_validated` / #42), then accept the rewrite ONLY if it passes the FULL frontend build
+     gate — `frontend_incomplete` + `frontend_css_leak` + esbuild `frontend_parse_error` AND a real `tsc`/`next build`
+     TYPE-check (this is the #53-alt type gate; the piece that makes a frontend rewrite safe) — AND a re-review returns clean.
+     Otherwise KEEP the certified-clean original and FAIL CLOSED (block + flag for human). This CANNOT loop like the pre-#53
+     reviewer because it is bounded, every candidate must pass the full build gate before acceptance, and it triggers only on
+     a confirmed critical — not stochastically on every re-cert.
+   - **Rejected as PRIMARY (too permissive — would ship real frontend vulns like 2080's JWT-in-URL):** downgrading a frontend
+     critical to a non-blocking `frontend_security_warning` (à la #47 `auth_degraded`), and the backend-cross-check variant
+     (only block if the matching backend control is also absent) — principled but brittle/per-issue-type.
+   - **Recommendation:** ship #55a now (cheap, fixes the observed flake), then #55b (restores a SAFE fix path). Est: #55a is a
+     ~15-line change + test; #55b needs the tsc/next-build gate wired into the reviewer path (heavier — needs node_modules or
+     reuse of QA's #51 build). NO new paid run needed to build+offline-test either; the LIVE proof would be a later re-cert.
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-
