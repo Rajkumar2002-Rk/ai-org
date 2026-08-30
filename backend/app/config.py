@@ -122,6 +122,16 @@ class Settings(BaseSettings):
     # so nothing can masquerade as certified. Re-enable before any real run/demo.
     security_review_enabled: bool = True
 
+    # Fix #55b — how many bounded, re-validated repair attempts the security reviewer may make
+    # on a CONFIRMED frontend security critical before it fails the certificate CLOSED
+    # (blocking the deploy + flagging for a human). #53 made the reviewer read-only on
+    # frontend, which stopped the stochastic `next build`-breaking loop but left a real
+    # frontend critical (run 2080's JWT-in-URL) with no remediation path. This bound restores
+    # a SAFE one: every candidate must still pass the full frontend build gate (completeness +
+    # CSS-leak + esbuild parse) AND a clean security re-review to be accepted, so it can never
+    # loop like the pre-#53 reviewer. Set 0 to disable the repair path (pure #53 read-only).
+    reviewer_frontend_repair_attempts: int = 2
+
     # Real domain for generated apps. DNS for `apps.example.com` is delegated
     # to the Route53 hosted zone below; per-app subdomains live under it as
     # <slug>-<suffix>.apps.example.com.

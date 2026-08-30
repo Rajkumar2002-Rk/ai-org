@@ -26,12 +26,24 @@ def _accept_or_reject_fix(gf, new_content: str, files: list[dict],
     into a masked 500), keep the certified original rather than ship a security hardening
     that broke correctness. Returns the content to store."""
     fp = gf.filepath or gf.filename or ""
-    # Fix #53 — the reviewer NEVER mutates a frontend file. `review_file` already returns
-    # new_content=None for frontend so this branch is not normally reached, but the invariant
-    # is enforced here too: a frontend rewrite is discarded, keeping the certified-clean
-    # original (the Opus reviewer stochastically re-broke `next build` on every re-cert).
+    # Fix #53 — the reviewer does not stochastically rewrite frontend files, so `review_file`
+    # normally returns new_content=None for a frontend path and this branch is a no-op.
+    # Fix #55b — a CONFIRMED-critical security repair IS a legitimate frontend rewrite; accept
+    # it, but ONLY after re-checking it through the SAME deterministic frontend build gate
+    # (completeness + CSS-leak + esbuild parse) as defense-in-depth. A candidate that fails
+    # the gate is discarded, keeping the certified-clean original — a broken frontend rewrite
+    # must never become canonical (the Opus reviewer stochastically re-broke `next build` on
+    # every re-cert before #53).
     if reviewer._is_frontend_path(fp):
-        return gf.content
+        if not new_content or new_content == gf.content:
+            return gf.content
+        fe_problems = dev_agents.rewrite_integrity_gate(new_content, fp, files, schema, file_id=gf.id)
+        if fe_problems:
+            logger.warning("Reviewer: a frontend security repair for %s failed the frontend "
+                           "gate at the accept seam (%s) — KEEPING the certified-clean "
+                           "original.", fp, "; ".join(fe_problems))
+            return gf.content
+        return new_content
     new_problems = dev_agents.rewrite_integrity_gate(new_content, fp, files, schema, file_id=gf.id)
     if not new_problems:
         return new_content
@@ -119,6 +131,7 @@ async def review_subset(project_id: int, blueprint: dict,
                 "files_reviewed": 0}
 
     general_model = blueprint.get("llm_routing", {}).get("code_reviewer", "gpt-4o-mini")
+    schema = (blueprint or {}).get("database_schema")
 
     async with async_session() as db:
         result = await db.execute(
@@ -138,7 +151,7 @@ async def review_subset(project_id: int, blueprint: dict,
 
     async def _one(f):
         async with sem:
-            return await reviewer.review_file(f, general_model)
+            return await reviewer.review_file(f, general_model, files=files, schema=schema)
 
     reviews = await asyncio.gather(*[_one(f) for f in files])
 
@@ -198,7 +211,7 @@ async def run(project_id: int, blueprint: dict) -> dict:
 
     async def _one(f):
         async with sem:
-            return await reviewer.review_file(f, general_model)
+            return await reviewer.review_file(f, general_model, files=files, schema=schema)
 
     total_found = total_fixed = 0
     all_secure = True

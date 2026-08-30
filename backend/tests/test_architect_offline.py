@@ -300,51 +300,60 @@ def test_reviewer_flag():
 
 
 async def test_reviewer_security_verdict():
-    """FIX #23 (run 1289): the security cert falsely FAILED on code whose final content
-    was reproducibly clean — the old stop-and-verify loop set security_passed=False and
-    its bounded stochastic rechecks never happened to come back clean. The verdict is now
-    based on a CONFIRMED critical on the FINAL content (flagged on TWO passes): a genuine
-    (reproducible) vulnerability still fails; a one-off flake on clean content does not.
-    Mocks _review/_fix — no LLM, no network."""
-    print("\n=== TEST 4b: security verdict = CONFIRMED critical on final content ===")
-    crit = [{"severity": "critical", "type": "xss", "detail": "x"}]
+    """FIX #55a (run 2080): a critical is CONFIRMED only when the SAME issue signature RECURS
+    across ≥2 of 3 independent Opus passes — a real vulnerability reproduces as the same
+    finding, a stochastic flake does not. This removes the run-1289 false-negative (a cert
+    failing on reproducibly-clean code) AND the run-2080 false-positive (`tip/page.tsx`, where
+    a fresh pass over identical bytes returns ZERO issues) WITHOUT letting two DIFFERENT
+    one-off flakes 'confirm' each other. Mocks _review directly — no LLM, no network."""
+    print("\n=== TEST 4b: confirmed-critical QUORUM (same signature on >=2 of 3 passes) ===")
+    tok = [{"severity": "critical", "type": "Token in URL", "detail": "jwt in query"}]
+    sqli = [{"severity": "critical", "type": "SQL injection", "detail": "raw query"}]
+    csrf = [{"severity": "critical", "type": "CSRF", "detail": "no state param"}]
 
-    async def run_case(queue):
+    async def run_case(queue, first_issues=None):
         calls = {"n": 0}
 
         async def fake_review(model, system, file, content, bypass):
             i = calls["n"]; calls["n"] += 1
             return queue[i] if i < len(queue) else []
 
-        async def fake_fix(model, file, content, issues, bypass):
-            return content + "\n# fixed"      # non-None so a fix is 'applied'
-
-        orig_r, orig_f = reviewer._review, reviewer._fix
-        reviewer._review, reviewer._fix = fake_review, fake_fix
+        orig = reviewer._review
+        reviewer._review = fake_review
         try:
-            res = await reviewer.review_file(
-                {"id": 1, "filepath": "frontend/app/x.tsx", "content": "x"}, "gpt-4o-mini")
+            issues = await reviewer._confirmed_critical_issues(
+                reviewer._SECURITY_SYS,
+                {"id": 1, "filepath": "frontend/app/x.tsx", "content": "x"}, "x",
+                first_issues=first_issues)
         finally:
-            reviewer._review, reviewer._fix = orig_r, orig_f
-        return res, calls["n"]
+            reviewer._review = orig
+        return issues, calls["n"]
 
-    # review call order: [general, security(s_issues), fix-loop rechecks x<=2, confirm x<=2]
-    # A. STABLE critical — flagged on every pass, incl. BOTH confirmation passes -> FAIL.
-    res, _ = await run_case([[], crit, crit, crit, crit, crit])
-    check("a STABLE (reproducible) critical still FAILS the cert",
-          res["security_passed"] is False)
-    # B. Initial flag, but the final content is reproducibly clean (the 1289 case) -> PASS.
-    res, _ = await run_case([[], crit, [], []])
-    check("an initial critical with clean final content PASSES (the 1289 false-negative is gone)",
-          res["security_passed"] is True)
-    # C. A one-off flake DURING the verdict (1 of 2 confirmation passes) -> PASS.
-    res, _ = await run_case([[], crit, [], crit, []])
-    check("a single-pass flake in the verdict does NOT fail the file (needs 2 to confirm)",
-          res["security_passed"] is True)
-    # D. A clean file never enters the critical path -> PASS, no extra verdict reviews.
-    res, n = await run_case([[], []])
-    check("a clean file passes with NO extra verdict reviews spent",
-          res["security_passed"] is True and n == 2)
+    # A. Same signature on the first TWO passes -> confirmed after 2 passes (no 3rd).
+    issues, n = await run_case([tok, tok])
+    check("the SAME critical on 2 passes is CONFIRMED (and stops at 2 passes)",
+          len(issues) == 1 and issues[0]["type"] == "Token in URL" and n == 2)
+    # B. A one-off flake (critical on pass 1 only, clean after) -> NOT confirmed (run 2080 tip).
+    issues, n = await run_case([tok, [], []])
+    check("a lone flake critical (clean on re-review) is NOT confirmed (run 2080 tip/page.tsx)",
+          issues == [] and n == 3)
+    # C. Two DIFFERENT spurious criticals across 3 passes -> NOT confirmed (they can't confirm
+    #    each other; the old 'any critical twice' guard wrongly would have failed this).
+    issues, n = await run_case([tok, sqli, csrf])
+    check("two DIFFERENT spurious criticals do NOT confirm each other",
+          issues == [] and n == 3)
+    # D. Pass 1 & 2 disagree, but pass 3 REPEATS pass 1's signature -> confirmed via the tie.
+    issues, n = await run_case([tok, sqli, tok])
+    check("a signature recurring on 2 of 3 passes (1 & 3) IS confirmed via the 3rd pass",
+          len(issues) == 1 and issues[0]["type"] == "Token in URL" and n == 3)
+    # E. No critical at all on the first pass -> nothing to confirm, only ONE pass spent.
+    issues, n = await run_case([[]])
+    check("a clean first pass confirms nothing with a single review call",
+          issues == [] and n == 1)
+    # F. `first_issues` seeds pass 1 (a review the caller already ran) -> one fewer call.
+    issues, n = await run_case([tok], first_issues=tok)
+    check("first_issues seeds pass 1 so a confirmed critical costs one FEWER review call",
+          len(issues) == 1 and n == 1)
 
 
 async def test_unique_filepaths():

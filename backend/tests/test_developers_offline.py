@@ -834,13 +834,14 @@ def test_reviewer_rejects_unsafe_autofix():
           rev._accept_or_reject_fix(gf2, clean2, files, None) == clean2)
 
 
-def test_reviewer_never_mutates_frontend_sync():
-    """Fix #53 (deterministic seam): the reviewer must NEVER mutate a FRONTEND file.
-    `_accept_or_reject_fix` keeps the certified-clean ORIGINAL for a frontend path even when
-    the candidate 'fix' is itself clean — mirroring the invariant that `review_file` returns
-    new_content=None for frontend. The Opus reviewer stochastically re-broke `next build` on
-    every re-cert (run 1950), and no cheap gate catches a type error, so frontend rewrites
-    are dropped wholesale rather than parse-checked."""
+def test_reviewer_frontend_accept_seam():
+    """Fix #53 + #55b (deterministic seam): the reviewer does not stochastically rewrite
+    frontend files, so `_accept_or_reject_fix` normally sees new_content=None for a frontend
+    path. When it DOES see a frontend rewrite it is a CONFIRMED-critical security repair
+    (fix #55b) — accept it, but ONLY after re-checking it through the SAME frontend build gate
+    (defense-in-depth): a candidate that FAILS the gate is discarded (keeping the
+    certified-clean original — the pre-#53 reviewer stochastically re-broke `next build`), and
+    a gate-passing repair is applied so a real frontend vuln finally has a remediation path."""
     from app.reviewer import reviewer as rv
     from app.reviewer import orchestrator as rev
     check("_is_frontend_path: .tsx under frontend/ is frontend",
@@ -855,13 +856,73 @@ def test_reviewer_never_mutates_frontend_sync():
     class _GF:
         def __init__(self, id, filepath, content):
             self.id, self.filepath, self.filename, self.content = id, filepath, None, content
+    path = "frontend/app/order/page.tsx"
     original = "export default function Page(){ return <p>hi</p>; }\n"
-    clean_fix = "export default function Page(){ return <p>hi there</p>; }\n"
-    gf = _GF(9, "frontend/app/order/page.tsx", original)
-    files = [{"id": 9, "filepath": "frontend/app/order/page.tsx", "content": original}]
-    kept = rev._accept_or_reject_fix(gf, clean_fix, files, None)
-    check("a frontend rewrite is DISCARDED even when it is clean (original kept)",
-          kept == original, "frontend fix was wrongly applied")
+    files = [{"id": 9, "filepath": path, "content": original}]
+
+    # A gate-FAILING rewrite (unbalanced braces -> frontend_incomplete) is discarded.
+    broken = "export default function Page(){ return <p>hi</p>; }\n{{{ \n"
+    gf1 = _GF(9, path, original)
+    check("a frontend rewrite that FAILS the frontend gate is DISCARDED (original kept)",
+          rev._accept_or_reject_fix(gf1, broken, files, None) == original,
+          "a broken frontend rewrite was wrongly applied")
+    # A gate-PASSING #55b security repair is accepted.
+    clean_repair = "export default function Page(){ return <p>safe</p>; }\n"
+    gf2 = _GF(9, path, original)
+    check("a gate-passing frontend security repair (#55b) IS accepted",
+          rev._accept_or_reject_fix(gf2, clean_repair, files, None) == clean_repair,
+          "a clean, validated frontend repair was wrongly discarded")
+    # A None candidate (the read-only / fail-closed cases) keeps the original.
+    gf3 = _GF(9, path, original)
+    check("a None candidate keeps the original (read-only / fail-closed path)",
+          rev._accept_or_reject_fix(gf3, None, files, None) == original)
+
+
+async def test_reviewer_frontend_confirmed_repair():
+    """Fix #55b: a CONFIRMED frontend security critical (run 2080's JWT-in-URL) is handed ONE
+    bounded, re-validated repair through `review_file`. When the rewrite passes the frontend
+    build gate AND a clean security re-review it is APPLIED (new_content set) — the deploy is
+    no longer stuck with no remediation. When no safe rewrite is found within the bound, the
+    cert fails CLOSED (new_content None, security_passed False). Mocks the LLM — no network."""
+    from app.reviewer import reviewer as rv
+    from app import codegen
+
+    ORIG = "export default function P(){ return <a href={`/x?token=${t}`}>go</a>; }\n"
+    SAFE = "export default function P(){ return <a onClick={go}>go</a>; }\n"
+    STILL = "export default function P(){ return <a href={`/y?token=${t}`}>go</a>; }\n"
+    CRIT = [{"severity": "critical", "type": "Token in URL", "detail": "jwt in query param"}]
+
+    def make_generate(fix_result):
+        async def fake_generate(model, system, prompt, temperature=0.0, bypass_cheap=False):
+            if system.startswith("You are fixing"):            # _FIX_SYS or the #55b security fix
+                return json.dumps({"content": fix_result}), None
+            if system.startswith("You are a senior"):          # general pass -> clean
+                return json.dumps({"issues": []}), None
+            # security pass: vulnerable iff the reviewed content puts a token in the URL.
+            vuln = "?token=" in prompt
+            return json.dumps({"issues": CRIT if vuln else []}), None
+        return fake_generate
+
+    async def review(fix_result):
+        fe = {"id": 2, "filepath": "frontend/app/integrate/page.tsx", "content": ORIG,
+              "agent_type": "frontend", "ticket_id": "FE-3"}
+        orig_gen = codegen.generate
+        codegen.generate = make_generate(fix_result)
+        try:
+            return await rv.review_file(fe, "gpt-4o-mini",
+                                        files=[{**fe}], schema=None)
+        finally:
+            codegen.generate = orig_gen
+
+    # Repairable: the fix removes the token-in-URL -> re-review clean -> APPLIED.
+    r = await review(SAFE)
+    check("a confirmed frontend critical with a safe repair is APPLIED (new_content set, passed)",
+          r["new_content"] == SAFE and r["security_passed"] is True and r["issues_fixed"] == 1,
+          str(r))
+    # Not repairable: every rewrite still leaks the token -> FAIL CLOSED, original kept.
+    r = await review(STILL)
+    check("a confirmed frontend critical with no safe repair FAILS CLOSED (None, not passed)",
+          r["new_content"] is None and r["security_passed"] is False, str(r))
 
 
 async def test_review_file_frontend_readonly():
@@ -1676,8 +1737,9 @@ async def main():
         test_rewrite_integrity_gate()
         test_frontend_parse_gate()
         test_reviewer_rejects_unsafe_autofix()
-        test_reviewer_never_mutates_frontend_sync()
+        test_reviewer_frontend_accept_seam()
         await test_review_file_frontend_readonly()
+        await test_reviewer_frontend_confirmed_repair()
         test_timestamp_not_null_gate()
         test_dangling_foreign_key_gate()
         test_missing_in_project_module_gate()
