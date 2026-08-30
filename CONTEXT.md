@@ -5,11 +5,28 @@ fully before doing anything else in this project.
 
 ---
 
-# ⏭️⏭️⏭️ RESUME HERE — AUTHORITATIVE HANDOFF (2026-08-26 night). A FRESH CHAT STARTS FROM THIS BLOCK.
-> Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1mm are the
-> current per-fix record for THIS session's work (Fixes #37–#52). Read THIS block first; drill into §1cc–§1nn as needed.
+# ⏭️⏭️⏭️ RESUME HERE — AUTHORITATIVE HANDOFF (updated 2026-08-30). A FRESH CHAT STARTS FROM THIS BLOCK.
+> Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1nn are the
+> current per-fix record; #55a/#55b/#56 (2026-08-30) are recorded in 0-A/0-C/0-D/0-G (no §1oo — 0-C is authoritative for
+> them). Read THIS block first (0-A has the "resume tomorrow" action list); drill into §1cc–§1nn as needed.
 
 ## 0-A. WHERE WE ARE RIGHT NOW (2026-08-30)
+- **⏭️⏭️ RESUME TOMORROW — start here.** Nothing is half-done and nothing is uncommitted; `HEAD == origin/master == 700954f`,
+  tree clean, everything torn down ($0). The code frontier (#55a/#55b/#56) is DONE + PROVEN LIVE (run 2081). The ONE thing
+  left is an OPTIONAL, PAID goal you deferred: **take run 2080 to a LIVE deploy**, which is blocked ONLY by a backend
+  `main.py` issue (0-G #6), not by anything from this session. To pursue it tomorrow:
+  1. `docker compose up -d` (backend :8000, frontend :3000, postgres, redis); `curl localhost:8000/health` → `{"status":"ok"}`.
+  2. Fix 2080's `backend/app/main.py` in the DB ($0, no LLM — DB-edit recipe in §1nn #11): (a) DROP the hallucinated
+     `from fastapi.middleware.throttling import ThrottlingMiddleware` + its `app.add_middleware(ThrottlingMiddleware,…)` line
+     (use `slowapi` or drop rate-limiting), and (b) resolve the confirmed backend critical — likely split the Stripe WEBHOOK
+     onto its own un-gated route and gate the rest of `stripe_router` with `Depends(get_current_user)` (see 0-G #6 for why).
+  3. Re-establish the smoke-boot gate honestly (0-D run 2081 recipe): run `_smoke_boot(2080, blueprint)` → if BOOT_OK set
+     redis `build:status:2080=done`. Then `POST /pipeline/secure {"project_id":2080}` (PAID ~$3 Opus). Poll
+     `/pipeline/2080/security-status`. If it PASSES → `POST /pipeline/qa` → `/pipeline/deploy` → LIVE URL.
+  4. ALWAYS get the user's OK before the paid `/pipeline/secure`. If instead you just want to STOP: everything is already
+     recorded and safe — nothing to do.
+  - **OR** decide #6 is the BACKEND analogue of the #55 gap (a confirmed-critical reviewer false-positive on defensible code)
+     and build a backend remediation/allowlist path — a design decision, not yet made. See 0-G #6.
 - **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed.
   Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.** Platform DB + secrets volumes
   PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows (…/1950/2080/**2081 is 2080 re-certified,
@@ -29,9 +46,10 @@ fully before doing anything else in this project.
 - **⚠️ Run 2080's DB files were MUTATED by the 2081 re-cert** (the reviewer applies accepted fixes): `integrate/tip/order`
   frontend files were repaired (good), and `main.py` (id 4582) now carries the hallucinated throttling import Opus added.
   So 2080 as a fixture no longer matches its original generation. (The `projects` row + files persist in the DB.)
-- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master`** (tip = the #56 + run-2081 record; #55a/#55b are `d0b2ddc`).
-  Clean tree. Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC; see 0-E). **COMMIT RULE: NO
-  Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master == 700954f`, clean tree.** This session's 3 commits:
+  `d0b2ddc` (#55a/#55b) → `f039acf` (CONTEXT: mark #55 committed) → `700954f` (#56 + run-2081 record, the tip). Git user
+  Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC; see 0-E). **COMMIT RULE: NO Claude co-author line**
+  (user asked repeatedly — never add `Co-Authored-By: Claude`).
 - **2026-08-27 follow-up:** Auth0 tenant CLEANED (0-G #1 now DONE) via the new operator tool
   `backend/tools/auth0_cleanup.py` — deleted 8 stale `proj-*` clients + 9 `proj-*` APIs, tenant headroom restored,
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
@@ -42,8 +60,11 @@ fully before doing anything else in this project.
   QA real-`next build` default-on (#51), esbuild parse in the rewrite gate (#52); then **#53** — the reviewer now REVIEWS
   but NEVER MUTATES frontend files, ending the stochastic re-cert breakage loop; then **#54** — codegen now EMITS a
   deterministic `frontend/tsconfig.json` (target ES2017) on every build, closing the ES3-default iteration trap for ALL
-  apps, not just 1950's hand-added one). All grounded in REAL captured run bugs, each locked with a regression test.
-  Detail per fix in §1cc–§1nn (§0-C for #49–#54).
+  apps, not just 1950's hand-added one; then on **2026-08-30**: **#55a** — confirmed-critical QUORUM (same issue signature on
+  ≥2 of 3 Opus passes) so a lone flake no longer fail-closes a clean deploy; **#55b** — a bounded, gate-and-re-review-validated
+  frontend security repair path so a CONFIRMED frontend critical is repaired instead of dying with no remediation; **#56** —
+  blocklist the hallucinated `fastapi.middleware.throttling` submodule Opus injected in run 2081. All grounded in REAL captured
+  run bugs, each locked with a regression test. Detail per fix in §1cc–§1nn (§0-C for #49–#56).
 
 ## 0-B. THE MILESTONES REACHED THIS SESSION (the payoff)
 - 🏆 **Run 1935 (Opus OFF, ~$1):** FIRST fresh full run to a genuinely LIVE + CLEAN app end-to-end, QA 100/100. §1jj.
