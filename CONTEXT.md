@@ -11,8 +11,9 @@ fully before doing anything else in this project.
 > them). Read THIS block first (0-A has the "resume tomorrow" action list); drill into §1cc–§1nn as needed.
 
 ## 0-A. WHERE WE ARE RIGHT NOW (2026-08-30)
-- **⏭️⏭️ RESUME TOMORROW — start here.** Nothing is half-done and nothing is uncommitted; `HEAD == origin/master == 700954f`,
-  tree clean, everything torn down ($0). The code frontier (#55a/#55b/#56) is DONE + PROVEN LIVE (run 2081). The ONE thing
+- **⏭️⏭️ RESUME TOMORROW — start here.** Nothing is half-done and nothing is uncommitted; `HEAD == origin/master` (clean
+  tree, everything torn down $0). Last CODE commit = `700954f` (#56 + run-2081 record); CONTEXT-only doc commits may sit on
+  top of it as the tip. The code frontier (#55a/#55b/#56) is DONE + PROVEN LIVE (run 2081). The ONE thing
   left is an OPTIONAL, PAID goal you deferred: **take run 2080 to a LIVE deploy**, which is blocked ONLY by a backend
   `main.py` issue (0-G #6), not by anything from this session. To pursue it tomorrow:
   1. `docker compose up -d` (backend :8000, frontend :3000, postgres, redis); `curl localhost:8000/health` → `{"status":"ok"}`.
@@ -46,10 +47,10 @@ fully before doing anything else in this project.
 - **⚠️ Run 2080's DB files were MUTATED by the 2081 re-cert** (the reviewer applies accepted fixes): `integrate/tip/order`
   frontend files were repaired (good), and `main.py` (id 4582) now carries the hallucinated throttling import Opus added.
   So 2080 as a fixture no longer matches its original generation. (The `projects` row + files persist in the DB.)
-- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master == 700954f`, clean tree.** This session's 3 commits:
-  `d0b2ddc` (#55a/#55b) → `f039acf` (CONTEXT: mark #55 committed) → `700954f` (#56 + run-2081 record, the tip). Git user
-  Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC; see 0-E). **COMMIT RULE: NO Claude co-author line**
-  (user asked repeatedly — never add `Co-Authored-By: Claude`).
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master`, clean tree.** This session's code/record commits:
+  `d0b2ddc` (#55a/#55b) → `f039acf` (CONTEXT: mark #55 committed) → `700954f` (#56 + run-2081 record); later CONTEXT-only
+  doc commits sit on top as the actual tip. Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC;
+  see 0-E). **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
 - **2026-08-27 follow-up:** Auth0 tenant CLEANED (0-G #1 now DONE) via the new operator tool
   `backend/tools/auth0_cleanup.py` — deleted 8 stale `proj-*` clients + 9 `proj-*` APIs, tenant headroom restored,
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
