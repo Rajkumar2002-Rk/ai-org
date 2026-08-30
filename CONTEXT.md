@@ -22,11 +22,9 @@ fully before doing anything else in this project.
   repair instead of dying with no remediation. All 12 offline suites GREEN; backend image REBUILT 2026-08-30 (now also
   carries #55). **⏭️ NEXT: the LIVE proof is a PAID re-cert** (Opus) of a run with a real frontend critical — needs user OK;
   nothing about #55 has been exercised on a live pipeline yet, only the offline logic.
-- **⚠️ NOT yet committed:** the #55a/#55b code + tests + this CONTEXT update are in the WORKING TREE only. Local master is
-  still at `ca03b94` (== origin). Commit when ready (NO Claude co-author line).
-- **Committed tip is `ca03b94` (== origin/master); the #55a/#55b work is UNCOMMITTED in the working tree** (reviewer +
-  config + 3 tests + this file). Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC; see 0-E).
-  **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master == d0b2ddc`** (tip = the #55a/#55b commit; a small CONTEXT-only
+  follow-up sits on top of it). Clean tree. Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC;
+  see 0-E). **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
 - **2026-08-27 follow-up:** Auth0 tenant CLEANED (0-G #1 now DONE) via the new operator tool
   `backend/tools/auth0_cleanup.py` — deleted 8 stale `proj-*` clients + 9 `proj-*` APIs, tenant headroom restored,
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
@@ -186,7 +184,7 @@ fully before doing anything else in this project.
   FAILS CLOSED) + `test_reviewer_frontend_accept_seam` (renamed from `_never_mutates_frontend_sync`: gate-fail discarded,
   gate-pass accepted, None kept). `reviewer/reviewer.py`, `reviewer/orchestrator.py`, `config.py`.
   ⚠️ Offline-verified only (all 12 suites green); the LIVE proof is a PAID re-cert on a run with a real frontend critical.
-  ⚠️ Backend image REBUILT 2026-08-30 (carries #55). ⚠️ UNCOMMITTED as of 2026-08-30 — working tree only.
+  ⚠️ Backend image REBUILT 2026-08-30 (carries #55). Committed + pushed `d0b2ddc` (2026-08-30).
 
 ## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
 1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
@@ -309,8 +307,7 @@ flake can fail-close a clean deploy. This run is a full-flow proof of #53/#54, n
    one. **⏭️ STILL PENDING — the PAID LIVE proof:** re-cert a run that carries a real frontend critical (e.g. re-run the
    2080 coffee-shop idea via `verify_pipeline.py`, or the 1950 re-cert in #4) to confirm #55a stops the false fail-close
    AND #55b either repairs the JWT-in-URL to a LIVE deploy or fails closed with the human flag. Needs user OK (spends Opus).
-   ⚠️ UNCOMMITTED — the #55 code + tests + CONTEXT update are working-tree only (commit with NO Claude co-author line).
-   The ORIGINAL design that was chosen (kept for reference):
+   Committed + pushed `d0b2ddc` (2026-08-30). The ORIGINAL design that was chosen (kept for reference):
    - **#55a — harden `_confirmed_critical` (small, cheap; directly fixes the 2080 tip flake).** Today it needs "any critical"
      on 2 passes. Change to a QUORUM that requires the SAME issue type/locus to RECUR across ≥2 of 3 passes (a real vuln
      reproduces as the same finding; independent flakes usually don't, and two different spurious criticals should not
