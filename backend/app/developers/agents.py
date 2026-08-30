@@ -1358,10 +1358,18 @@ _HALLUCINATED_PACKAGES = frozenset({"starlette-limiter"})
 # above can't catch this (root `starlette` is real); QA's assembly probe caught it only
 # AFTER the paid review had certified the broken file. Curated like the package list:
 # ONLY paths proven non-existent (starlette's middleware submodules are a fixed set that
-# has never included rate limiting). Grows as runs surface more.
+# has never included rate limiting). Grows as runs surface more. run 2081: re-certifying
+# 2080 with fix #55 live, the Opus security auto-fix "hardened" `main.py` by adding
+# `from fastapi.middleware.throttling import ThrottlingMiddleware` — a rate-limit middleware
+# neither FastAPI nor Starlette ships (their `middleware` submodule sets are cors/gzip/
+# httpsredirect/trustedhost/wsgi[/…], never throttling), so it is a ModuleNotFoundError at
+# startup. `rewrite_integrity_gate` re-runs this probe on the fix, so it now KEEPS the
+# certified-clean original instead of shipping the crash-on-import into the certificate.
 _HALLUCINATED_MODULES = frozenset({
     "starlette.middleware.rate_limit",
     "starlette.middleware.ratelimit",
+    "fastapi.middleware.throttling",
+    "starlette.middleware.throttling",
 })
 
 

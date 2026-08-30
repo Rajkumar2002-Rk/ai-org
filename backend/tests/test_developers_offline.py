@@ -698,6 +698,25 @@ def test_hallucinated_submodule_gate():
     check("a REAL starlette submodule (cors) is NOT flagged",
           agents.hallucinated_package_imports(
               "from starlette.middleware.cors import CORSMiddleware\n", rel) == [])
+    # Fix #56 (run 2081): re-certifying 2080 with #55 live, the Opus auto-fix "hardened"
+    # main.py with `from fastapi.middleware.throttling import ThrottlingMiddleware` — neither
+    # FastAPI nor Starlette ships a `throttling` middleware, so it is a ModuleNotFoundError at
+    # startup. Same #50 class (real root `fastapi`, invented submodule); now blocklisted.
+    thr = "from fastapi.middleware.throttling import ThrottlingMiddleware\napp=None\n"
+    ft = agents.hallucinated_package_imports(thr, rel)
+    check("the invented fastapi.middleware.throttling is flagged (kind=module, run 2081)",
+          len(ft) == 1 and ft[0]["module"] == "fastapi.middleware.throttling"
+          and ft[0]["root"] == "fastapi" and ft[0]["kind"] == "module", str(ft))
+    check("the starlette.middleware.throttling alias is flagged too",
+          agents.hallucinated_package_imports(
+              "from starlette.middleware.throttling import ThrottlingMiddleware\n", rel)[:1] != [])
+    check("REAL fastapi middleware submodules (cors/httpsredirect) are NOT flagged",
+          agents.hallucinated_package_imports(
+              "from fastapi.middleware.cors import CORSMiddleware\n"
+              "from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware\n", rel) == [])
+    check("rewrite_integrity_gate catches the reintroduced fastapi throttling submodule",
+          bool(agents.rewrite_integrity_gate(thr, rel, [{"filepath": rel, "content": thr}])
+               .get("missing_package_repairs")))
     # THE Fix #50 CORE: the REWRITE gate (Opus/QA re-validation) now catches it.
     g = agents.rewrite_integrity_gate(bad, rel, [{"filepath": rel, "content": bad}])
     check("rewrite_integrity_gate catches the reintroduced bad submodule",

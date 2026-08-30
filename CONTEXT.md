@@ -9,22 +9,29 @@ fully before doing anything else in this project.
 > Everything below this block (the old "RESUME HERE (2026-08-21)" and §1–§1bb) is HISTORY/detail. §1cc–§1mm are the
 > current per-fix record for THIS session's work (Fixes #37–#52). Read THIS block first; drill into §1cc–§1nn as needed.
 
-## 0-A. WHERE WE ARE RIGHT NOW (2026-08-28)
+## 0-A. WHERE WE ARE RIGHT NOW (2026-08-30)
 - **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed.
   Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.** Platform DB + secrets volumes
-  PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows (…/1950/**2080**) remain in the
-  platform DB as fixture sources. **2080 is the newest run — a full-flow proof of #53 + #54 (Opus ON); see 0-D.**
-- **✅ Fix #55a + #55b IMPLEMENTED + offline-verified (2026-08-30); LIVE proof still pending.** Run 2080 proved #53
-  (reviewer never mutates frontend) + #54 (tsconfig emitted) but fail-closed at the security gate on a REAL generated-app
-  vuln (JWT-in-URL in `integrate.tsx`) + a stochastic false-positive (`tip.tsx`). Both gaps are now CLOSED in code (see
-  0-C #55a/#55b): the confirmed-critical check is a QUORUM (same issue signature on ≥2 of 3 Opus passes) so a lone flake
-  no longer fail-closes a clean deploy, and a CONFIRMED frontend critical now gets ONE bounded, gate-and-re-review-validated
-  repair instead of dying with no remediation. All 12 offline suites GREEN; backend image REBUILT 2026-08-30 (now also
-  carries #55). **⏭️ NEXT: the LIVE proof is a PAID re-cert** (Opus) of a run with a real frontend critical — needs user OK;
-  nothing about #55 has been exercised on a live pipeline yet, only the offline logic.
-- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master == d0b2ddc`** (tip = the #55a/#55b commit; a small CONTEXT-only
-  follow-up sits on top of it). Clean tree. Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC;
-  see 0-E). **COMMIT RULE: NO Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
+  PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows (…/1950/2080/**2081 is 2080 re-certified,
+  same project id 2080**) remain in the platform DB as fixture sources. **2081 (2026-08-30) is the newest run — the paid
+  Opus re-cert of 2080's files that PROVED #55a + #55b live and surfaced #56; see 0-D.**
+- **✅ Fix #55a + #55b PROVEN LIVE (run 2081, paid Opus re-cert, 2026-08-30) + Fix #56 shipped.** Re-certified run 2080's
+  stored files with #55 live (see 0-D run 2081): **#55b REPAIRED the real JWT-in-URL critical** in `integrate/page.tsx`
+  (`url.searchParams.set("token",…)` → now attached via an `Authorization` header, `0` token-in-URL left, file PASSED) and
+  **#55a did NOT false-close** any frontend file (`tip/page.tsx` — the run-2080 flake — passed; its finding this run was
+  repaired, not fail-closed). The cert still fail-closed, but on a **BACKEND** file (`main.py`, unrelated to #55): a
+  confirmed backend critical Opus's own fixes didn't clear, AND Opus's "hardening" injected a HALLUCINATED
+  `from fastapi.middleware.throttling import ThrottlingMiddleware` (crash-on-import). The latter is now closed by **Fix #56**
+  (0-C): `fastapi.middleware.throttling`/`starlette.middleware.throttling` added to the `_HALLUCINATED_MODULES` blocklist so
+  `rewrite_integrity_gate` keeps the certified-clean original. All 12 offline suites GREEN; backend image REBUILT 2026-08-30
+  (carries #55 + #56). **⏭️ 2080 did NOT reach LIVE** — that needs the `main.py` backend block resolved (drop the throttling
+  import + resolve the confirmed backend critical) + one more paid re-cert. Not done (user scoped this session to "#56 + record").
+- **⚠️ Run 2080's DB files were MUTATED by the 2081 re-cert** (the reviewer applies accepted fixes): `integrate/tip/order`
+  frontend files were repaired (good), and `main.py` (id 4582) now carries the hallucinated throttling import Opus added.
+  So 2080 as a fixture no longer matches its original generation. (The `projects` row + files persist in the DB.)
+- **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master`** (tip = the #56 + run-2081 record; #55a/#55b are `d0b2ddc`).
+  Clean tree. Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC; see 0-E). **COMMIT RULE: NO
+  Claude co-author line** (user asked repeatedly — never add `Co-Authored-By: Claude`).
 - **2026-08-27 follow-up:** Auth0 tenant CLEANED (0-G #1 now DONE) via the new operator tool
   `backend/tools/auth0_cleanup.py` — deleted 8 stale `proj-*` clients + 9 `proj-*` APIs, tenant headroom restored,
   M2M delete-scopes confirmed. Still $0 spend / nothing running (used only auto-removed `docker compose run --rm` containers).
@@ -183,14 +190,36 @@ fully before doing anything else in this project.
   (`config.py`). Tests: `test_developers_offline.test_reviewer_frontend_confirmed_repair` (safe repair APPLIED; unrepairable
   FAILS CLOSED) + `test_reviewer_frontend_accept_seam` (renamed from `_never_mutates_frontend_sync`: gate-fail discarded,
   gate-pass accepted, None kept). `reviewer/reviewer.py`, `reviewer/orchestrator.py`, `config.py`.
-  ⚠️ Offline-verified only (all 12 suites green); the LIVE proof is a PAID re-cert on a run with a real frontend critical.
-  ⚠️ Backend image REBUILT 2026-08-30 (carries #55). Committed + pushed `d0b2ddc` (2026-08-30).
+  ✅ PROVEN LIVE in run 2081 (0-D): #55b repaired the real integrate.tsx JWT-in-URL (token→Authorization header, PASSED),
+  #55a false-closed nothing. Backend image REBUILT 2026-08-30. Committed + pushed `d0b2ddc` (2026-08-30).
+- **#56 (2026-08-30) — blocklist the hallucinated `fastapi.middleware.throttling` submodule (run 2081).** Re-certifying 2080
+  with #55 live, the Opus security auto-fix "hardened" `main.py` by adding
+  `from fastapi.middleware.throttling import ThrottlingMiddleware` — a rate-limit middleware NEITHER FastAPI NOR Starlette
+  ships (their `middleware` submodule sets are cors/gzip/httpsredirect/trustedhost/wsgi[/authentication/base/errors/
+  exceptions/sessions], never `throttling`), so it is a ModuleNotFoundError at STARTUP. Exactly the #50 class (real root
+  `fastapi`, invented submodule), and the rewrite gate's submodule blocklist didn't list it, so the crash-on-import was
+  ACCEPTED into main.py. Fix: added `fastapi.middleware.throttling` + `starlette.middleware.throttling` to
+  `_HALLUCINATED_MODULES` (curated, proven-nonexistent). Now `hallucinated_package_imports` flags it and
+  `rewrite_integrity_gate` keeps the certified-clean original instead of shipping it. VERIFIED against 2080's REAL main.py
+  (flags line 9, kind=module). Test: `test_developers_offline.test_hallucinated_submodule_gate` extended (throttling flagged,
+  real fastapi submodules cors/httpsredirect NOT flagged, rewrite gate catches it). `developers/agents.py`.
+  ⚠️ Does NOT resolve the OTHER main.py block — the confirmed backend security critical (found=5/fixed=5/pass=False), most
+  likely `stripe_router` mounted without a blanket `Depends(get_current_user)` (webhook rationale is in a code comment, but a
+  strict auditor reproducibly flags it). That is still OPEN and is what blocks a 2080 LIVE deploy.
 
 ## 0-D. THE RUNS THIS SESSION (paid measurement runs — what each proved/surfaced)
 1869 boot_failed → surfaced #39. 1887 build-error (false-pos) → #41; also confirmed #35/#38/menu-images landed.
 1914 CERTIFIED-but-500s (Opus reintroduced the swallow) → #42. 1934 deploy startup crash → #43; QA 84/88.
 **1935 LIVE+clean (Opus off) 🏆.** **1936 LIVE+CERTIFIED (Opus on) 🏆🏆.** **1937 user's run → LIVE+certified 🏆🏆🏆.**
 **1950 user's run, Stripe connected → #45 proven live, then #46/#47/#48.** (1843 is the older LIVE-but-unusable run; §1w/§1x.)
+**2081 (2026-08-30, Opus ON, ~$3, paid re-cert of 2080's stored files with #55 live) — PROVED #55a + #55b.** Re-ran only
+`/pipeline/secure` over 2080's 20 files (build:status re-set via an honest $0 smoke_boot; no BA/Architect/Build). Per-file
+verdicts: **`integrate/page.tsx` found=6/fixed=1/PASS** — #55b confirmed the real JWT-in-URL critical and repaired it
+(token moved from `url.searchParams.set("token",…)` to an `Authorization` header; 0 token-in-URL left). `tip/page.tsx`
+(the 2080 flake) found=7/fixed=1/PASS + `order/page.tsx` found=8/fixed=1/PASS — repaired, **no #55a false-close**. All other
+frontend files with non-critical issues passed unmutated. **Cert FAILED on `backend/app/main.py`** (found=5/fixed=5/pass=False)
+— a confirmed BACKEND critical (unrelated to #55) PLUS a hallucinated `fastapi.middleware.throttling` import Opus injected
+(→ Fix #56). Did NOT reach LIVE. This is the definitive LIVE proof of #55, and it surfaced #56.
 **2080 (2026-08-28, Opus ON, ~$3, image rebuilt with #50/#52/#54) — PROVED #53 + #54, blocked at the security gate.**
 Fresh coffee-shop run via `verify_pipeline.py`. Architect emitted **FND-8** (#54's `frontend/tsconfig.json`, `target:ES2017`)
 in the first wave — CONFIRMED in the DB. Build 20/20. Reviewer left ALL frontend `issues_fixed=0` (#53 held — no mutation,
@@ -304,10 +333,9 @@ flake can fail-close a clean deploy. This run is a full-flow proof of #53/#54, n
    signature on ≥2 of 3 Opus passes) so run 2080's `tip/page.tsx` flake no longer fail-closes a clean deploy; #55b gives a
    CONFIRMED frontend critical ONE bounded, gate-and-re-review-validated repair (default 2 attempts) instead of dying with
    no remediation, and `_accept_or_reject_fix` now accepts a gate-passing frontend repair while still discarding a broken
-   one. **⏭️ STILL PENDING — the PAID LIVE proof:** re-cert a run that carries a real frontend critical (e.g. re-run the
-   2080 coffee-shop idea via `verify_pipeline.py`, or the 1950 re-cert in #4) to confirm #55a stops the false fail-close
-   AND #55b either repairs the JWT-in-URL to a LIVE deploy or fails closed with the human flag. Needs user OK (spends Opus).
-   Committed + pushed `d0b2ddc` (2026-08-30). The ORIGINAL design that was chosen (kept for reference):
+   one. ✅ **PROVEN LIVE in run 2081 (0-D)** — #55b repaired the real integrate.tsx JWT-in-URL (PASSED) and #55a false-closed
+   nothing (tip.tsx passed). The re-cert then fail-closed on a BACKEND `main.py` block (→ #56 + item 6 below), NOT a #55
+   defect. Committed + pushed `d0b2ddc` (#55) + this session's #56/record commit. The ORIGINAL design (kept for reference):
    - **#55a — harden `_confirmed_critical` (small, cheap; directly fixes the 2080 tip flake).** Today it needs "any critical"
      on 2 passes. Change to a QUORUM that requires the SAME issue type/locus to RECUR across ≥2 of 3 passes (a real vuln
      reproduces as the same finding; independent flakes usually don't, and two different spurious criticals should not
@@ -327,6 +355,19 @@ flake can fail-close a clean deploy. This run is a full-flow proof of #53/#54, n
    - **Recommendation:** ship #55a now (cheap, fixes the observed flake), then #55b (restores a SAFE fix path). Est: #55a is a
      ~15-line change + test; #55b needs the tsc/next-build gate wired into the reviewer path (heavier — needs node_modules or
      reuse of QA's #51 build). NO new paid run needed to build+offline-test either; the LIVE proof would be a later re-cert.
+
+6. 🔵 **OPEN — run-2081 `backend/app/main.py` confirmed backend critical (blocks a 2080 LIVE deploy).** The 2081 re-cert
+   (0-D) fail-closed on main.py: found=5/fixed=5/**pass=False** — Opus applied 5 fixes but its own final security re-review
+   STILL confirms a critical (quorum, 2 passes). NOT yet pinned to the exact finding without another paid pass; the most
+   likely cause is `app.include_router(stripe_router)` mounted WITHOUT a blanket `Depends(get_current_user)` (unlike order/
+   menu). The code comment defends it (the Stripe WEBHOOK can't carry a user credential — it must verify `Stripe-Signature`
+   instead), so this may be a defensible design that a strict auditor reproducibly flags as "unauthenticated router = missing
+   authorization" → confirmed critical → fail closed. Two ways forward if a 2080 LIVE deploy is wanted: (a) resolve it in
+   main.py (e.g. split the webhook onto its own un-gated route + gate the rest, or mount stripe_router with the auth
+   dependency and exempt the webhook path) then re-cert (~$3); (b) recognise this as the BACKEND analogue of the #55 gap —
+   a confirmed-critical that may be a reproducible reviewer false-positive on defensible code, with NO remediation path on
+   the backend side either. NOTE: main.py in the 2080 DB is currently BROKEN anyway (the #56 hallucinated throttling import
+   Opus added this run), so a LIVE push must fix BOTH. Deferred — this session was scoped to "#56 + record run 2081".
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-
