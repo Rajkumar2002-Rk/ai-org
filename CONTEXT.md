@@ -10,24 +10,28 @@ fully before doing anything else in this project.
 > current per-fix record; #55a/#55b/#56 (2026-08-30) are recorded in 0-A/0-C/0-D/0-G (no §1oo — 0-C is authoritative for
 > them). Read THIS block first (0-A has the "resume tomorrow" action list); drill into §1cc–§1nn as needed.
 
-## 0-A. WHERE WE ARE RIGHT NOW (2026-08-30)
-- **⏭️⏭️ RESUME TOMORROW — start here.** Nothing is half-done and nothing is uncommitted; `HEAD == origin/master` (clean
-  tree, everything torn down $0). Last CODE commit = `700954f` (#56 + run-2081 record); CONTEXT-only doc commits may sit on
-  top of it as the tip. The code frontier (#55a/#55b/#56) is DONE + PROVEN LIVE (run 2081). The ONE thing
-  left is an OPTIONAL, PAID goal you deferred: **take run 2080 to a LIVE deploy**, which is blocked ONLY by a backend
-  `main.py` issue (0-G #6), not by anything from this session. To pursue it tomorrow:
-  1. `docker compose up -d` (backend :8000, frontend :3000, postgres, redis); `curl localhost:8000/health` → `{"status":"ok"}`.
-  2. Fix 2080's `backend/app/main.py` in the DB ($0, no LLM — DB-edit recipe in §1nn #11): (a) DROP the hallucinated
-     `from fastapi.middleware.throttling import ThrottlingMiddleware` + its `app.add_middleware(ThrottlingMiddleware,…)` line
-     (use `slowapi` or drop rate-limiting), and (b) resolve the confirmed backend critical — likely split the Stripe WEBHOOK
-     onto its own un-gated route and gate the rest of `stripe_router` with `Depends(get_current_user)` (see 0-G #6 for why).
-  3. Re-establish the smoke-boot gate honestly (0-D run 2081 recipe): run `_smoke_boot(2080, blueprint)` → if BOOT_OK set
-     redis `build:status:2080=done`. Then `POST /pipeline/secure {"project_id":2080}` (PAID ~$3 Opus). Poll
-     `/pipeline/2080/security-status`. If it PASSES → `POST /pipeline/qa` → `/pipeline/deploy` → LIVE URL.
-  4. ALWAYS get the user's OK before the paid `/pipeline/secure`. If instead you just want to STOP: everything is already
-     recorded and safe — nothing to do.
-  - **OR** decide #6 is the BACKEND analogue of the #55 gap (a confirmed-critical reviewer false-positive on defensible code)
-     and build a backend remediation/allowlist path — a design decision, not yet made. See 0-G #6.
+## 0-A. WHERE WE ARE RIGHT NOW (2026-08-31)
+- **⏭️⏭️ RESUME HERE — the 2080 LIVE push is IN PROGRESS, paused because the ANTHROPIC API RAN OUT OF CREDITS
+  (2026-08-31).** No more paid Opus calls possible until the user recharges (Plans & Billing). 2080 is now just ONE backend
+  file away from a clean cert. Progress this session (2026-08-31, two more paid re-certs ~$6):
+  - ✅ **`main.py` FIXED + PASSES** — hand-rewritten in the DB ($0): gated `stripe_router` with `Depends(get_current_user)`,
+    dropped the hallucinated `ThrottlingMiddleware` import + middleware, removed the `HTTPException`-raised-at-import (now a
+    plain `RuntimeError` fail-fast). A fresh Opus review returns ZERO issues; passed in the 2nd re-cert.
+  - ✅ **ALL 12 frontend files PASS** (#55 holding — integrate/tip/order stay repaired), and 5/7 backend files pass
+    consistently (auth, database, models, menu, order, security).
+  - ❌ **ONLY `backend/app/routes/stripe.py` blocks the cert** (id 4576, found=8/fixed=8/pass=False). REAL, reproducible
+    critical (not a flake): the Stripe OAuth `state` is a STATIC secret — `state = STRIPE_STATE_SECRET` in `stripe_connect`,
+    and the callback checks `state != STRIPE_STATE_SECRET` — i.e. a predictable, reused state → CSRF on the connect flow (the
+    generated code even comments "In a real app, generate a unique state per request"). Opus also flagged 2 softer criticals
+    (enc key from env — actually correct; client secret in the code-exchange — standard server-side OAuth), likely stochastic.
+  - **THE FIX (stage it $0, then ONE cheap re-cert):** rewrite `stripe.py` to mint a PER-REQUEST signed state — mirror the
+    platform's OWN `app/onboarding/stripe_connect.py` (HMAC-sign a nonce+ts+project with `STRIPE_STATE_SECRET`, verify + expiry
+    in the callback). Then: write it to the DB (id 4576, DB-edit recipe §1nn #11), re-run `_smoke_boot(2080)` → set
+    `build:status:2080=done` (its 24h TTL likely expired — the one I set on 08-31 will be gone), do a FREE single-file Opus
+    review of the new stripe.py to confirm 0 criticals (like main.py was staged), THEN `POST /pipeline/secure` (PAID ~$3) →
+    should pass → `POST /pipeline/qa` → `POST /pipeline/deploy` → LIVE+certified URL. **Get the user's OK before the paid secure.**
+  - **OR** treat this as the BACKEND analogue of the #55 gap (see 0-G #6) and build a general fix. **OR** deploy uncertified
+    now (skipped cert, $0) — NOT recommended (ships the live CSRF).
 - **EVERYTHING IS TORN DOWN → $0 SPEND.** `docker compose down` done; all ephemeral generated-app stacks removed.
   Nothing running, no scheduled tasks armed. **Restart with `docker compose up -d`.** Platform DB + secrets volumes
   PERSIST (safe). Generated-app stacks are ephemeral and gone; the `projects` rows (…/1950/2080/**2081 is 2080 re-certified,
@@ -42,11 +46,13 @@ fully before doing anything else in this project.
   `from fastapi.middleware.throttling import ThrottlingMiddleware` (crash-on-import). The latter is now closed by **Fix #56**
   (0-C): `fastapi.middleware.throttling`/`starlette.middleware.throttling` added to the `_HALLUCINATED_MODULES` blocklist so
   `rewrite_integrity_gate` keeps the certified-clean original. All 12 offline suites GREEN; backend image REBUILT 2026-08-30
-  (carries #55 + #56). **⏭️ 2080 did NOT reach LIVE** — that needs the `main.py` backend block resolved (drop the throttling
-  import + resolve the confirmed backend critical) + one more paid re-cert. Not done (user scoped this session to "#56 + record").
-- **⚠️ Run 2080's DB files were MUTATED by the 2081 re-cert** (the reviewer applies accepted fixes): `integrate/tip/order`
-  frontend files were repaired (good), and `main.py` (id 4582) now carries the hallucinated throttling import Opus added.
-  So 2080 as a fixture no longer matches its original generation. (The `projects` row + files persist in the DB.)
+  (carries #55 + #56). **⏭️ 2080 has NOT reached LIVE yet** — as of 2026-08-31 main.py is fixed+passing, the ONLY remaining
+  blocker is `stripe.py`'s static-OAuth-state CSRF critical (see the RESUME block above + 0-G #6); paused on API credit-out.
+- **⚠️ Run 2080's DB files have been MUTATED (fixtures no longer match the original generation):** the 2081 re-cert repaired
+  `integrate/tip/order` frontend files (good); on 2026-08-31 `main.py` (id 4582) was HAND-REWRITTEN to a clean, passing
+  version (throttling import gone, stripe_router gated, RuntimeError fail-fast); and `stripe.py` (id 4576) carries the
+  2026-08-31 re-cert's 8 accepted Opus fixes but STILL fails on the static-state CSRF critical (needs the per-request-state
+  rewrite above). The `projects` row + all 20 files persist in the DB (volumes survive teardown).
 - **ALL CODE COMMITTED + PUSHED. `HEAD == origin/master`, clean tree.** This session's code/record commits:
   `d0b2ddc` (#55a/#55b) → `f039acf` (CONTEXT: mark #55 committed) → `700954f` (#56 + run-2081 record); later CONTEXT-only
   doc commits sit on top as the actual tip. Git user Rajkumar2002-Rk, repo github.com/Rajkumar2002-Rk/ai-org (now PUBLIC;
@@ -378,18 +384,22 @@ flake can fail-close a clean deploy. This run is a full-flow proof of #53/#54, n
      ~15-line change + test; #55b needs the tsc/next-build gate wired into the reviewer path (heavier — needs node_modules or
      reuse of QA's #51 build). NO new paid run needed to build+offline-test either; the LIVE proof would be a later re-cert.
 
-6. 🔵 **OPEN — run-2081 `backend/app/main.py` confirmed backend critical (blocks a 2080 LIVE deploy).** The 2081 re-cert
-   (0-D) fail-closed on main.py: found=5/fixed=5/**pass=False** — Opus applied 5 fixes but its own final security re-review
-   STILL confirms a critical (quorum, 2 passes). NOT yet pinned to the exact finding without another paid pass; the most
-   likely cause is `app.include_router(stripe_router)` mounted WITHOUT a blanket `Depends(get_current_user)` (unlike order/
-   menu). The code comment defends it (the Stripe WEBHOOK can't carry a user credential — it must verify `Stripe-Signature`
-   instead), so this may be a defensible design that a strict auditor reproducibly flags as "unauthenticated router = missing
-   authorization" → confirmed critical → fail closed. Two ways forward if a 2080 LIVE deploy is wanted: (a) resolve it in
-   main.py (e.g. split the webhook onto its own un-gated route + gate the rest, or mount stripe_router with the auth
-   dependency and exempt the webhook path) then re-cert (~$3); (b) recognise this as the BACKEND analogue of the #55 gap —
-   a confirmed-critical that may be a reproducible reviewer false-positive on defensible code, with NO remediation path on
-   the backend side either. NOTE: main.py in the 2080 DB is currently BROKEN anyway (the #56 hallucinated throttling import
-   Opus added this run), so a LIVE push must fix BOTH. Deferred — this session was scoped to "#56 + record run 2081".
+6. 🟡 **IN PROGRESS (paused on credit-out 2026-08-31) — take 2080 to a LIVE certified deploy; ONE file left.** History:
+   the 2081 re-cert fail-closed on `main.py` (its confirmed "critical" turned out STOCHASTIC — a fresh single review of the
+   same bytes returned only a `medium` on the unauthenticated `stripe_router`, the backend analogue of the #55 flake). On
+   2026-08-31 (two more paid re-certs, ~$6): **main.py was hand-fixed → PASSES** (gated `stripe_router` with
+   `Depends(get_current_user)`, removed the #56 throttling import, replaced the `HTTPException`-at-import with a `RuntimeError`
+   fail-fast; a fresh Opus review returns 0 issues). **All 12 frontend files + 5/7 backend files pass.** The 2nd re-cert then
+   fail-closed on **`stripe.py`** (id 4576): a REAL, reproducible critical — the OAuth `state` is a STATIC secret
+   (`state = STRIPE_STATE_SECRET`, callback checks `state != STRIPE_STATE_SECRET`) → predictable/reused state → CSRF on the
+   Stripe-connect flow (the generated comment admits "generate a unique state per request"). **THE FIX (do this on resume):**
+   rewrite `stripe.py` to mint + verify a PER-REQUEST signed state — mirror the platform's own `app/onboarding/stripe_connect.py`
+   (HMAC(nonce+ts+project, STRIPE_STATE_SECRET), verify signature + short expiry in the callback). Stage it FREE: write to DB
+   id 4576 (§1nn #11 recipe), `_smoke_boot(2080)` → set `build:status:2080=done`, FREE single-file Opus review to confirm 0
+   criticals, THEN the PAID `/pipeline/secure` (~$3, get user OK) → QA → deploy. Blocked NOW only because the **Anthropic API
+   is out of credits** (2026-08-31) — user must recharge first. ALTERNATIVELY, recognise this as the BACKEND analogue of the
+   #55 gap (a stochastic/defensible confirmed-critical with no backend remediation path) and build a general fix (a bounded,
+   re-validated backend repair mirroring #55b, or a reviewed allowlist for defensible patterns) — a design decision, not made.
 
 ## 🎯 30-SECOND ORIENTATION (older milestone note — superseded by 0-A/0-B above)
 **🏆🏆🏆 NEWEST + BIGGEST MILESTONE (2026-08-26, run 1936): the FIRST fresh full run to reach a LIVE, SECURITY-
