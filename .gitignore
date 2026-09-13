@@ -23,3 +23,7 @@ backend/tests/_verify_run.log
 
 # Local Claude Code settings (may contain machine-specific values)
 .claude/settings.local.json
+
+# Claude Code's cross-session working memory / handoff notes — local only.
+# It's an internal engineering log, not repo-facing documentation (the README is).
+CONTEXT.md
