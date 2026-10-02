@@ -63,6 +63,8 @@ flowchart LR
     SEC --> QA["QA<br/>ephemeral boot + HTTP tests"]
     QA --> DO["DevOps<br/>isolated deploy + HTTPS"]
     DO --> APP(["🚀 Live app"])
+    APP --> MON["Monitoring + Auto-fix<br/>self-healing · cost"]
+    MON -. "on failure: repair" .-> DO
 ```
 
 - **BA agent** — conversational interview capturing the idea, audience, budget,
@@ -82,6 +84,9 @@ flowchart LR
 - **DevOps** — assembles images and deploys an **isolated per-project Docker stack**
   with HTTPS (Caddy), injects secrets, and health-checks the live URL.
 - **Documentation** — generates a user guide + demo material from the finished build.
+- **Monitoring & self-healing** — once live, the app is health-checked on a cadence;
+  a new failure triggers the **Auto-fix** agent (snapshot- and rollback-safe), and a
+  **Cost Tracker** watches spend.
 
 **Owner onboarding is first-class:** the platform provisions the operator-facing
 integrations at build/deploy time — **Stripe Connect** (click-to-connect OAuth),
